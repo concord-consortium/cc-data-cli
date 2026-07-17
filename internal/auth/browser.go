@@ -2,6 +2,7 @@ package auth
 
 import (
 	"io"
+	"os"
 
 	"github.com/pkg/browser"
 )
@@ -17,7 +18,12 @@ func RedirectBrowserOutput(w io.Writer) {
 	browser.Stderr = w
 }
 
-// OpenBrowser opens rawURL in the user's browser via the seam.
+// OpenBrowser opens rawURL in the user's browser via the seam. Setting
+// CC_DATA_NO_BROWSER suppresses the open so a driver (the e2e script) can follow
+// the printed URL itself.
 func OpenBrowser(rawURL string) error {
+	if os.Getenv("CC_DATA_NO_BROWSER") != "" {
+		return nil
+	}
 	return openBrowser(rawURL)
 }
