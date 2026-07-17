@@ -48,6 +48,8 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newDatasetCmd())
 	root.AddCommand(newReportsCmd())
 	root.AddCommand(newGetCmd())
+	root.AddCommand(newQueryCmd())
+	root.AddCommand(newReplCmd())
 	return root
 }
 
