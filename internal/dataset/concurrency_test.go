@@ -40,7 +40,7 @@ func TestLargeSegmentMerges(t *testing.T) {
 	}
 	var recs [][]byte
 	for i := 0; i < 20; i++ {
-		recs = append(recs, rec("s", "e"+itoa(i), "q", "", string(big)))
+		recs = append(recs, rec("s", "e"+numStr(i), "q", "", string(big)))
 	}
 	seg := writeFinishedSegment(t, d, "answers", 584, recs)
 	counts, err := d.MergeCompact("answers", 584, seg)
@@ -55,7 +55,7 @@ func TestLargeSegmentMerges(t *testing.T) {
 	}
 }
 
-func itoa(i int) string {
+func numStr(i int) string {
 	if i == 0 {
 		return "0"
 	}

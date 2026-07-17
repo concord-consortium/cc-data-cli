@@ -189,12 +189,8 @@ func (d *Dataset) ScanRunAttachments(run int) (refs []AttachRef, scanned []strin
 	return refs, scanned, nil
 }
 
-// ScanAllAttachments scans the full answers and history stores for refs.
-func (d *Dataset) ScanAllAttachments() ([]AttachRef, error) {
-	m, err := d.ReadManifest()
-	if err != nil {
-		return nil, err
-	}
+// scanAllAttachments scans the full answers and history stores named by m.
+func (d *Dataset) scanAllAttachments(m *Manifest) ([]AttachRef, error) {
 	var refs []AttachRef
 	for _, typ := range []string{store.TypeAnswers, store.TypeHistory} {
 		st := m.Stores[typ]
@@ -247,7 +243,7 @@ func (d *Dataset) scanStore(typ, file string, keys map[string]bool) ([]AttachRef
 // attachment index over files present on disk, and garbage-collects unreferenced
 // attachment files. Caller must hold the per-dataset lock.
 func (d *Dataset) RebuildAttachmentIndex(m *Manifest) error {
-	refs, err := d.ScanAllAttachments()
+	refs, err := d.scanAllAttachments(m)
 	if err != nil {
 		return err
 	}
