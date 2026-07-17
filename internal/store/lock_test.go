@@ -72,6 +72,25 @@ func TestDatasetLockInProcessExclusion(t *testing.T) {
 	<-acquired // now it can proceed
 }
 
+func TestDownloadLockSameRunExclusion(t *testing.T) {
+	dir := t.TempDir()
+	l := DownloadLockFor(dir, "seg_answers_584.lock")
+	ok, err := l.TryLock()
+	if err != nil || !ok {
+		t.Fatalf("first download lock should succeed: %v", err)
+	}
+	// A second command fetching the same download fails fast.
+	if got, _ := DownloadLockFor(dir, "seg_answers_584.lock").TryLock(); got {
+		t.Fatal("second same-run download lock should fail")
+	}
+	// A different download (job-qualified) proceeds.
+	other, err := DownloadLockFor(dir, "seg_report_job_584_2.lock").TryLock()
+	if err != nil || !other {
+		t.Fatalf("different download lock should succeed: %v", err)
+	}
+	l.Unlock()
+}
+
 func TestDatasetLockSameInstanceIsSingleton(t *testing.T) {
 	dir := t.TempDir()
 	if DatasetLockFor(dir) != DatasetLockFor(dir) {

@@ -8,7 +8,11 @@ import (
 	"time"
 
 	"github.com/concord-consortium/cc-data-cli/internal/fsutil"
+	"github.com/concord-consortium/cc-data-cli/internal/store"
 )
+
+// MergeCounts is re-exported from the store engine for manifest consumers.
+type MergeCounts = store.MergeCounts
 
 // CurrentManifestVersion is the schema version this binary writes.
 const CurrentManifestVersion = 1
@@ -75,13 +79,6 @@ type Coverage struct {
 	WithData int           `json:"with_data"`
 	Empty    *int          `json:"empty"`
 	Missing  []MissingItem `json:"missing,omitempty"`
-}
-
-type MergeCounts struct {
-	Fetched int `json:"fetched"`
-	New     int `json:"new"`
-	Updated int `json:"updated"`
-	Removed int `json:"removed"`
 }
 
 type MissingItem struct {

@@ -3,6 +3,7 @@
 package store
 
 import (
+	"os"
 	"path/filepath"
 	"sync"
 
@@ -25,6 +26,7 @@ var (
 	registryMu sync.Mutex
 	dsGuards   = map[string]*DatasetLock{}
 	actGuards  = map[string]*ActivityLock{}
+	dlGuards   = map[string]*DownloadLock{}
 )
 
 // DatasetLockFor returns the process-wide per-dataset guard for a dataset dir.
@@ -53,6 +55,62 @@ func ActivityLockFor(datasetDir string) *ActivityLock {
 	actGuards[key] = g
 	return g
 }
+
+// DownloadLockFor returns the process-wide per-download guard for a lock file
+// (seg_<type>_<run>.lock and friends) under a dataset's segments directory.
+func DownloadLockFor(datasetDir, lockName string) *DownloadLock {
+	path := filepath.Join(filepath.Clean(datasetDir), SegmentsDir, lockName)
+	registryMu.Lock()
+	defer registryMu.Unlock()
+	if g, ok := dlGuards[path]; ok {
+		return g
+	}
+	g := &DownloadLock{path: path, flock: flock.New(path)}
+	dlGuards[path] = g
+	return g
+}
+
+// DownloadLock is the exclusive per-download guard held for a fetch command's
+// lifetime; acquisition is always non-blocking (a second same-run command fails
+// fast rather than racing the segment).
+type DownloadLock struct {
+	path  string
+	mu    sync.Mutex
+	flock *flock.Flock
+	held  bool
+}
+
+// TryLock acquires the guard without blocking, creating the segments directory
+// so the lock file can be made.
+func (l *DownloadLock) TryLock() (bool, error) {
+	if !l.mu.TryLock() {
+		return false, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(l.path), 0o700); err != nil {
+		l.mu.Unlock()
+		return false, err
+	}
+	ok, err := l.flock.TryLock()
+	if err != nil || !ok {
+		l.mu.Unlock()
+		return false, err
+	}
+	l.held = true
+	return true, nil
+}
+
+// Unlock releases the guard.
+func (l *DownloadLock) Unlock() {
+	if !l.held {
+		return
+	}
+	l.held = false
+	l.flock.Unlock()
+	l.mu.Unlock()
+}
+
+// Held reports whether this process holds the guard.
+func (l *DownloadLock) Held() bool { return l.held }
 
 // DatasetLock is the exclusive per-dataset guard (mutex + flock). The mutex
 // serializes goroutines so the single flock is only ever entered by one at a
