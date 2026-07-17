@@ -18,7 +18,14 @@ func newGetReportCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "report <run-id> --dataset <ref>",
 		Short: "Download a report CSV into a dataset",
-		Args:  cobra.ExactArgs(1),
+		Long: `Download a report CSV into a dataset.
+
+Polls the run until its Athena query succeeds, then streams the presigned CSV to
+disk atomically (never a partial file). --no-wait reports the current state and
+exits 4 without waiting; --poll-timeout bounds the wait (default 30m). --job
+downloads a post-processing job's CSV instead. An existing CSV requires --refresh
+to re-download. A terminal failure (failed/cancelled) exits 5.`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			runID, err := strconv.Atoi(args[0])
 			if err != nil {

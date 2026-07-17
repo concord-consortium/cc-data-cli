@@ -16,7 +16,19 @@ func newQueryCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "query --dataset <ref> \"SELECT ...\"",
 		Short: "Run a SQL query over one or more datasets",
-		Args:  cobra.ExactArgs(1),
+		Long: `Run a SQL query over one or more datasets via an ephemeral in-memory DuckDB.
+
+Views (single dataset: unqualified; multiple: schema-qualified per dataset):
+  reports, report_prompts, answers, history, run_membership, downloads,
+  attachment_files, attachment_states, and per-run views (report_<run>,
+  answers_<run>, history_<run>).
+
+The session is sandboxed to the named dataset folders. --allow-dir adds a
+directory to the allowlist for this invocation only (never persisted), so joining
+an external roster or rubric is an explicit, visible grant. Results go to stdout
+in --format; all prose goes to stderr, and a failing query emits a single JSON
+error object on stdout.`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			specs, err := resolveDatasetSpecs(datasetRefs)
 			if err != nil {

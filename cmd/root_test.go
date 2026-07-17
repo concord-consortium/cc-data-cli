@@ -54,11 +54,38 @@ func TestUnknownFlagExit2(t *testing.T) {
 
 func TestHelpCarriesExitCodeTable(t *testing.T) {
 	root := newRootCmd()
-	help := root.Long
-	for _, needle := range []string{"3  NOT_AUTHENTICATED", "5  server contract error", "Stream discipline"} {
-		if !strings.Contains(help, needle) {
-			t.Fatalf("root help missing %q", needle)
+	var buf bytes.Buffer
+	root.SetOut(&buf)
+	root.SetArgs([]string{"--help"})
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	help := buf.String()
+	// Every exit-code class must appear in --help, matching the output constants.
+	rows := []struct {
+		code int
+		text string
+	}{
+		{output.ExitSuccess, "0  success"},
+		{output.ExitInternal, "1  internal"},
+		{output.ExitUsage, "2  usage error"},
+		{output.ExitNotAuth, "3  NOT_AUTHENTICATED"},
+		{output.ExitNotReady, "4  not ready"},
+		{output.ExitContract, "5  server contract error"},
+		{output.ExitTransient, "6  transient failure"},
+	}
+	for _, r := range rows {
+		want := strings.TrimSpace(r.text)
+		if !strings.Contains(help, want) {
+			t.Fatalf("--help missing exit-code row %q", want)
 		}
+		// The leading digit must equal the constant.
+		if int(want[0]-'0') != r.code {
+			t.Fatalf("exit-code table row %q does not match constant %d", want, r.code)
+		}
+	}
+	if !strings.Contains(help, "Stream discipline") {
+		t.Fatal("--help missing the stream-discipline note")
 	}
 }
 
