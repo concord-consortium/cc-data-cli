@@ -12,7 +12,7 @@ func newGetCmd() *cobra.Command {
 		Use:   "get",
 		Short: "Download report CSVs, answers, history, and attachments into a dataset",
 	}
-	cmd.AddCommand(newGetReportCmd())
+	cmd.AddCommand(newGetReportCmd(), newGetAnswersCmd(), newGetHistoryCmd())
 	return cmd
 }
 
