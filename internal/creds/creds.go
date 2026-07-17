@@ -129,6 +129,23 @@ func (Store) Token(portal string) (string, error) {
 	return pc.Token, nil
 }
 
+// Get returns the token and the recorded minting server origin for a portal.
+func (s Store) Get(portal string) (token, server string, err error) {
+	cf, err := readFile()
+	if err != nil {
+		return "", "", err
+	}
+	pc, ok := cf.Portals[portal]
+	if !ok {
+		return "", "", ErrNotFound
+	}
+	token, err = s.Token(portal)
+	if err != nil {
+		return "", "", err
+	}
+	return token, pc.Server, nil
+}
+
 // Delete removes a portal's credential from the keychain and the metadata file.
 func (Store) Delete(portal string) error {
 	cf, err := readFile()
