@@ -46,6 +46,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newLogoutCmd())
 	root.AddCommand(newAuthCmd())
 	root.AddCommand(newDatasetCmd())
+	root.AddCommand(newReportsCmd())
 	return root
 }
 
