@@ -47,6 +47,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newAuthCmd())
 	root.AddCommand(newDatasetCmd())
 	root.AddCommand(newReportsCmd())
+	root.AddCommand(newGetCmd())
 	return root
 }
 
@@ -61,7 +62,9 @@ func Execute(v string) int {
 		return output.ExitSuccess
 	}
 	class := classifyExecError(err)
-	output.EmitError(class)
+	if !class.Silent {
+		output.EmitError(class)
+	}
 	return class.ExitCode
 }
 

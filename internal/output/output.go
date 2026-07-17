@@ -20,13 +20,16 @@ const (
 )
 
 // CLIError carries the coarse exit-code class plus the specific error code and
-// the machine-readable envelope fields.
+// the machine-readable envelope fields. Silent means the exit code applies but
+// no error envelope is printed (the command already emitted its result line to
+// stdout, e.g. --no-wait on a not-ready run).
 type CLIError struct {
 	ExitCode int
 	Code     string
 	Message  string
 	Action   string
 	Extra    map[string]any
+	Silent   bool
 }
 
 func (e *CLIError) Error() string {

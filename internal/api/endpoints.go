@@ -1,6 +1,9 @@
 package api
 
-import "context"
+import (
+	"context"
+	"fmt"
+)
 
 // ExchangeCLIToken exchanges a PKCE grant code for an API token. The endpoint is
 // public (no bearer); secrets travel in the body only.
@@ -39,4 +42,28 @@ func (c *Client) CurrentToken(ctx context.Context) (*TokenInfo, error) {
 // introspection endpoint by requesting a single report.
 func (c *Client) ProbeReports(ctx context.Context) error {
 	return c.getJSON(ctx, "/api/v1/reports", pageQuery(1), nil)
+}
+
+// GetReport fetches a run's metadata.
+func (c *Client) GetReport(ctx context.Context, runID int) (*ReportRun, error) {
+	var run ReportRun
+	if err := c.getJSON(ctx, fmt.Sprintf("/api/v1/reports/%d", runID), nil, &run); err != nil {
+		return nil, err
+	}
+	return &run, nil
+}
+
+// ReportDownloadEnvelope requests the presigned download envelope for a run's CSV
+// (or a job's CSV when jobID is non-nil). A not-ready run/job returns a coded
+// *APIError (NOT_READY) carrying its state.
+func (c *Client) ReportDownloadEnvelope(ctx context.Context, runID int, jobID *int) (*DownloadEnvelope, error) {
+	path := fmt.Sprintf("/api/v1/reports/%d/download", runID)
+	if jobID != nil {
+		path = fmt.Sprintf("/api/v1/reports/%d/jobs/%d/download", runID, *jobID)
+	}
+	var env DownloadEnvelope
+	if err := c.getJSON(ctx, path, nil, &env); err != nil {
+		return nil, err
+	}
+	return &env, nil
 }

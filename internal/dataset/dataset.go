@@ -188,6 +188,57 @@ func (d *Dataset) Delete() error {
 	return os.RemoveAll(d.Dir)
 }
 
+// UpsertDownload records or replaces a download entry under the per-dataset lock.
+func (d *Dataset) UpsertDownload(dl Download) error {
+	lock := d.Lock()
+	if err := lock.Lock(); err != nil {
+		return err
+	}
+	defer lock.Unlock()
+	m, err := d.ReadManifest()
+	if err != nil {
+		return err
+	}
+	for i := range m.Downloads {
+		if sameDownload(m.Downloads[i], dl) {
+			m.Downloads[i] = dl
+			return d.WriteManifest(m)
+		}
+	}
+	m.Downloads = append(m.Downloads, dl)
+	return d.WriteManifest(m)
+}
+
+// UpdateManifest applies fn to the manifest under the per-dataset lock.
+func (d *Dataset) UpdateManifest(fn func(*Manifest) error) error {
+	lock := d.Lock()
+	if err := lock.Lock(); err != nil {
+		return err
+	}
+	defer lock.Unlock()
+	m, err := d.ReadManifest()
+	if err != nil {
+		return err
+	}
+	if err := fn(m); err != nil {
+		return err
+	}
+	return d.WriteManifest(m)
+}
+
+func sameDownload(a, b Download) bool {
+	if a.Type != b.Type || a.RunID != b.RunID {
+		return false
+	}
+	if (a.JobID == nil) != (b.JobID == nil) {
+		return false
+	}
+	if a.JobID != nil && *a.JobID != *b.JobID {
+		return false
+	}
+	return true
+}
+
 // Purge deletes all downloaded artifacts and clears the manifest holdings while
 // keeping the dataset shell. Lock files are never removed.
 func (d *Dataset) Purge() error {
