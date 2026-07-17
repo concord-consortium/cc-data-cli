@@ -63,6 +63,7 @@ type Download struct {
 	Scanned      []string          `json:"scanned,omitempty"`
 	RowCount     *int              `json:"row_count,omitempty"`
 	Columns      map[string]string `json:"columns,omitempty"`
+	ColumnOrder  []string          `json:"column_order,omitempty"` // CSVs: file column order (read_csv columns is positional)
 	CSVDialect   *CSVDialect       `json:"csv_dialect,omitempty"`
 	Recovered    bool              `json:"recovered,omitempty"`
 }

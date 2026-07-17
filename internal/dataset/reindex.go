@@ -147,22 +147,23 @@ func (d *Dataset) reindexCSV(name string) (Download, error) {
 		dlType = "report_job"
 	}
 	reportType, recovered := recoverReportType(d.Path(name))
-	rowCount, cols, dialect, err := DetectCSV(d.Path(name), reportType)
+	rowCount, cols, order, dialect, err := DetectCSV(d.Path(name), reportType)
 	if err != nil {
 		return Download{}, err
 	}
 	return Download{
-		Type:       dlType,
-		RunID:      run,
-		JobID:      jobID,
-		ReportType: reportType,
-		Files:      []string{name},
-		RowCount:   &rowCount,
-		Columns:    cols,
-		CSVDialect: &dialect,
-		Complete:   true,
-		Recovered:  recovered,
-		FetchedAt:  clock().UTC(),
+		Type:        dlType,
+		RunID:       run,
+		JobID:       jobID,
+		ReportType:  reportType,
+		Files:       []string{name},
+		RowCount:    &rowCount,
+		Columns:     cols,
+		ColumnOrder: order,
+		CSVDialect:  &dialect,
+		Complete:    true,
+		Recovered:   recovered,
+		FetchedAt:   clock().UTC(),
 	}, nil
 }
 

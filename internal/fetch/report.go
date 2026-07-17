@@ -73,7 +73,7 @@ func FetchReport(ctx context.Context, opts ReportOptions) (any, error) {
 		return nil, api.AsCLIError(err)
 	}
 
-	rowCount, columns, dialect, err := dataset.DetectCSV(tmpPath, reportType)
+	rowCount, columns, columnOrder, dialect, err := dataset.DetectCSV(tmpPath, reportType)
 	if err != nil {
 		os.Remove(tmpPath)
 		return nil, output.Internalf("detecting CSV columns: %v", err)
@@ -88,17 +88,18 @@ func FetchReport(ctx context.Context, opts ReportOptions) (any, error) {
 		dlType = typeReportJob
 	}
 	entry := dataset.Download{
-		Type:       dlType,
-		RunID:      opts.RunID,
-		JobID:      opts.JobID,
-		Slug:       run.ReportSlug,
-		ReportType: reportType,
-		Files:      []string{csvName},
-		RowCount:   &rowCount,
-		Columns:    columns,
-		CSVDialect: &dialect,
-		Complete:   true,
-		FetchedAt:  time.Now().UTC(),
+		Type:        dlType,
+		RunID:       opts.RunID,
+		JobID:       opts.JobID,
+		Slug:        run.ReportSlug,
+		ReportType:  reportType,
+		Files:       []string{csvName},
+		RowCount:    &rowCount,
+		Columns:     columns,
+		ColumnOrder: columnOrder,
+		CSVDialect:  &dialect,
+		Complete:    true,
+		FetchedAt:   time.Now().UTC(),
 	}
 	if err := opts.DS.UpsertDownload(entry); err != nil {
 		return nil, output.Internalf("recording download: %v", err)

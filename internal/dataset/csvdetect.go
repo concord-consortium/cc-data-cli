@@ -18,10 +18,10 @@ func DefaultCSVDialect() CSVDialect {
 // answers-type CSV the two pseudo-header rows (student_id in Prompt/Correct
 // answer) are excluded from row_count but included in type detection, since they
 // are real rows DuckDB reads.
-func DetectCSV(path, reportType string) (rowCount int, columns map[string]string, dialect CSVDialect, err error) {
+func DetectCSV(path, reportType string) (rowCount int, columns map[string]string, order []string, dialect CSVDialect, err error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return 0, nil, CSVDialect{}, err
+		return 0, nil, nil, CSVDialect{}, err
 	}
 	defer f.Close()
 
@@ -32,9 +32,9 @@ func DetectCSV(path, reportType string) (rowCount int, columns map[string]string
 	header, err := r.Read()
 	if err != nil {
 		if err == io.EOF {
-			return 0, map[string]string{}, DefaultCSVDialect(), nil
+			return 0, map[string]string{}, nil, DefaultCSVDialect(), nil
 		}
-		return 0, nil, CSVDialect{}, err
+		return 0, nil, nil, CSVDialect{}, err
 	}
 	cols := make([]string, len(header))
 	copy(cols, header)
@@ -48,7 +48,7 @@ func DetectCSV(path, reportType string) (rowCount int, columns map[string]string
 			break
 		}
 		if rerr != nil {
-			return 0, nil, CSVDialect{}, rerr
+			return 0, nil, nil, CSVDialect{}, rerr
 		}
 		pseudoHeader := isAnswers && studentIDCol >= 0 && studentIDCol < len(row) &&
 			(row[studentIDCol] == "Prompt" || row[studentIDCol] == "Correct answer")
@@ -68,7 +68,7 @@ func DetectCSV(path, reportType string) (rowCount int, columns map[string]string
 		}
 		columns[name] = t
 	}
-	return rowCount, columns, DefaultCSVDialect(), nil
+	return rowCount, columns, cols, DefaultCSVDialect(), nil
 }
 
 // CSV column types (a subset of the store types; no JSON in CSV).
