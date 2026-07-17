@@ -39,6 +39,35 @@ func RenderRows(w io.Writer, rows *sql.Rows, format string) error {
 	}
 }
 
+// CollectRows reads up to maxRows into JSON-friendly maps, reporting the total
+// row count and whether the result was truncated.
+func CollectRows(rows *sql.Rows, maxRows int) (cols []string, out []map[string]any, truncated bool, total int, err error) {
+	cols, err = rows.Columns()
+	if err != nil {
+		return nil, nil, false, 0, err
+	}
+	for rows.Next() {
+		total++
+		if total > maxRows {
+			truncated = true
+			continue
+		}
+		vals, serr := scanRow(rows, len(cols))
+		if serr != nil {
+			return nil, nil, false, 0, serr
+		}
+		obj := make(map[string]any, len(cols))
+		for i, c := range cols {
+			obj[c] = convert(vals[i])
+		}
+		out = append(out, obj)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, false, 0, err
+	}
+	return cols, out, truncated, total, nil
+}
+
 func scanRow(rows *sql.Rows, n int) ([]any, error) {
 	raw := make([]any, n)
 	ptrs := make([]any, n)

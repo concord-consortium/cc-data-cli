@@ -3,7 +3,6 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"sort"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -11,6 +10,7 @@ import (
 	"github.com/concord-consortium/cc-data-cli/internal/api"
 	"github.com/concord-consortium/cc-data-cli/internal/config"
 	"github.com/concord-consortium/cc-data-cli/internal/output"
+	"github.com/concord-consortium/cc-data-cli/internal/reportview"
 	"github.com/spf13/cobra"
 )
 
@@ -39,14 +39,6 @@ func resolvePortal(cfg *config.Config, flagVal string) (string, error) {
 	return host, nil
 }
 
-type reportRunJSON struct {
-	RunID        int      `json:"run_id"`
-	Slug         string   `json:"slug"`
-	State        string   `json:"state"`
-	ReportType   string   `json:"report_type,omitempty"`
-	FilterLabels []string `json:"filter_labels"`
-}
-
 func newReportsListCmd() *cobra.Command {
 	var portal string
 	var asJSON bool
@@ -72,11 +64,7 @@ func newReportsListCmd() *cobra.Command {
 				return api.AsCLIError(err)
 			}
 			if asJSON {
-				rows := make([]reportRunJSON, 0, len(runs))
-				for _, r := range runs {
-					rows = append(rows, toReportRunJSON(r))
-				}
-				return output.JSONLine(map[string]any{"runs": rows})
+				return output.JSONLine(reportview.Runs(runs))
 			}
 			renderRunsTable(runs)
 			return nil
@@ -116,7 +104,7 @@ func newReportsJobsCmd() *cobra.Command {
 				return api.AsCLIError(err)
 			}
 			if asJSON {
-				return output.JSONLine(map[string]any{"jobs": jobs})
+				return output.JSONLine(reportview.JobsPayload{Jobs: jobs})
 			}
 			renderJobsTable(jobs)
 			return nil
@@ -127,29 +115,15 @@ func newReportsJobsCmd() *cobra.Command {
 	return cmd
 }
 
-func toReportRunJSON(r api.ReportRun) reportRunJSON {
-	rt := ""
-	if r.ReportType != nil {
-		rt = *r.ReportType
-	}
-	return reportRunJSON{
-		RunID:        r.ID,
-		Slug:         r.ReportSlug,
-		State:        stateText(r.AthenaQueryState),
-		ReportType:   rt,
-		FilterLabels: filterLabels(r),
-	}
-}
-
 func renderRunsTable(runs []api.ReportRun) {
 	tw := tabwriter.NewWriter(output.Stdout(), 0, 2, 2, ' ', 0)
 	fmt.Fprintln(tw, "RUN\tSLUG\tSTATE\tFILTERS")
 	for _, r := range runs {
-		labels := strings.Join(filterLabels(r), ", ")
+		labels := strings.Join(reportview.FilterLabels(r), ", ")
 		if labels == "" {
 			labels = "-"
 		}
-		fmt.Fprintf(tw, "%d\t%s\t%s\t%s\n", r.ID, r.ReportSlug, stateText(r.AthenaQueryState), labels)
+		fmt.Fprintf(tw, "%d\t%s\t%s\t%s\n", r.ID, r.ReportSlug, reportview.StateText(r.AthenaQueryState), labels)
 	}
 	tw.Flush()
 }
@@ -161,49 +135,4 @@ func renderJobsTable(jobs []api.Job) {
 		fmt.Fprintf(tw, "%d\t%s\t%t\n", j.ID, j.Status, j.HasResult)
 	}
 	tw.Flush()
-}
-
-func stateText(s *string) string {
-	if s == nil || *s == "" {
-		return "(none)"
-	}
-	return *s
-}
-
-// filterLabels renders the run's resolved filter labels. A filter-less run
-// (programmatic run with a NULL filter normalized server-side to the empty
-// object) simply yields no labels.
-func filterLabels(r api.ReportRun) []string {
-	var labels []string
-	keys := make([]string, 0, len(r.ReportFilterValues))
-	for k := range r.ReportFilterValues {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		v := r.ReportFilterValues[k]
-		if s := labelValue(v); s != "" {
-			labels = append(labels, fmt.Sprintf("%s: %s", k, s))
-		}
-	}
-	return labels
-}
-
-func labelValue(v any) string {
-	switch t := v.(type) {
-	case nil:
-		return ""
-	case string:
-		return t
-	case []any:
-		var parts []string
-		for _, e := range t {
-			if s := labelValue(e); s != "" {
-				parts = append(parts, s)
-			}
-		}
-		return strings.Join(parts, "/")
-	default:
-		return fmt.Sprintf("%v", t)
-	}
 }
