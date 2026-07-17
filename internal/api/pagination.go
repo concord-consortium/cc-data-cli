@@ -13,6 +13,13 @@ const (
 	BulkPageMax        = 500
 )
 
+// pageQuery builds a bare limit-only query.
+func pageQuery(limit int) url.Values {
+	q := url.Values{}
+	q.Set("limit", strconv.Itoa(limit))
+	return q
+}
+
 // FetchPage fetches one keyset page of typed items. An empty token requests the
 // first page.
 func FetchPage[T any](ctx context.Context, c *Client, path string, limit int, token string, extra url.Values) (Page[T], error) {

@@ -42,6 +42,9 @@ func newRootCmd() *cobra.Command {
 		return &output.CLIError{ExitCode: output.ExitUsage, Code: "USAGE", Message: err.Error()}
 	})
 	root.AddCommand(newVersionCmd())
+	root.AddCommand(newLoginCmd())
+	root.AddCommand(newLogoutCmd())
+	root.AddCommand(newAuthCmd())
 	return root
 }
 
