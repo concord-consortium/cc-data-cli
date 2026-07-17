@@ -53,6 +53,27 @@ func (c *Client) GetReport(ctx context.Context, runID int) (*ReportRun, error) {
 	return &run, nil
 }
 
+// AttachmentRefReq is one presign request item.
+type AttachmentRefReq struct {
+	Collection string `json:"collection"`
+	Source     string `json:"source"`
+	DocID      string `json:"doc_id"`
+	Name       string `json:"name"`
+}
+
+// PresignAttachments batch-presigns attachment refs (server cap 500 items).
+func (c *Client) PresignAttachments(ctx context.Context, runID int, refs []AttachmentRefReq, disposition string) (*AttachmentResults, error) {
+	body := map[string]any{"attachments": refs}
+	if disposition != "" {
+		body["disposition"] = disposition
+	}
+	var out AttachmentResults
+	if err := c.postJSON(ctx, fmt.Sprintf("/api/v1/reports/%d/attachments", runID), body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // ReportDownloadEnvelope requests the presigned download envelope for a run's CSV
 // (or a job's CSV when jobID is non-nil). A not-ready run/job returns a coded
 // *APIError (NOT_READY) carrying its state.
