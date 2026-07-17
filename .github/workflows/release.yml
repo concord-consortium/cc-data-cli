@@ -1,0 +1,116 @@
+name: Release
+
+# Before the first tagged release, confirm the Apple Developer ID Application
+# certificate and App Store Connect API key exist and are set as the secrets
+# below (Admin/Account Holder access required to create them).
+#
+# Required secrets:
+#   MACOS_SIGN_IDENTITY, AC_API_KEY (base64 .p8), AC_API_KEY_ID, AC_API_ISSUER
+#   HOMEBREW_TAP_TOKEN (repo-scoped push token for concord-consortium/homebrew-tap)
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin_arm64
+            os: macos-15
+            goos: darwin
+            goarch: arm64
+            macos: true
+          - target: darwin_amd64
+            os: macos-15-intel
+            goos: darwin
+            goarch: amd64
+            macos: true
+          - target: linux_amd64
+            os: ubuntu-24.04
+            goos: linux
+            goarch: amd64
+            macos: false
+    env:
+      CGO_ENABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Render per-platform goreleaser config
+        run: scripts/gen-goreleaser.sh ${{ matrix.goos }} ${{ matrix.goarch }} .goreleaser.${{ matrix.target }}.yaml
+
+      - name: Prepare macOS signing key
+        if: matrix.macos
+        run: |
+          echo "${{ secrets.AC_API_KEY }}" | base64 --decode > "$RUNNER_TEMP/ac_api_key.p8"
+          echo "AC_API_KEY_PATH=$RUNNER_TEMP/ac_api_key.p8" >> "$GITHUB_ENV"
+
+      - name: Build, sign, notarize, archive
+        env:
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+          AC_API_KEY_ID: ${{ secrets.AC_API_KEY_ID }}
+          AC_API_ISSUER: ${{ secrets.AC_API_ISSUER }}
+        run: |
+          go run github.com/goreleaser/goreleaser/v2@latest release \
+            --clean --skip=publish -f .goreleaser.${{ matrix.target }}.yaml
+
+      - name: Fail the tag if a macOS artifact was left unsigned
+        if: matrix.macos
+        run: |
+          if find dist -name ".notarize-unsigned" | grep -q .; then
+            echo "a macOS artifact was not signed; failing the release" >&2
+            exit 1
+          fi
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*_checksums.txt
+            dist/*.sha256
+          if-no-files-found: warn
+
+  publish:
+    name: publish release + formula
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Verify checksums
+        run: |
+          cd dist
+          for f in *.tar.gz; do
+            shasum -a 256 "$f"
+          done
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" dist/*.tar.gz \
+            --title "${GITHUB_REF_NAME}" --generate-notes
+
+      - name: Render and push the Homebrew formula
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: scripts/render-formula.sh "${GITHUB_REF_NAME}"

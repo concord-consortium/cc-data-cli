@@ -1,0 +1,49 @@
+# Base goreleaser config. scripts/gen-goreleaser.sh fills the single
+# builds.goos/goarch block per platform (free goreleaser has no single-target
+# release mode, so each native runner builds only its own target). The GOOS and
+# GOARCH placeholder tokens below are substituted per platform.
+version: 2
+
+project_name: cc-data
+
+builds:
+  - id: cc-data
+    main: .
+    binary: cc-data
+    env:
+      - CGO_ENABLED=1
+    goos:
+      - __GOOS__
+    goarch:
+      - __GOARCH__
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+    # Sign + notarize macOS binaries before archiving (the ordering is
+    # load-bearing: signing after archiving would ship an unsigned binary inside
+    # a signed-looking release). notarize.sh no-ops on non-Mach-O binaries.
+    hooks:
+      post:
+        - cmd: scripts/notarize.sh "{{ .Path }}"
+
+archives:
+  - id: cc-data
+    ids:
+      - cc-data
+    formats:
+      - tar.gz
+    name_template: "cc-data_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  # split: one checksum file per artifact (a free feature; the Pro merge step is
+  # replaced by the final publish job assembling the release).
+  split: true
+
+release:
+  # Each per-platform job runs with --skip=publish; the final publish job in the
+  # release workflow assembles the GitHub release and renders the Homebrew formula.
+  disable: true
+
+changelog:
+  disable: true
