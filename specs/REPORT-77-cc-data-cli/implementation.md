@@ -2,7 +2,7 @@
 
 **Jira**: https://concord-consortium.atlassian.net/browse/REPORT-77
 **Requirements Spec**: [requirements.md](requirements.md)
-**Status**: **In Development**
+**Status**: **Implemented** (see the As-Built Deviations section at the end for the small structural differences from this plan)
 
 Covers all requirements subtasks: (a) foundation and auth, (b) datasets/stores/summaries, (d/d2) the fetch commands, (c) the DuckDB query layer, (e) Claude integration, (f) sensitive-data documentation, and (g) the release pipeline. All wire shapes below were re-verified against the report-service working tree (branch `REPORT-77-cli-server-support`) on 2026-07-16; where a shape is specced-but-not-landed server work, it is marked as such.
 
@@ -1254,3 +1254,64 @@ Confirmed exact against the branch: auth params and `redirect_uri` validation, t
 **Severity: low.** (1) `wire-captures.md`'s pinned commit had drifted five commits behind report-service HEAD; the captured behaviors were re-verified at HEAD and a re-pin note added. (2) Commit `2cefdee` (post-dating the spec's 2026-07-16 verification) confirmed programmatically created runs store a `NULL report_filter` and appear in the run list; `report_json.ex` normalizes `nil` to the empty filter, so the CLI is safe, but the spec never named this run class. (3) `report_type` is server-computed from the slug (`report_json.ex` `Tree.find_report`), not a stored column, making the CLI's slug-fallback identical to the server's own derivation.
 
 **Resolution**: `wire-captures.md` re-pinned to `7a8c550` with a re-verification note; the requirements Listing bullet, the get-report / reports-list steps, and the `ReportRun` wire struct now note that `report_filter` is always a full object (nil normalized server-side) so filter-less runs render with zero labels; and the requirements `report_type` bullet plus the `ReportRun.ReportType` comment now state it is a render-time slug derivation, so "owed by this story" means a deployed build predating the view, not a persisted field.
+
+---
+
+## As-Built Deviations (implementation, 2026-07-17)
+
+The implementation follows this plan except for the following small, deliberate
+structural differences, each forced by the Go toolchain or by a verified DuckDB
+behavior rather than by a design change:
+
+1. **Merge-compact orchestration lives in `internal/dataset/merge.go`, not
+   `internal/store/merge.go`.** The pure two-way merge (`StreamMerge`, the
+   column detector, segment index, identity encoding, membership file IO, and the
+   lock guards) stays in `internal/store` and imports nothing from `internal/dataset`.
+   The orchestration (`MergeCompact`, `MembershipUnion`, `WriteMembership`,
+   `CurrentStore`, `cleanupOldVersions`, the backlog sweep, and the five-boundary
+   durable-write sequence) is a set of `*dataset.Dataset` methods in
+   `internal/dataset/merge.go`, because it reads/writes the manifest and holds the
+   locks. `internal/dataset` imports `internal/store`; `internal/store` never
+   imports `internal/dataset`, which is the only way to keep both the manifest
+   types and the storage engine free of an import cycle. `internal/store/lock.go`
+   is unchanged from the plan (the guards are pure, path-based).
+
+2. **`streamMerge`'s return shape is a `store.MergeResult` struct, not the bare
+   `(MergeCounts, total, cols, err)` tuple.** `MergeResult` carries per-run counts
+   (`PerRun map[int]MergeCounts`), the dataset-level `Removed`, the store `Total`,
+   and the derived `Columns`. This is what lets the backlog sweep attribute new/
+   updated counts to the owning run of each swept segment in a single k-way pass;
+   the single-segment path just reads `PerRun[runID]`. Functionally identical to
+   the plan's stated outputs, wider only to serve the sweep.
+
+3. **A `Download.ColumnOrder []string` manifest field was added.** DuckDB's
+   `read_csv` `columns={...}` parameter is applied **positionally** (the header
+   row is skipped and column names/types come from `columns` in order), verified
+   empirically against the bundled engine. A Go map loses order, so the CSV column
+   order is recorded alongside `Columns`/`CSVDialect` and the report-view builders
+   emit the columns map in that order. `read_json` (stores/membership) remains
+   order-independent, so `Store.Columns` stays a plain map. This corrects a real
+   correctness bug (scrambled CSV columns) that the plan's map-only design would
+   have shipped.
+
+4. **An `internal/reportview` package was added.** The `reports list`/`reports
+   jobs` JSON shaping (run id, slug, state, resolved filter labels) that the plan
+   left in the CLI command is factored into `internal/reportview` so the CLI
+   `--json` output and the MCP `reports_list`/`reports_jobs` tools call the exact
+   same code, guaranteeing the payload-parity the MCP step requires. `dataset
+   show`/`list` and `auth status` already shared their builders (`dataset.BuildShowJSON`
+   / `BuildListJSON` / `auth.Status`), so only the reports listing needed extracting.
+
+5. **`WriteFileAtomic0600` uses `os.CreateTemp` (mode 0600) rather than a
+   fixed-name `O_EXCL` temp.** `os.CreateTemp` opens the temp file with
+   `O_CREATE|O_EXCL|O_RDWR` and perm 0600, satisfying the plan's requirement that a
+   sensitive file is never created with a broader mode even transiently, while
+   avoiding a fixed-name collision. The `.tmp`-mode assertion in the fsutil test
+   is preserved.
+
+Everything else — the command surface, exit-code contract, stream discipline,
+auth flow, retry/error classification, never-duplicate merge engine with its
+crash-safety write order and backlog sweep, the paged fetches, attachments,
+summaries, reindex, the locked DuckDB sandbox and views, query/repl, the Claude
+skill lifecycle, the MCP tool surface with its confirm guard and capability-flag
+exclusions, and the release pipeline — matches this plan.

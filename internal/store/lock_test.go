@@ -93,7 +93,9 @@ func TestDownloadLockSameRunExclusion(t *testing.T) {
 
 func TestDatasetLockSameInstanceIsSingleton(t *testing.T) {
 	dir := t.TempDir()
-	if DatasetLockFor(dir) != DatasetLockFor(dir) {
+	first := DatasetLockFor(dir)
+	second := DatasetLockFor(dir)
+	if first != second {
 		t.Fatal("DatasetLockFor should return the same guard per path")
 	}
 }
