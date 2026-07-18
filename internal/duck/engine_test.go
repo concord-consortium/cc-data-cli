@@ -252,12 +252,13 @@ func TestEngineDataRootWithQuote(t *testing.T) {
 func TestEngineBrokenArtifactDegrades(t *testing.T) {
 	d := newDS(t, "ds")
 	buildStore(t, d, 584, [][]byte{answerRec("s", "e1", "q1", "hi")})
-	// Record a CSV download whose file is missing on disk.
+	// A present report CSV plus a recorded-but-missing one.
+	addReportCSV(t, d, 500, "usage", "student_id,logins\n1,5\n2,7\n")
 	rc := 1
 	d.UpsertDownload(dataset.Download{
-		Type: "report", RunID: 700, ReportType: "answers", Files: []string{"report_700.csv"},
-		RowCount: &rc, Columns: map[string]string{"student_id": "BIGINT", "x_answer": "VARCHAR"},
-		CSVDialect: ptrDialect(), Complete: true,
+		Type: "report", RunID: 700, ReportType: "usage", Files: []string{"report_700.csv"},
+		RowCount: &rc, Columns: map[string]string{"student_id": "BIGINT", "logins": "BIGINT"},
+		ColumnOrder: []string{"student_id", "logins"}, CSVDialect: ptrDialect(), Complete: true,
 	})
 	var warn strings.Builder
 	e, err := Open(context.Background(), []DatasetSpec{{DS: d}}, nil, &warn)
@@ -265,9 +266,32 @@ func TestEngineBrokenArtifactDegrades(t *testing.T) {
 		t.Fatalf("one broken CSV should not fail the session: %v", err)
 	}
 	defer e.Close()
-	// The store view still works; reports degrades but the session is alive.
+	// The store view still works.
 	if n := queryInt(t, e, "SELECT count(*) FROM answers"); n != 1 {
 		t.Fatalf("answers should still query, got %d", n)
+	}
+	// The present CSV still contributes its rows; the missing one contributes zero
+	// (not a whole-union collapse).
+	if n := queryInt(t, e, "SELECT count(*) FROM reports"); n != 2 {
+		t.Fatalf("reports should keep the present CSV's 2 rows despite the missing CSV, got %d", n)
+	}
+	if !strings.Contains(warn.String(), "report_700.csv is missing") {
+		t.Fatalf("expected a missing-CSV warning naming the file, got: %s", warn.String())
+	}
+}
+
+func TestEngineQuarantineWarns(t *testing.T) {
+	d := newDS(t, "ds")
+	addReportCSV(t, d, 584, "answers", "student_id,x_answer\nPrompt,p\nCorrect answer,c\n1,a\n")
+	addReportCSV(t, d, 999, "brand-new-type", "student_id,y\n1,5\n")
+	var warn strings.Builder
+	e, err := Open(context.Background(), []DatasetSpec{{DS: d}}, nil, &warn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Close()
+	if !strings.Contains(warn.String(), "brand-new-type") {
+		t.Fatalf("quarantined run should warn at registration, got: %s", warn.String())
 	}
 }
 

@@ -80,7 +80,7 @@ func Open(ctx context.Context, datasets []DatasetSpec, allowDirs []string, warnO
 			return nil, err
 		}
 		canon, _ := canonicalize(ds.DS.Dir)
-		vs := viewSet{prefix: prefix, canonDir: canon, m: m}
+		vs := viewSet{prefix: prefix, canonDir: canon, m: m, warn: warnOut}
 		for _, stmt := range vs.statements() {
 			if _, err := conn.ExecContext(ctx, stmt.primary); err != nil {
 				if _, ferr := conn.ExecContext(ctx, stmt.fallback); ferr != nil {

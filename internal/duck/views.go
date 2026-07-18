@@ -2,6 +2,8 @@ package duck
 
 import (
 	"fmt"
+	"io"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -40,6 +42,13 @@ type viewSet struct {
 	prefix   string // "" for the default schema, or `"name".`
 	canonDir string
 	m        *dataset.Manifest
+	warn     io.Writer
+}
+
+func (vs viewSet) warnf(format string, args ...any) {
+	if vs.warn != nil {
+		fmt.Fprintf(vs.warn, "warning: "+format+"\n", args...)
+	}
 }
 
 func (vs viewSet) statements() []viewStmt {
@@ -60,24 +69,49 @@ func (vs viewSet) file(rel string) string {
 	return sqlStr(filepath.Join(vs.canonDir, rel))
 }
 
-// reportsView builds the reports UNION over allowlisted per-run CSVs.
+// reportsView builds the reports UNION over allowlisted per-run CSVs. A run whose
+// report_type is outside the allowlist is quarantined with a warning; a CSV whose
+// file is missing degrades to a typed-empty stand-in from its recorded columns
+// (contributing zero rows) rather than collapsing the whole union.
 func (vs viewSet) reportsView() viewStmt {
+	return vs.reportUnionView(`"reports"`, true, func(dl dataset.Download) bool {
+		if !dataset.IsAllowedReportType(dl.ReportType) {
+			vs.warnf("run %d report_type %q is unknown to this cc-data version; excluded from the reports view (upgrade suggested)", dl.RunID, dl.ReportType)
+			return false
+		}
+		return true
+	})
+}
+
+// reportPromptsView exposes the two pseudo-header rows of answers-type CSVs.
+func (vs viewSet) reportPromptsView() viewStmt {
+	return vs.reportUnionView(`"report_prompts"`, false, func(dl dataset.Download) bool {
+		return dl.ReportType == dataset.ReportTypeAnswers
+	})
+}
+
+// reportUnionView builds a union over the report CSVs the include predicate
+// admits, using a typed-empty stand-in for any CSV whose file is missing so one
+// broken artifact costs its rows, never the session or the union's schema.
+func (vs viewSet) reportUnionView(bare string, keepData bool, include func(dataset.Download) bool) viewStmt {
 	var members []string
 	var files []string
 	for _, dl := range vs.m.Downloads {
-		if dl.Type != "report" {
-			continue // job CSVs excluded
-		}
-		if !dataset.IsAllowedReportType(dl.ReportType) {
-			continue // quarantined
-		}
-		if len(dl.Files) == 0 || dl.Columns == nil {
+		if dl.Type != "report" || len(dl.Files) == 0 || dl.Columns == nil {
 			continue
 		}
-		members = append(members, vs.csvScan(dl, true))
+		if !include(dl) {
+			continue
+		}
+		if fileMissing(filepath.Join(vs.canonDir, dl.Files[0])) {
+			vs.warnf("report CSV %s is missing on disk; contributing zero rows to %s (run cc-data dataset reindex)", dl.Files[0], strings.Trim(bare, `"`))
+			members = append(members, vs.csvEmptyMember(dl))
+		} else {
+			members = append(members, vs.csvScan(dl, keepData))
+		}
 		files = append(files, dl.Files...)
 	}
-	name := vs.prefix + `"reports"`
+	name := vs.prefix + bare
 	fallback := fmt.Sprintf("CREATE VIEW %s AS SELECT CAST(NULL AS BIGINT) AS run_id WHERE false", name)
 	if len(members) == 0 {
 		return viewStmt{name: name, primary: fallback, fallback: fallback}
@@ -86,27 +120,29 @@ func (vs viewSet) reportsView() viewStmt {
 	return viewStmt{name: name, primary: primary, fallback: fallback, files: files}
 }
 
-// reportPromptsView exposes the two pseudo-header rows of answers-type CSVs.
-func (vs viewSet) reportPromptsView() viewStmt {
-	var members []string
-	var files []string
-	for _, dl := range vs.m.Downloads {
-		if dl.Type != "report" || dl.ReportType != dataset.ReportTypeAnswers {
-			continue
+// csvEmptyMember is a zero-row scan carrying the CSV's recorded schema plus
+// run_id, so a missing CSV keeps its columns in the union.
+func (vs viewSet) csvEmptyMember(dl dataset.Download) string {
+	cols := make([]string, 0, len(dl.Columns)+1)
+	cols = append(cols, fmt.Sprintf("CAST(%d AS BIGINT) AS run_id", dl.RunID))
+	order := dl.ColumnOrder
+	if len(order) == 0 {
+		for k := range dl.Columns {
+			order = append(order, k)
 		}
-		if len(dl.Files) == 0 || dl.Columns == nil {
-			continue
+		sort.Strings(order)
+	}
+	for _, k := range order {
+		if t, ok := dl.Columns[k]; ok {
+			cols = append(cols, fmt.Sprintf("CAST(NULL AS %s) AS %s", t, sqlIdent(k)))
 		}
-		members = append(members, vs.csvScan(dl, false))
-		files = append(files, dl.Files...)
 	}
-	name := vs.prefix + `"report_prompts"`
-	fallback := fmt.Sprintf("CREATE VIEW %s AS SELECT CAST(NULL AS BIGINT) AS run_id WHERE false", name)
-	if len(members) == 0 {
-		return viewStmt{name: name, primary: fallback, fallback: fallback}
-	}
-	primary := fmt.Sprintf("CREATE VIEW %s AS %s", name, strings.Join(members, "\nUNION ALL BY NAME\n"))
-	return viewStmt{name: name, primary: primary, fallback: fallback, files: files}
+	return "SELECT " + strings.Join(cols, ", ") + " WHERE false"
+}
+
+func fileMissing(path string) bool {
+	_, err := os.Stat(path)
+	return err != nil
 }
 
 // csvScan builds one per-run CSV SELECT. When keepData is true the pseudo-header
