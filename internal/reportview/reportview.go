@@ -83,15 +83,36 @@ func labelValue(v any) string {
 		return ""
 	case string:
 		return t
+	case bool:
+		return fmt.Sprintf("%v", t)
+	case float64:
+		return strings.TrimSuffix(fmt.Sprintf("%v", t), ".0")
 	case []any:
-		var parts []string
-		for _, e := range t {
-			if s := labelValue(e); s != "" {
-				parts = append(parts, s)
-			}
+		return joinLabels(t)
+	case map[string]any:
+		// A resolved id->label map (e.g. assignment id -> title); render the
+		// labels, not the raw map, in a stable order.
+		keys := make([]string, 0, len(t))
+		for k := range t {
+			keys = append(keys, k)
 		}
-		return strings.Join(parts, "/")
+		sort.Strings(keys)
+		vals := make([]any, 0, len(keys))
+		for _, k := range keys {
+			vals = append(vals, t[k])
+		}
+		return joinLabels(vals)
 	default:
 		return fmt.Sprintf("%v", t)
 	}
+}
+
+func joinLabels(items []any) string {
+	var parts []string
+	for _, e := range items {
+		if s := labelValue(e); s != "" {
+			parts = append(parts, s)
+		}
+	}
+	return strings.Join(parts, "/")
 }

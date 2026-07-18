@@ -22,6 +22,22 @@ func TestFilterLabels(t *testing.T) {
 	}
 }
 
+func TestFilterLabelsResolvedMap(t *testing.T) {
+	// A resolved id->label map (as the server sends for assignment/teacher) must
+	// render its labels, not the raw Go map.
+	run := api.ReportRun{
+		ReportFilterValues: map[string]any{
+			"assignment": map[string]any{"573": "Demo Saved Interactive State History"},
+			"teacher":    map[string]any{"14": "Doug Martin"},
+		},
+	}
+	got := FilterLabels(run)
+	want := []string{"assignment: Demo Saved Interactive State History", "teacher: Doug Martin"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("FilterLabels = %v, want %v", got, want)
+	}
+}
+
 func TestFilterlessRunHasNoLabels(t *testing.T) {
 	run := api.ReportRun{ReportFilterValues: map[string]any{}}
 	if got := FilterLabels(run); len(got) != 0 {
