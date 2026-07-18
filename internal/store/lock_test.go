@@ -84,10 +84,14 @@ func TestDownloadLockSameRunExclusion(t *testing.T) {
 		t.Fatal("second same-run download lock should fail")
 	}
 	// A different download (job-qualified) proceeds.
-	other, err := DownloadLockFor(dir, "seg_report_job_584_2.lock").TryLock()
-	if err != nil || !other {
+	other := DownloadLockFor(dir, "seg_report_job_584_2.lock")
+	okOther, err := other.TryLock()
+	if err != nil || !okOther {
 		t.Fatalf("different download lock should succeed: %v", err)
 	}
+	// Release both locks so their flock file handles close before t.TempDir
+	// cleanup (Windows cannot delete a file with an open handle).
+	other.Unlock()
 	l.Unlock()
 }
 
