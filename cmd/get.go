@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"fmt"
+
 	"github.com/concord-consortium/cc-data-cli/internal/api"
 	"github.com/concord-consortium/cc-data-cli/internal/dataset"
 	"github.com/concord-consortium/cc-data-cli/internal/output"
@@ -39,9 +41,14 @@ func openDatasetForFetch(datasetRef string) (*dataset.Dataset, *api.Client, erro
 	return d, client, nil
 }
 
-// emitResult writes a fetch's result-line value to stdout when present.
+// emitResult writes a fetch's result-line value to stdout when present. A write
+// failure (e.g. a broken pipe to a downstream consumer) is reported to stderr so
+// the dropped machine output is never silent.
 func emitResult(result any) {
-	if result != nil {
-		output.ResultLine(result)
+	if result == nil {
+		return
+	}
+	if err := output.ResultLine(result); err != nil {
+		fmt.Fprintf(output.Stderr(), "warning: could not write result line: %v\n", err)
 	}
 }

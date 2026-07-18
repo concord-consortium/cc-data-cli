@@ -8,10 +8,14 @@ TAG="${1:?tag required}"
 VERSION="${TAG#v}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMPL="${HERE}/packaging/cc-data.rb.tmpl"
-OUT="${HERE}/dist/cc-data.rb"
+DIST="${HERE}/dist"
+OUT="${DIST}/cc-data.rb"
+
+mkdir -p "${DIST}"
 
 sha_for() {
-  local artifact="dist/cc-data_${VERSION}_${1}.tar.gz"
+  # Resolve artifacts against the repo root so the script works from any CWD.
+  local artifact="${DIST}/cc-data_${VERSION}_${1}.tar.gz"
   if [[ ! -f "${artifact}" ]]; then
     echo "missing artifact ${artifact}" >&2
     exit 1
@@ -39,10 +43,21 @@ if [[ -z "${TAP_TOKEN:-}" ]]; then
 fi
 
 TAP_DIR="$(mktemp -d)"
-git clone "https://x-access-token:${TAP_TOKEN}@github.com/concord-consortium/homebrew-tap.git" "${TAP_DIR}"
+
+# Supply the token via GIT_ASKPASS so it never appears in the clone URL, argv, or
+# process listings. The askpass helper reads TAP_TOKEN from the environment.
+ASKPASS="$(mktemp)"
+printf '#!/bin/sh\nprintf %%s "%s"\n' '$TAP_TOKEN' > "${ASKPASS}"
+chmod 700 "${ASKPASS}"
+cleanup() { rm -f "${ASKPASS}"; }
+trap cleanup EXIT
+
+GIT_ASKPASS="${ASKPASS}" GIT_TERMINAL_PROMPT=0 TAP_TOKEN="${TAP_TOKEN}" \
+  git clone "https://x-access-token@github.com/concord-consortium/homebrew-tap.git" "${TAP_DIR}"
+
 mkdir -p "${TAP_DIR}/Formula"
 cp "${OUT}" "${TAP_DIR}/Formula/cc-data.rb"
 cd "${TAP_DIR}"
 git add Formula/cc-data.rb
 git -c user.name="cc-data release" -c user.email="noreply@concord.org" commit -m "cc-data ${VERSION}"
-git push
+GIT_ASKPASS="${ASKPASS}" GIT_TERMINAL_PROMPT=0 TAP_TOKEN="${TAP_TOKEN}" git push

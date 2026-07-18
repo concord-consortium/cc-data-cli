@@ -59,14 +59,27 @@ function startLogin() {
       env: { ...process.env, HOME, CC_DATA_NO_BROWSER: "1" },
     });
     let stderr = "";
+    let resolved = false;
     const done = new Promise((res) => child.on("close", (code) => res(code)));
+    const timer = setTimeout(() => {
+      if (!resolved) {
+        child.kill(); // do not orphan a login waiting on its 5-minute callback
+        reject(new Error("login did not print an auth URL in time"));
+      }
+    }, 30_000);
     child.stderr.on("data", (d) => {
       stderr += d;
       const m = stderr.match(/https?:\/\/\S*\/auth\/cli\?\S+/);
-      if (m) resolve({ child, authURL: m[0], exit: done });
+      if (m && !resolved) {
+        resolved = true;
+        clearTimeout(timer);
+        resolve({ child, authURL: m[0], exit: done });
+      }
     });
-    child.on("error", reject);
-    setTimeout(() => reject(new Error("login did not print an auth URL in time")), 30_000);
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
   });
 }
 

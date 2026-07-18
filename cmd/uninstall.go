@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/concord-consortium/cc-data-cli/internal/auth"
 	"github.com/concord-consortium/cc-data-cli/internal/claude"
@@ -14,6 +15,9 @@ import (
 	"github.com/concord-consortium/cc-data-cli/internal/output"
 	"github.com/spf13/cobra"
 )
+
+// revokeTimeout bounds each portal's server-side revoke during uninstall.
+const revokeTimeout = 20 * time.Second
 
 func newUninstallCmd() *cobra.Command {
 	var removeCreds bool
@@ -53,7 +57,13 @@ func removeCredentials(errOut io.Writer) {
 	infos, err := store.List()
 	if err == nil {
 		for _, info := range infos {
-			if lerr := auth.Logout(context.Background(), info.Portal, errOut); lerr != nil {
+			// Bound each revoke so an offline or captive network cannot hang
+			// uninstall for minutes per portal (the API client has no overall
+			// timeout, only per-attempt deadlines across its retry budget).
+			ctx, cancel := context.WithTimeout(context.Background(), revokeTimeout)
+			lerr := auth.Logout(ctx, info.Portal, errOut)
+			cancel()
+			if lerr != nil {
 				fmt.Fprintf(errOut, "warning: could not revoke token for %s: %v (it may still be active; revoke it in the token UI)\n", info.Portal, lerr)
 			}
 		}
