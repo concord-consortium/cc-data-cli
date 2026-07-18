@@ -58,7 +58,12 @@ func sleepCtx(ctx context.Context, d time.Duration) {
 	}
 }
 
-const maxBodyBytes = 8 << 20
+// maxBodyBytes bounds JSON API responses. Bulk answers/history pages use an
+// ~8 MiB server byte budget for items; with envelope overhead a page can exceed
+// 8 MiB, so the cap is set well above it to avoid truncating a valid page into
+// invalid JSON. Presigned downloads (CSV/attachment bytes) stream separately and
+// are not bounded by this.
+const maxBodyBytes = 64 << 20
 
 // do runs a request under the retry policy and returns the 2xx body, or a typed
 // *APIError (contract) / *TransientError (budget exhausted).
