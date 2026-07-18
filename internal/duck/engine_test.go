@@ -275,3 +275,29 @@ func ptrDialect() *dataset.CSVDialect {
 	dl := dataset.DefaultCSVDialect()
 	return &dl
 }
+
+func TestResolveSchemasLegacyMainRequiresAlias(t *testing.T) {
+	root := t.TempDir()
+	// A legacy dataset named "main" (constructed via Open, bypassing the create
+	// validator) must require an alias in a multi-dataset registration.
+	specs := []DatasetSpec{
+		{DS: dataset.Open(root, dataset.Ref{Portal: "learn.concord.org", Name: "wildfire"})},
+		{DS: dataset.Open(root, dataset.Ref{Portal: "learn.concord.org", Name: "main"})},
+	}
+	if _, err := resolveSchemas(specs); err == nil {
+		t.Fatal("a legacy dataset named main should require an alias")
+	}
+	// With an alias it resolves.
+	specs[1].Alias = "main2"
+	schemas, err := resolveSchemas(specs)
+	if err != nil {
+		t.Fatalf("alias should resolve the reserved name: %v", err)
+	}
+	if schemas[1] != "main2" {
+		t.Fatalf("aliased schema = %q", schemas[1])
+	}
+	// A single dataset named main uses the default schema and is fine.
+	if _, err := resolveSchemas([]DatasetSpec{{DS: dataset.Open(root, dataset.Ref{Portal: "p", Name: "main"})}}); err != nil {
+		t.Fatalf("single main dataset should be allowed: %v", err)
+	}
+}

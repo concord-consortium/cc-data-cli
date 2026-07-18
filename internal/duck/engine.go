@@ -136,15 +136,28 @@ func (e *Engine) Close() error {
 	return nil
 }
 
+// reservedSchemaNames are DuckDB built-in schemas a multi-dataset registration
+// cannot use as a dataset schema; a legacy dataset named one of these (created
+// before the name validator excluded them) must supply a pre=<ref> alias.
+var reservedSchemaNames = map[string]bool{
+	"main": true, "temp": true, "system": true, "information_schema": true, "pg_catalog": true,
+}
+
 // resolveSchemas assigns a schema name per dataset (alias or dataset name),
-// erroring on collisions so they must be disambiguated with pre=<ref>.
+// erroring on collisions and reserved names so they must be disambiguated with
+// pre=<ref>. Only meaningful for multi-dataset registration.
 func resolveSchemas(datasets []DatasetSpec) ([]string, error) {
 	schemas := make([]string, len(datasets))
 	seen := map[string]int{}
+	multi := len(datasets) > 1
 	for i, ds := range datasets {
 		name := ds.Alias
 		if name == "" {
 			name = ds.DS.Ref.Name
+		}
+		if multi && ds.Alias == "" && reservedSchemaNames[name] {
+			return nil, fmt.Errorf("dataset %s uses the reserved DuckDB schema name %q; give it an alias with pre=<alias>=%s",
+				ds.DS.Ref, name, ds.DS.Ref)
 		}
 		if prev, ok := seen[name]; ok {
 			return nil, fmt.Errorf("dataset schema name %q collides (datasets %s and %s); disambiguate with pre=<ref>",
