@@ -2,6 +2,7 @@ package dataset
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/concord-consortium/cc-data-cli/internal/store"
@@ -37,6 +38,65 @@ func TestReindexReproducesHoldings(t *testing.T) {
 	}
 	if m.Stores["answers"].Columns["data"] != store.TypeVARCHAR {
 		t.Fatalf("reindex should re-derive columns: %+v", m.Stores["answers"].Columns)
+	}
+}
+
+// TestReindexPreservesManifestProvenance covers Option C: when reindex has the
+// existing manifest in hand, it must carry forward label provenance (report_type,
+// slug) and not flag the entry recovered. The CSV shape here is ambiguous
+// (student_id, no pseudo-header rows) so shape-based recovery alone would return
+// the distinguished "recovered" type with recovered=true.
+func TestReindexPreservesManifestProvenance(t *testing.T) {
+	d := newDataset(t)
+	os.WriteFile(d.Path("report_219.csv"), []byte("student_id,logins\n1,5\n2,7\n"), 0o600)
+
+	// A manifest download carrying authoritative provenance, as a real fetch writes.
+	if err := d.UpdateManifest(func(m *Manifest) error {
+		m.Downloads = append(m.Downloads, Download{
+			Type:       "report",
+			RunID:      219,
+			Slug:       "usage-report",
+			ReportType: ReportTypeUsage,
+			Files:      []string{"report_219.csv"},
+			Complete:   true,
+			Recovered:  false,
+			FetchedAt:  fixedClock(),
+		})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := d.Reindex(); err != nil {
+		t.Fatal(err)
+	}
+	m, err := d.ReadManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got *Download
+	for i := range m.Downloads {
+		if m.Downloads[i].Type == "report" && m.Downloads[i].RunID == 219 {
+			got = &m.Downloads[i]
+		}
+	}
+	if got == nil {
+		t.Fatal("report download missing after reindex")
+	}
+	if got.Recovered {
+		t.Fatal("reindex must not flag recovered when the manifest carried authoritative provenance")
+	}
+	if got.ReportType != ReportTypeUsage {
+		t.Fatalf("report_type not preserved: got %q, want %q", got.ReportType, ReportTypeUsage)
+	}
+	if got.Slug != "usage-report" {
+		t.Fatalf("slug not preserved: got %q", got.Slug)
+	}
+	// And no spurious RECOVERED_PROVENANCE warning.
+	for _, w := range driftWarnings(d, m) {
+		if strings.HasPrefix(w, "RECOVERED_PROVENANCE") {
+			t.Fatalf("unexpected warning: %s", w)
+		}
 	}
 }
 

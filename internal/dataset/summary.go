@@ -210,8 +210,11 @@ func driftWarnings(d *Dataset, m *Manifest) []string {
 		if !dl.Complete {
 			warnings = append(warnings, "INCOMPLETE: a "+dl.Type+" download for run "+itoa(dl.RunID)+" did not finish")
 		}
-		if dl.Recovered {
-			warnings = append(warnings, "RECOVERED_PROVENANCE: run "+itoa(dl.RunID)+" type recovered without provenance; re-fetch to restore the exact report_type")
+		// report_type is provenance only report/report_job downloads carry; store
+		// downloads (answers/history) have none, so the recovered flag there is not
+		// a provenance gap and must not raise this warning.
+		if dl.Recovered && (dl.Type == "report" || dl.Type == "report_job") {
+			warnings = append(warnings, "RECOVERED_PROVENANCE: run "+itoa(dl.RunID)+" report_type recovered without provenance; re-fetch to restore the exact report_type")
 		}
 		if (dl.Type == "report" || dl.Type == "report_job") && dl.ReportType != "" && !IsAllowedReportType(dl.ReportType) {
 			warnings = append(warnings, "UNKNOWN_TYPE: run "+itoa(dl.RunID)+" report_type "+dl.ReportType+" is unknown to this cc-data version and excluded from the reports view; upgrade suggested")

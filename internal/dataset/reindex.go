@@ -101,23 +101,30 @@ func (d *Dataset) Reindex() error {
 	}
 
 	// Rebuild downloads: one per adopted membership (answers/history), one per CSV.
+	// Label provenance (report_type, slug, filters, source_key, history_mode) is
+	// not on disk, so a reindex that still has the old manifest carries it forward
+	// rather than discarding it and flagging the entry recovered. Disk-derived
+	// fields are always rebuilt from the filesystem below.
+	prior := d.priorDownloadIndex()
 	m.Downloads = nil
 	for key := range newestMember {
 		typ, run, ok := parseMembershipKey(key)
 		if !ok {
 			continue
 		}
-		m.Downloads = append(m.Downloads, Download{
+		dl := Download{
 			Type:      typ,
 			RunID:     run,
 			Complete:  true,
 			Recovered: true,
 			FetchedAt: clock().UTC(),
-		})
+		}
+		carryProvenance(&dl, prior[downloadKey(typ, run, nil)])
+		m.Downloads = append(m.Downloads, dl)
 	}
 	sort.Strings(csvs)
 	for _, name := range csvs {
-		dl, derr := d.reindexCSV(name)
+		dl, derr := d.reindexCSV(name, prior)
 		if derr != nil {
 			return derr
 		}
@@ -151,7 +158,76 @@ func (d *Dataset) reindexIdentity() *Manifest {
 	}
 }
 
-func (d *Dataset) reindexCSV(name string) (Download, error) {
+// dlKey identifies a download for provenance carry-forward (job -1 means none).
+type dlKey struct {
+	typ string
+	run int
+	job int
+}
+
+func downloadKey(typ string, run int, jobID *int) dlKey {
+	job := -1
+	if jobID != nil {
+		job = *jobID
+	}
+	return dlKey{typ: typ, run: run, job: job}
+}
+
+// priorDownloadIndex reads the existing manifest (if any) and indexes its
+// downloads by identity so reindex can carry provenance forward. An absent or
+// unreadable manifest yields an empty index (the disaster-recovery path, where
+// there is nothing to carry and entries stay recovered).
+func (d *Dataset) priorDownloadIndex() map[dlKey]Download {
+	idx := map[dlKey]Download{}
+	m, err := d.ReadManifest()
+	if err != nil {
+		return idx
+	}
+	for _, dl := range m.Downloads {
+		idx[downloadKey(dl.Type, dl.RunID, dl.JobID)] = dl
+	}
+	return idx
+}
+
+// carryProvenance overlays label/provenance fields from a prior manifest download
+// onto a reindex-rebuilt one. Disk-derived fields (files, columns, row_count,
+// dialect) are left as reindex computed them. An authoritative prior entry (a real
+// fetch, not a previous recovery) also restores the exact report_type and clears
+// the recovered flag.
+func carryProvenance(dl *Download, prior Download) {
+	if prior.Type == "" {
+		return // no matching prior entry
+	}
+	if prior.Slug != "" {
+		dl.Slug = prior.Slug
+	}
+	if prior.SourceKey != "" {
+		dl.SourceKey = prior.SourceKey
+	}
+	if prior.Filters != nil {
+		dl.Filters = prior.Filters
+	}
+	if len(prior.FilterLabels) > 0 {
+		dl.FilterLabels = prior.FilterLabels
+	}
+	if prior.HistoryMode != "" {
+		dl.HistoryMode = prior.HistoryMode
+	}
+	if prior.Coverage != nil {
+		dl.Coverage = prior.Coverage
+	}
+	if prior.MergeCounts != nil {
+		dl.MergeCounts = prior.MergeCounts
+	}
+	if !prior.Recovered {
+		if prior.ReportType != "" {
+			dl.ReportType = prior.ReportType
+		}
+		dl.Recovered = false
+	}
+}
+
+func (d *Dataset) reindexCSV(name string, prior map[dlKey]Download) (Download, error) {
 	mm := reindexCSVRe.FindStringSubmatch(name)
 	run := atoi(mm[1])
 	dlType := "report"
@@ -161,12 +237,19 @@ func (d *Dataset) reindexCSV(name string) (Download, error) {
 		jobID = &j
 		dlType = "report_job"
 	}
-	reportType, recovered := recoverReportType(d.Path(name))
+	// An authoritative prior report_type (a real fetch, not a previous recovery)
+	// both restores the exact type and drives CSV column detection correctly; fall
+	// back to shape-based recovery only when the manifest cannot vouch for it.
+	p := prior[downloadKey(dlType, run, jobID)]
+	reportType, recovered := p.ReportType, false
+	if p.Recovered || p.ReportType == "" {
+		reportType, recovered = recoverReportType(d.Path(name))
+	}
 	rowCount, cols, order, dialect, err := DetectCSV(d.Path(name), reportType)
 	if err != nil {
 		return Download{}, err
 	}
-	return Download{
+	dl := Download{
 		Type:        dlType,
 		RunID:       run,
 		JobID:       jobID,
@@ -179,7 +262,9 @@ func (d *Dataset) reindexCSV(name string) (Download, error) {
 		Complete:    true,
 		Recovered:   recovered,
 		FetchedAt:   clock().UTC(),
-	}, nil
+	}
+	carryProvenance(&dl, p)
+	return dl, nil
 }
 
 // recoverReportType recovers the report type from CSV shape only partially:
