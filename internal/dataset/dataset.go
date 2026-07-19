@@ -183,22 +183,21 @@ func (d *Dataset) Delete() error {
 	if !ok {
 		return ErrBusy
 	}
-	// Tombstone-rename under the lock: renaming the live directory away atomically
-	// makes it vanish before removal, so a concurrent fetch (shared actLock) or a
-	// manifest write (dsLock) can no longer race into a half-removed tree; both
-	// operate on paths under the old directory and now fail cleanly. The flock
-	// handle is fd-based, so it survives the rename; we release it before removing
-	// the now-detached tombstone. The tombstone lives in the portal folder, not
+	// Release the flock handle before renaming: the lock file lives inside d.Dir,
+	// and Windows cannot rename a directory that still has an open handle inside
+	// it. Then tombstone-rename so the live directory vanishes atomically before
+	// the recursive removal: a concurrent fetch or manifest write that opens a
+	// path under the old directory afterwards fails cleanly rather than racing
+	// into a half-removed tree. The tombstone lives in the portal folder, not
 	// datasets/, so a listing never sees it, and a stale one from an interrupted
 	// delete is cleared on the next attempt.
+	d.actLock.Unlock()
 	portalDir := filepath.Dir(filepath.Dir(d.Dir))
 	tomb := filepath.Join(portalDir, fmt.Sprintf(".deleting-%s-%d", filepath.Base(d.Dir), os.Getpid()))
 	_ = os.RemoveAll(tomb)
 	if err := os.Rename(d.Dir, tomb); err != nil {
-		d.actLock.Unlock()
 		return err
 	}
-	d.actLock.Unlock()
 	return os.RemoveAll(tomb)
 }
 

@@ -54,6 +54,9 @@ func TestBuildIndexHappyPathStillWorks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// BuildIndex keeps the segment file open for offset reads; close it so the
+	// temp dir cleanup succeeds (Windows cannot remove a file with an open handle).
+	defer idx.Close()
 	if len(idx.Keys()) != 2 {
 		t.Fatalf("expected 2 indexed identities, got %d", len(idx.Keys()))
 	}
