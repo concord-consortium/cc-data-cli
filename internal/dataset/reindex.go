@@ -36,9 +36,9 @@ func (d *Dataset) Reindex() error {
 		return err
 	}
 
-	newestStore := map[string]int{}
-	newestStoreFile := map[string]string{}
-	newestMember := map[string]int{} // key "<type>/<run>" -> version
+	storeVersFiles := map[string]map[int]string{}  // type -> store version -> filename
+	memberVersPresent := map[string]map[int]bool{} // type -> membership versions present
+	newestMember := map[string]int{}               // key "<type>/<run>" -> version
 	newestMemberFile := map[string]string{}
 	var csvs []string
 
@@ -49,14 +49,18 @@ func (d *Dataset) Reindex() error {
 		name := e.Name()
 		if mm := reindexStoreRe.FindStringSubmatch(name); mm != nil {
 			typ, v := mm[1], atoi(mm[2])
-			if v > newestStore[typ] {
-				newestStore[typ] = v
-				newestStoreFile[typ] = name
+			if storeVersFiles[typ] == nil {
+				storeVersFiles[typ] = map[int]string{}
 			}
+			storeVersFiles[typ][v] = name
 			continue
 		}
 		if mm := reindexMemberRe.FindStringSubmatch(name); mm != nil {
 			typ, run, v := mm[1], atoi(mm[2]), atoi(mm[3])
+			if memberVersPresent[typ] == nil {
+				memberVersPresent[typ] = map[int]bool{}
+			}
+			memberVersPresent[typ][v] = true
 			key := MembershipKey(typ, run)
 			if v > newestMember[key] {
 				newestMember[key] = v
@@ -69,14 +73,25 @@ func (d *Dataset) Reindex() error {
 		}
 	}
 
-	// Adopt stores with re-derived counts and column maps.
+	// Adopt stores with re-derived counts and column maps. A merge writes the
+	// store rename before the membership files, so a crash in that window can
+	// leave an uncommitted store vN on disk while membership is still vN-1;
+	// adopting vN then would drop vN's identities from covered on the next merge.
+	// Only adopt a store version proven committed by a matching membership file
+	// at the same version; otherwise fall back to the newest such generation. If
+	// none committed (e.g. a crashed first merge), skip the store so a resume
+	// rebuilds it from the surviving segment.
 	m.Stores = map[string]Store{}
-	for typ, v := range newestStore {
-		count, cols, serr := scanStoreCountAndColumns(d.Path(newestStoreFile[typ]))
+	for typ, versFiles := range storeVersFiles {
+		v := newestCommittedStoreVersion(versFiles, memberVersPresent[typ])
+		if v == 0 {
+			continue
+		}
+		count, cols, serr := scanStoreCountAndColumns(d.Path(versFiles[v]))
 		if serr != nil {
 			return serr
 		}
-		m.Stores[typ] = Store{File: newestStoreFile[typ], Version: v, Count: count, Columns: cols}
+		m.Stores[typ] = Store{File: versFiles[v], Version: v, Count: count, Columns: cols}
 	}
 
 	// Adopt membership.
@@ -218,10 +233,28 @@ func scanStoreCountAndColumns(path string) (int, map[string]string, error) {
 			count++
 		}
 		if rerr != nil {
-			break
+			// io.EOF ends the final (unterminated) line; a real read error must
+			// not commit a truncated count and partial column map as success.
+			if rerr == io.EOF {
+				break
+			}
+			return 0, nil, rerr
 		}
 	}
 	return count, det.Map(), nil
+}
+
+// newestCommittedStoreVersion returns the highest store version whose merge
+// generation committed, proven by a membership file present at the same version.
+// Returns 0 when no store version has a matching membership file.
+func newestCommittedStoreVersion(versFiles map[int]string, memberVers map[int]bool) int {
+	best := 0
+	for v := range versFiles {
+		if memberVers[v] && v > best {
+			best = v
+		}
+	}
+	return best
 }
 
 func atoi(s string) int {

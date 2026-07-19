@@ -29,6 +29,9 @@ type Engine struct {
 // Open registers the datasets' views and locks the sandbox to their folders plus
 // any allow-dirs. Warnings from degraded views are written to warnOut.
 func Open(ctx context.Context, datasets []DatasetSpec, allowDirs []string, warnOut io.Writer) (*Engine, error) {
+	if warnOut == nil {
+		warnOut = io.Discard
+	}
 	if len(datasets) == 0 {
 		return nil, fmt.Errorf("no datasets given")
 	}
@@ -99,6 +102,17 @@ func Open(ctx context.Context, datasets []DatasetSpec, allowDirs []string, warnO
 	return e, nil
 }
 
+// Resource caps applied before lock_configuration=true. DuckDB otherwise
+// defaults to roughly 80% of host RAM, every core, and an unbounded temp
+// directory, so untrusted caller SQL (including MCP/LLM-supplied queries) could
+// exhaust the machine. These bound a local denial of service; they are set once
+// and then frozen by lock_configuration.
+const (
+	sandboxMemoryLimit = "2GB"
+	sandboxTempDirSize = "4GB"
+	sandboxThreads     = 4
+)
+
 func (e *Engine) lockSandbox(ctx context.Context, allowed []string) error {
 	quoted := make([]string, len(allowed))
 	for i, d := range allowed {
@@ -110,6 +124,9 @@ func (e *Engine) lockSandbox(ctx context.Context, allowed []string) error {
 		"SET autoinstall_known_extensions = false",
 		"SET autoload_known_extensions = false",
 		"SET allow_community_extensions = false",
+		fmt.Sprintf("SET memory_limit = '%s'", sandboxMemoryLimit),
+		fmt.Sprintf("SET max_temp_directory_size = '%s'", sandboxTempDirSize),
+		fmt.Sprintf("SET threads = %d", sandboxThreads),
 		"SET lock_configuration = true",
 	}
 	for _, s := range stmts {
@@ -155,15 +172,19 @@ func resolveSchemas(datasets []DatasetSpec) ([]string, error) {
 		if name == "" {
 			name = ds.DS.Ref.Name
 		}
-		if multi && ds.Alias == "" && reservedSchemaNames[name] {
+		// DuckDB schema names are ASCII case-insensitive, so collision and
+		// reserved-name checks key on the lowercased name; School and school
+		// would otherwise pass here and then collide inside DuckDB.
+		key := strings.ToLower(name)
+		if multi && ds.Alias == "" && reservedSchemaNames[key] {
 			return nil, fmt.Errorf("dataset %s uses the reserved DuckDB schema name %q; give it an alias with pre=<alias>=%s",
 				ds.DS.Ref, name, ds.DS.Ref)
 		}
-		if prev, ok := seen[name]; ok {
+		if prev, ok := seen[key]; ok {
 			return nil, fmt.Errorf("dataset schema name %q collides (datasets %s and %s); disambiguate with pre=<ref>",
 				name, datasets[prev].DS.Ref, ds.DS.Ref)
 		}
-		seen[name] = i
+		seen[key] = i
 		schemas[i] = name
 	}
 	return schemas, nil

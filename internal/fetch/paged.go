@@ -40,16 +40,19 @@ func FetchPaged(ctx context.Context, opts PagedOptions) (any, error) {
 			return nil, output.Internalf("clearing segment for refresh: %v", err)
 		}
 	}
-	if err := opts.startEntry(); err != nil {
-		return nil, err
-	}
-
+	// Consult resume state before startEntry mutates the manifest entry: an
+	// already-merged short-circuit must not clobber the completed entry's
+	// MergeCounts/Coverage (which would emit false drift warnings).
 	token, alreadyMerged, err := opts.resumeState(seg)
 	if err != nil {
 		return nil, err
 	}
 	if alreadyMerged {
 		return opts.alreadyMergedResult(), nil
+	}
+
+	if err := opts.startEntry(); err != nil {
+		return nil, err
 	}
 
 	if token != resumeFinished {
@@ -86,9 +89,13 @@ func (opts PagedOptions) resumeState(seg *store.Segment) (token string, alreadyM
 		return "", false, output.Internalf("reading cursor: %v", err)
 	}
 	if !ok {
-		// A segment with no cursor is stale; discard it and start fresh.
+		// A segment with no cursor is stale; discard it and start fresh. If the
+		// removal fails, abort: a later O_APPEND fetch would otherwise append
+		// onto the stale records.
 		if seg.Exists() {
-			seg.Remove()
+			if rerr := seg.Remove(); rerr != nil {
+				return "", false, output.Internalf("clearing stale segment: %v", rerr)
+			}
 		}
 		return "", false, nil
 	}

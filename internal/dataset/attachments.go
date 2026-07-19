@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -59,7 +60,13 @@ func SanitizeFilename(name string) string {
 	if base == "" || base == "." || base == ".." {
 		base = "_"
 	}
-	if windowsReserved.MatchString(base) {
+	// Windows treats a reserved device name as reserved even with an extension
+	// (CON.txt), so match the stem before the first dot, not the whole basename.
+	stem := base
+	if i := strings.IndexByte(stem, '.'); i >= 0 {
+		stem = stem[:i]
+	}
+	if windowsReserved.MatchString(stem) {
 		base = "_" + base
 	}
 	return base
@@ -209,11 +216,12 @@ func (d *Dataset) scanAllAttachments(m *Manifest) ([]AttachRef, error) {
 // scanStore scans a store file; when keys is non-nil, only records whose identity
 // key is in the set are considered.
 func (d *Dataset) scanStore(typ, file string, keys map[string]bool) ([]AttachRef, error) {
+	// A store named by the manifest must be on disk (the durable-write order
+	// repoints the manifest only after the store rename), so fail closed rather
+	// than treat a missing store as zero references: this scan drives a GC that
+	// deletes unreferenced files.
 	f, err := os.Open(d.Path(file))
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
 		return nil, err
 	}
 	defer f.Close()
@@ -233,7 +241,12 @@ func (d *Dataset) scanStore(typ, file string, keys map[string]bool) ([]AttachRef
 			}
 		}
 		if rerr != nil {
-			break
+			// io.EOF is the normal end of the last (unterminated) line; a real
+			// read error must not be swallowed into a truncated, GC-driving scan.
+			if rerr == io.EOF {
+				break
+			}
+			return nil, rerr
 		}
 	}
 	return refs, nil

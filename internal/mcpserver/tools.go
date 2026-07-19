@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/concord-consortium/cc-data-cli/internal/api"
 	"github.com/concord-consortium/cc-data-cli/internal/auth"
@@ -205,7 +206,7 @@ func registerTools(s *mcp.Server, opts Options) {
 			return nil, mapOut{"ref": d.Ref.String(), "reindexed": true}, nil
 		})
 
-	mcp.AddTool(s, &mcp.Tool{Name: "query", Description: "Run SQL over one or more datasets. Rows beyond max_rows (default 1000) are dropped and truncated is set. " + noArgsMsg, Annotations: readOnly},
+	mcp.AddTool(s, &mcp.Tool{Name: "query", Description: "Run SQL over one or more datasets. Each datasets entry may be alias=ref to schema-qualify that dataset. Rows beyond max_rows (default 1000) are dropped and truncated is set. " + noArgsMsg, Annotations: readOnly},
 		queryHandler(opts))
 }
 
@@ -251,7 +252,14 @@ func queryHandler(opts Options) func(context.Context, *mcp.CallToolRequest, quer
 		}
 		var specs []duck.DatasetSpec
 		for _, raw := range in.Datasets {
-			ref, perr := dataset.ParseRef(raw, cfg.DefaultPortal)
+			// Mirror the CLI's alias=ref split (cmd/query.go); an entry without
+			// '=' keeps an empty alias.
+			alias := ""
+			refStr := raw
+			if i := strings.Index(raw, "="); i >= 0 {
+				alias, refStr = raw[:i], raw[i+1:]
+			}
+			ref, perr := dataset.ParseRef(refStr, cfg.DefaultPortal)
 			if perr != nil {
 				return nil, queryOut{}, perr
 			}
@@ -259,7 +267,7 @@ func queryHandler(opts Options) func(context.Context, *mcp.CallToolRequest, quer
 			if !d.Exists() {
 				return nil, queryOut{}, fmt.Errorf("dataset %s does not exist", ref)
 			}
-			specs = append(specs, duck.DatasetSpec{DS: d})
+			specs = append(specs, duck.DatasetSpec{Alias: alias, DS: d})
 		}
 		maxRows := in.MaxRows
 		if maxRows <= 0 {

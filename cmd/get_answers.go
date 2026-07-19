@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"context"
 	"strconv"
 
 	"github.com/concord-consortium/cc-data-cli/internal/fetch"
@@ -33,7 +32,7 @@ func newPagedGetCmd(use, typ, short string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			result, err := fetch.FetchPaged(context.Background(), fetch.PagedOptions{
+			result, err := fetch.FetchPaged(cmd.Context(), fetch.PagedOptions{
 				DS:       d,
 				Client:   client,
 				RunID:    runID,

@@ -44,6 +44,12 @@ func PreCreate0600(path string) error {
 	if err != nil {
 		return err
 	}
+	// The 0o600 above only applies on creation; tighten a pre-existing file
+	// (which may be 0644) so the caller always gets a 0600 mode.
+	if err := f.Chmod(0o600); err != nil {
+		f.Close()
+		return err
+	}
 	return f.Close()
 }
 

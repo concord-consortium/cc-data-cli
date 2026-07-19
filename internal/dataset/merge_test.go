@@ -178,13 +178,17 @@ func TestNeverDuplicateAcceptance(t *testing.T) {
 		rec("s", "e1", "q1", "", "A"),
 		rec("s", "e2", "q2", "", "A"),
 	})
-	d.MergeCompact("answers", 584, segA)
+	if _, err := d.MergeCompact("answers", 584, segA); err != nil {
+		t.Fatal(err)
+	}
 	// Fetch overlapping B: a2, a3.
 	segB := writeFinishedSegment(t, d, "answers", 612, [][]byte{
 		rec("s", "e2", "q2", "", "B"),
 		rec("s", "e3", "q3", "", "B"),
 	})
-	d.MergeCompact("answers", 612, segB)
+	if _, err := d.MergeCompact("answers", 612, segB); err != nil {
+		t.Fatal(err)
+	}
 	// Re-fetch A with --refresh: a1 only (a2 dropped from A's membership).
 	segA2 := writeFinishedSegment(t, d, "answers", 584, [][]byte{
 		rec("s", "e1", "q1", "", "A2"),
@@ -210,7 +214,9 @@ func TestShrinkRefreshRemoves(t *testing.T) {
 		rec("s", "e1", "q1", "", "A"),
 		rec("s", "e2", "q2", "", "A"),
 	})
-	d.MergeCompact("answers", 584, seg)
+	if _, err := d.MergeCompact("answers", 584, seg); err != nil {
+		t.Fatal(err)
+	}
 	// Refresh A with only e1 (e2 no longer permitted, covered by nothing).
 	seg2 := writeFinishedSegment(t, d, "answers", 584, [][]byte{
 		rec("s", "e1", "q1", "", "A2"),
@@ -234,7 +240,9 @@ func TestMergeSortedOutput(t *testing.T) {
 		rec("s", "a", "q", "", "2"),
 		rec("s", "m", "q", "", "3"),
 	})
-	d.MergeCompact("answers", 584, seg)
+	if _, err := d.MergeCompact("answers", 584, seg); err != nil {
+		t.Fatal(err)
+	}
 	ids := storeIdentities(t, d, "answers")
 	keys := make([]string, len(ids))
 	for i, id := range ids {

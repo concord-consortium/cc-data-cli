@@ -178,7 +178,12 @@ func pollUntilReady(ctx context.Context, opts ReportOptions) (*api.DownloadEnvel
 			return nil, notReadyResult(opts, state), &output.CLIError{ExitCode: output.ExitNotReady, Silent: true}
 		}
 		fmt.Fprintf(opts.Progress, "run %d state=%q; waiting...\n", opts.RunID, state)
-		if !pollSleep(ctx, jitter(backoff)) {
+		// Cap the sleep so a long backoff cannot overshoot the poll deadline.
+		sleep := jitter(backoff)
+		if remaining := time.Until(deadline); sleep > remaining {
+			sleep = remaining
+		}
+		if !pollSleep(ctx, sleep) {
 			return nil, nil, &output.CLIError{ExitCode: output.ExitInternal, Code: "CANCELLED", Message: ctx.Err().Error()}
 		}
 		backoff *= 2

@@ -21,7 +21,14 @@ type Loopback struct {
 	server   *http.Server
 	port     int
 	state    string
-	codeCh   chan string
+	resultCh chan callbackResult
+}
+
+// callbackResult carries the outcome of a state-matched callback: a code, or an
+// error describing why the login failed (an OAuth error param or a missing code).
+type callbackResult struct {
+	code string
+	err  error
 }
 
 // StartLoopback binds 127.0.0.1 on a random port and serves the /callback route
@@ -38,7 +45,7 @@ func StartLoopback(state string) (*Loopback, error) {
 		listener: ln,
 		port:     ln.Addr().(*net.TCPAddr).Port,
 		state:    state,
-		codeCh:   make(chan string, 1),
+		resultCh: make(chan callbackResult, 1),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/callback", lb.handleCallback)
@@ -56,12 +63,40 @@ func (l *Loopback) handleCallback(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, errorPage)
 		return
 	}
+	// The state matched, so this is the real authorization server responding.
+	// An OAuth error param, or a callback with no code, is a genuine login
+	// failure: show the error page and fail Wait fast instead of claiming
+	// "Login complete" and then hanging until the timeout.
 	code := q.Get("code")
+	if oauthErr := q.Get("error"); oauthErr != "" || code == "" {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, errorPage)
+		l.deliver(callbackResult{err: callbackError(oauthErr, q.Get("error_description"))})
+		return
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	fmt.Fprint(w, successPage)
+	l.deliver(callbackResult{code: code})
+}
+
+// deliver posts the first matched result without blocking the handler.
+func (l *Loopback) deliver(res callbackResult) {
 	select {
-	case l.codeCh <- code:
+	case l.resultCh <- res:
 	default:
+	}
+}
+
+// callbackError builds a clear failure message from the OAuth error params.
+func callbackError(oauthErr, desc string) error {
+	switch {
+	case oauthErr != "" && desc != "":
+		return fmt.Errorf("authorization server returned error %q: %s", oauthErr, desc)
+	case oauthErr != "":
+		return fmt.Errorf("authorization server returned error %q", oauthErr)
+	default:
+		return fmt.Errorf("authorization callback contained no code")
 	}
 }
 
@@ -76,8 +111,8 @@ func (l *Loopback) Wait(ctx context.Context, timeout time.Duration) (string, err
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	select {
-	case code := <-l.codeCh:
-		return code, nil
+	case res := <-l.resultCh:
+		return res.code, res.err
 	case <-timer.C:
 		return "", fmt.Errorf("timed out after %s waiting for the login callback", timeout)
 	case <-ctx.Done():

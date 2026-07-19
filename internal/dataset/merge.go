@@ -34,11 +34,11 @@ func (d *Dataset) membershipUnionMulti(m *Manifest, typ string, idsByRun map[int
 		if _, merging := idsByRun[r]; merging {
 			continue
 		}
+		// Fail closed: a missing membership file must not silently drop this run's
+		// identities from covered, or the next merge would delete still-owned
+		// records (the sibling ScanRunAttachments fails closed for the same reason).
 		ids, err := store.ReadMembershipFile(d.Path(ref.File))
 		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
 			return nil, err
 		}
 		for _, id := range ids {
@@ -120,7 +120,13 @@ func (d *Dataset) mergeUnderLock(typ string, runID int, seg *store.Segment) (sto
 		if len(swept) == 0 {
 			src = store.NewSingleSource(primaryIdx, runID)
 		} else {
-			src = store.NewMultiSource(byRun)
+			ms, merr := store.NewMultiSource(byRun)
+			if merr != nil {
+				closeAll(byRun)
+				releaseSwept(swept)
+				return store.MergeCounts{}, merr
+			}
+			src = ms
 		}
 
 		oldPath := ""

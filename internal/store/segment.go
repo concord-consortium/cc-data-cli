@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -193,7 +194,14 @@ func (s *Segment) BuildIndex() (*SegmentIndex, error) {
 		}
 		offset += int64(len(line))
 		if err != nil {
-			break
+			if err == io.EOF {
+				break
+			}
+			// A real read error must not be mistaken for end-of-file: returning a
+			// partial index here would feed a truncated identity set to covered and
+			// silently drop old-store records in StreamMerge.
+			f.Close()
+			return nil, err
 		}
 	}
 	idx.keys = make([]string, 0, len(idx.entries))

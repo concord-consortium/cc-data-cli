@@ -95,6 +95,7 @@ func (vs viewSet) reportPromptsView() viewStmt {
 // broken artifact costs its rows, never the session or the union's schema.
 func (vs viewSet) reportUnionView(bare string, keepData bool, include func(dataset.Download) bool) viewStmt {
 	var members []string
+	var emptyMembers []string
 	var files []string
 	for _, dl := range vs.m.Downloads {
 		if dl.Type != "report" || len(dl.Files) == 0 || dl.Columns == nil {
@@ -109,14 +110,22 @@ func (vs viewSet) reportUnionView(bare string, keepData bool, include func(datas
 		} else {
 			members = append(members, vs.csvScan(dl, keepData))
 		}
+		// The typed-empty schema for every admitted member (present or missing).
+		emptyMembers = append(emptyMembers, vs.csvEmptyMember(dl))
 		files = append(files, dl.Files...)
 	}
 	name := vs.prefix + bare
-	fallback := fmt.Sprintf("CREATE VIEW %s AS SELECT CAST(NULL AS BIGINT) AS run_id WHERE false", name)
+	runOnly := fmt.Sprintf("CREATE VIEW %s AS SELECT CAST(NULL AS BIGINT) AS run_id WHERE false", name)
 	if len(members) == 0 {
-		return viewStmt{name: name, primary: fallback, fallback: fallback}
+		return viewStmt{name: name, primary: runOnly, fallback: runOnly}
 	}
 	primary := fmt.Sprintf("CREATE VIEW %s AS %s", name, strings.Join(members, "\nUNION ALL BY NAME\n"))
+	// Per-member binding cannot be validated here (no live connection), so the
+	// fallback unions every admitted member's typed-empty schema. If a single
+	// present-but-corrupt CSV makes the primary CREATE VIEW fail, the view still
+	// installs the full report+schema shape (zero rows) instead of collapsing to
+	// a run_id-only stand-in that would discard every valid report's columns.
+	fallback := fmt.Sprintf("CREATE VIEW %s AS %s", name, strings.Join(emptyMembers, "\nUNION ALL BY NAME\n"))
 	return viewStmt{name: name, primary: primary, fallback: fallback, files: files}
 }
 
@@ -268,12 +277,12 @@ func (vs viewSet) perDownloadViews() []viewStmt {
 		case "report":
 			if len(dl.Files) > 0 && dl.Columns != nil {
 				vn := vs.prefix + sqlIdent(fmt.Sprintf("report_%d", dl.RunID))
-				stmts = append(stmts, viewStmt{name: vn, primary: fmt.Sprintf("CREATE VIEW %s AS %s", vn, vs.csvScan(dl, true)), fallback: fmt.Sprintf("CREATE VIEW %s AS SELECT CAST(NULL AS BIGINT) AS run_id WHERE false", vn), files: dl.Files})
+				stmts = append(stmts, viewStmt{name: vn, primary: fmt.Sprintf("CREATE VIEW %s AS %s", vn, vs.csvScan(dl, true)), fallback: fmt.Sprintf("CREATE VIEW %s AS %s", vn, vs.csvEmptyMember(dl)), files: dl.Files})
 			}
 		case "report_job":
 			if len(dl.Files) > 0 && dl.Columns != nil && dl.JobID != nil {
 				vn := vs.prefix + sqlIdent(fmt.Sprintf("report_%d_job_%d", dl.RunID, *dl.JobID))
-				stmts = append(stmts, viewStmt{name: vn, primary: fmt.Sprintf("CREATE VIEW %s AS %s", vn, vs.csvScan(dl, true)), fallback: fmt.Sprintf("CREATE VIEW %s AS SELECT CAST(NULL AS BIGINT) AS run_id WHERE false", vn), files: dl.Files})
+				stmts = append(stmts, viewStmt{name: vn, primary: fmt.Sprintf("CREATE VIEW %s AS %s", vn, vs.csvScan(dl, true)), fallback: fmt.Sprintf("CREATE VIEW %s AS %s", vn, vs.csvEmptyMember(dl)), files: dl.Files})
 			}
 		}
 	}

@@ -91,12 +91,21 @@ func resolveToken(cmd *cobra.Command, flagVal string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		return strings.TrimSpace(string(b)), nil
+		token := strings.TrimSpace(string(b))
+		if token == "" {
+			return "", output.Usagef("no token read from stdin")
+		}
+		return token, nil
 	}
 	reader := bufio.NewReader(os.Stdin)
-	line, err := reader.ReadString('\n')
+	// ReadString may return the final line together with io.EOF when stdin has no
+	// trailing newline; the token is still valid in that case, so ignore the error
+	// and validate the trimmed content instead.
+	line, _ := reader.ReadString('\n')
 	line = strings.TrimSpace(line)
-	if err != nil && line == "" {
+	// Empty input (immediate EOF, or newline/whitespace-only) is invalid: never
+	// silently fall back to the browser flow when --token - was requested.
+	if line == "" {
 		return "", output.Usagef("no token read from stdin")
 	}
 	return line, nil

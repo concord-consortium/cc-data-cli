@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/concord-consortium/cc-data-cli/internal/api"
@@ -105,10 +106,16 @@ func (opts AttachmentOptions) downloadRefs(ctx context.Context, refs []dataset.A
 		}
 		byKey := indexRefs(chunk)
 		for _, res := range results.Results {
-			ref, ok := byKey[res.DocID+"\x00"+res.Name]
-			if !ok {
+			key := res.DocID + "\x00" + res.Name
+			refs := byKey[key]
+			if len(refs) == 0 {
 				continue
 			}
+			// Distinct refs can share a DocID+Name but differ in
+			// Source/PublicPath/Collection; consume one per result so a
+			// collision does not drop a ref (last-wins) as a bare map would.
+			ref := refs[0]
+			byKey[key] = refs[1:]
 			if res.Error != "" {
 				missing = append(missing, dataset.MissingItem{DocID: res.DocID, Name: res.Name, Error: res.Error})
 				continue
@@ -125,10 +132,19 @@ func (opts AttachmentOptions) downloadRefs(ctx context.Context, refs []dataset.A
 
 func (opts AttachmentOptions) downloadOne(ctx context.Context, url, rel string) error {
 	full := opts.DS.Path(rel)
-	if err := os.MkdirAll(opts.DS.Path(dataset.AttachmentsDir), 0o700); err != nil {
+	dir := filepath.Dir(full)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return output.Internalf("%v", err)
 	}
-	tmp := full + ".tmp"
+	// A unique temp in the destination dir so concurrent fetches from different
+	// runs that reference the same attachment cannot collide on a shared temp
+	// path before the atomic rename.
+	f, err := os.CreateTemp(dir, ".tmp-*")
+	if err != nil {
+		return output.Internalf("%v", err)
+	}
+	tmp := f.Name()
+	f.Close()
 	if err := opts.Client.DownloadURL(ctx, url, tmp); err != nil {
 		os.Remove(tmp)
 		return api.AsCLIError(err)
@@ -147,6 +163,7 @@ func (opts AttachmentOptions) printURLs(ctx context.Context, refs []dataset.Atta
 		ExpiresAt string `json:"expires_at"`
 	}
 	var lines []urlLine
+	var missing []dataset.MissingItem
 	for _, chunk := range chunkRefs(refs, attachmentChunkSize) {
 		results, err := opts.Client.PresignAttachments(ctx, opts.RunID, toReqs(chunk), disposition)
 		if err != nil {
@@ -154,6 +171,13 @@ func (opts AttachmentOptions) printURLs(ctx context.Context, refs []dataset.Atta
 		}
 		expiresAt := time.Now().Add(time.Duration(results.ExpiresInSeconds) * time.Second).UTC().Format(time.RFC3339)
 		for _, res := range results.Results {
+			if res.Error != "" {
+				// Surface per-item failures instead of silently dropping them,
+				// mirroring how download mode records a MissingItem.
+				missing = append(missing, dataset.MissingItem{DocID: res.DocID, Name: res.Name, Error: res.Error})
+				fmt.Fprintf(opts.Progress, "warning: could not presign %s (%s): %s\n", res.Name, res.DocID, res.Error)
+				continue
+			}
 			if res.URL != "" {
 				lines = append(lines, urlLine{URL: res.URL, ExpiresAt: expiresAt})
 			}
@@ -162,13 +186,19 @@ func (opts AttachmentOptions) printURLs(ctx context.Context, refs []dataset.Atta
 	out := output.Stdout()
 	if len(lines) == 1 {
 		fmt.Fprintln(out, lines[0].URL)
-		return nil
-	}
-	enc := json.NewEncoder(out)
-	for _, l := range lines {
-		if err := enc.Encode(l); err != nil {
-			return output.Internalf("%v", err)
+	} else {
+		enc := json.NewEncoder(out)
+		for _, l := range lines {
+			if err := enc.Encode(l); err != nil {
+				return output.Internalf("%v", err)
+			}
 		}
+	}
+	if len(missing) > 0 {
+		// Details already went to stderr above; reflect the failures in the exit
+		// code (URL mode has no result line to carry a coverage.missing list).
+		return &output.CLIError{ExitCode: output.ExitContract, Code: "PRESIGN_INCOMPLETE",
+			Message: fmt.Sprintf("%d attachment(s) could not be presigned", len(missing)), Silent: true}
 	}
 	return nil
 }
@@ -257,10 +287,11 @@ func toReqs(refs []dataset.AttachRef) []api.AttachmentRefReq {
 	return reqs
 }
 
-func indexRefs(refs []dataset.AttachRef) map[string]dataset.AttachRef {
-	m := make(map[string]dataset.AttachRef, len(refs))
+func indexRefs(refs []dataset.AttachRef) map[string][]dataset.AttachRef {
+	m := make(map[string][]dataset.AttachRef, len(refs))
 	for _, r := range refs {
-		m[r.DocID+"\x00"+r.Name] = r
+		key := r.DocID + "\x00" + r.Name
+		m[key] = append(m[key], r)
 	}
 	return m
 }

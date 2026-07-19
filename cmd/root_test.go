@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 
@@ -93,20 +94,31 @@ func TestExecuteReturnsIntNoJSONOnStderr(t *testing.T) {
 	var out, errb bytes.Buffer
 	restore := output.SetStreams(&out, &errb)
 	defer restore()
-	root := newRootCmd()
-	root.SetArgs([]string{"nope"})
-	root.SetOut(&errb)
-	root.SetErr(&errb)
-	if err := root.Execute(); err != nil {
-		output.EmitError(classifyExecError(err))
+
+	// Exercise the package-level Execute, not a re-implementation of it. Execute
+	// reads os.Args, so point it at a failing invocation and restore afterward.
+	prevArgs := os.Args
+	os.Args = []string{"cc-data", "nope"}
+	defer func() { os.Args = prevArgs }()
+
+	code := Execute("")
+	if code != output.ExitUsage {
+		t.Fatalf("Execute returned exit %d, want %d", code, output.ExitUsage)
 	}
-	// The failure envelope must be exactly one JSON object on stdout.
+
+	// The failure envelope must be exactly one JSON object on stdout. No escape
+	// hatch: empty stdout means the envelope was never emitted, which is a failure.
 	trimmed := strings.TrimSpace(out.String())
 	if trimmed == "" {
-		return
+		t.Fatal("Execute emitted no failure envelope on stdout")
 	}
 	var got map[string]any
 	if err := json.Unmarshal([]byte(trimmed), &got); err != nil {
 		t.Fatalf("stdout not a JSON object: %q", out.String())
+	}
+
+	// The machine-readable envelope must not leak onto stderr.
+	if strings.Contains(errb.String(), "{") {
+		t.Fatalf("stderr carried JSON-shaped output: %q", errb.String())
 	}
 }

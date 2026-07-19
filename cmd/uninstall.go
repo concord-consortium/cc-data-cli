@@ -32,8 +32,9 @@ func newUninstallCmd() *cobra.Command {
 			}
 			fmt.Fprintln(errOut, "Removed the cc-data skill and the ~/.claude/CLAUDE.md pointer.")
 
+			var credErr error
 			if removeCreds {
-				removeCredentials(errOut)
+				credErr = removeCredentials(errOut)
 			}
 
 			// Always tell the user where their datasets remain.
@@ -43,7 +44,7 @@ func newUninstallCmd() *cobra.Command {
 					fmt.Fprintf(errOut, "Your datasets remain at %s (sensitive student data). Remove them manually or with cc-data dataset delete/purge when no longer needed.\n", root)
 				}
 			}
-			return nil
+			return credErr
 		},
 	}
 	cmd.Flags().BoolVar(&removeCreds, "credentials", false, "also revoke and remove stored credentials and config")
@@ -51,26 +52,34 @@ func newUninstallCmd() *cobra.Command {
 }
 
 // removeCredentials revokes each portal's token (the logout path) then deletes it,
-// then removes the config file.
-func removeCredentials(errOut io.Writer) {
+// then removes the config file. It returns an error (without claiming success) if
+// the stored credentials could not be listed or the config file could not be
+// removed, so uninstall never reports a false success on a security-sensitive path.
+func removeCredentials(errOut io.Writer) error {
 	var store creds.Store
 	infos, err := store.List()
-	if err == nil {
-		for _, info := range infos {
-			// Bound each revoke so an offline or captive network cannot hang
-			// uninstall for minutes per portal (the API client has no overall
-			// timeout, only per-attempt deadlines across its retry budget).
-			ctx, cancel := context.WithTimeout(context.Background(), revokeTimeout)
-			lerr := auth.Logout(ctx, info.Portal, errOut)
-			cancel()
-			if lerr != nil {
-				fmt.Fprintf(errOut, "warning: could not revoke token for %s: %v (it may still be active; revoke it in the token UI)\n", info.Portal, lerr)
-			}
+	if err != nil {
+		return output.Internalf("could not list stored credentials; they were NOT revoked or removed: %v", err)
+	}
+	for _, info := range infos {
+		// Bound each revoke so an offline or captive network cannot hang
+		// uninstall for minutes per portal (the API client has no overall
+		// timeout, only per-attempt deadlines across its retry budget).
+		ctx, cancel := context.WithTimeout(context.Background(), revokeTimeout)
+		lerr := auth.Logout(ctx, info.Portal, errOut)
+		cancel()
+		if lerr != nil {
+			fmt.Fprintf(errOut, "warning: could not revoke token for %s: %v (it may still be active; revoke it in the token UI)\n", info.Portal, lerr)
 		}
 	}
 	// Remove the config file.
-	if dir, derr := config.ConfigDir(); derr == nil {
-		os.Remove(filepath.Join(dir, "config.json"))
-		fmt.Fprintln(errOut, "Removed stored credentials and config.")
+	dir, derr := config.ConfigDir()
+	if derr != nil {
+		return output.Internalf("locating config dir: %v", derr)
 	}
+	if rerr := os.Remove(filepath.Join(dir, "config.json")); rerr != nil && !os.IsNotExist(rerr) {
+		return output.Internalf("removing config file: %v", rerr)
+	}
+	fmt.Fprintln(errOut, "Removed stored credentials and config.")
+	return nil
 }

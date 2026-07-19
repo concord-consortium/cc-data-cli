@@ -59,5 +59,12 @@ mkdir -p "${TAP_DIR}/Formula"
 cp "${OUT}" "${TAP_DIR}/Formula/cc-data.rb"
 cd "${TAP_DIR}"
 git add Formula/cc-data.rb
+# Idempotent rerun: if the formula for this version was already pushed, the file is
+# byte-identical and nothing is staged. Under set -euo pipefail a "nothing to commit"
+# commit would exit non-zero and fail the publish job, so skip the commit/push here.
+if git diff --cached --quiet; then
+  echo "formula for ${VERSION} already up to date; nothing to commit" >&2
+  exit 0
+fi
 git -c user.name="cc-data release" -c user.email="noreply@concord.org" commit -m "cc-data ${VERSION}"
 GIT_ASKPASS="${ASKPASS}" GIT_TERMINAL_PROMPT=0 TAP_TOKEN="${TAP_TOKEN}" git push

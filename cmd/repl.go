@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -14,6 +15,10 @@ import (
 	"github.com/ergochat/readline"
 	"github.com/spf13/cobra"
 )
+
+// errReplExit is the sentinel a dot-command returns to request a clean REPL exit
+// (from .quit/.exit); runRepl handles it by returning nil.
+var errReplExit = errors.New("repl exit")
 
 func newReplCmd() *cobra.Command {
 	var datasetRefs, allowDirs []string
@@ -69,37 +74,57 @@ func runRepl(e *duck.Engine) error {
 			return nil
 		}
 		if err != nil {
-			return nil
+			// Do not mask terminal/history I/O failures as a clean exit.
+			return output.Internalf("reading input: %v", err)
 		}
-		stmt, complete := acc.feed(line)
-		if !complete {
+		// Dot-commands are single-line and run immediately when nothing is buffered.
+		if !acc.pending() && strings.HasPrefix(strings.TrimSpace(line), ".") {
+			if executeReplStatement(e, line, output.Stdout(), output.Stderr()) {
+				return nil
+			}
 			continue
 		}
-		executeReplStatement(e, stmt, output.Stdout(), output.Stderr())
+		acc.feed(line)
+		// Drain every complete statement the line produced; a single line may hold
+		// more than one (e.g. "SELECT 1; SELECT 2;"), and the remainder is retained.
+		for {
+			stmt, complete := acc.take()
+			if !complete {
+				break
+			}
+			if executeReplStatement(e, stmt, output.Stdout(), output.Stderr()) {
+				return nil
+			}
+		}
 	}
 }
 
-// executeReplStatement runs a completed statement or a dot-command.
-func executeReplStatement(e *duck.Engine, stmt string, out, errw io.Writer) {
+// executeReplStatement runs a completed statement or a dot-command. It returns
+// true when the statement requests a clean REPL exit (.quit/.exit).
+func executeReplStatement(e *duck.Engine, stmt string, out, errw io.Writer) (exit bool) {
 	trimmed := strings.TrimSpace(stmt)
 	if trimmed == "" {
-		return
+		return false
 	}
 	if strings.HasPrefix(trimmed, ".") {
 		if err := handleDotCommand(e, trimmed, out); err != nil {
+			if errors.Is(err, errReplExit) {
+				return true
+			}
 			fmt.Fprintf(errw, "error: %v\n", err)
 		}
-		return
+		return false
 	}
 	rows, err := e.Query(context.Background(), trimmed)
 	if err != nil {
 		fmt.Fprintf(errw, "error: %v\n", err)
-		return
+		return false
 	}
 	defer rows.Close()
 	if err := duck.RenderRows(out, rows, duck.FormatTable); err != nil {
 		fmt.Fprintf(errw, "error: %v\n", err)
 	}
+	return false
 }
 
 // handleDotCommand runs .tables and .schema conveniences.
@@ -117,8 +142,7 @@ func handleDotCommand(e *duck.Engine, line string, out io.Writer) error {
 		fmt.Fprintln(out, "Commands: .tables, .schema [view], .help, .quit")
 		return nil
 	case ".quit", ".exit":
-		fmt.Fprintln(out, "use Ctrl-D to exit")
-		return nil
+		return errReplExit
 	default:
 		return fmt.Errorf("unknown command %q", fields[0])
 	}
@@ -142,21 +166,32 @@ type accumulator struct {
 func (a *accumulator) pending() bool { return a.buf.Len() > 0 }
 func (a *accumulator) reset()        { a.buf.Reset() }
 
-func (a *accumulator) feed(line string) (stmt string, complete bool) {
-	// Dot-commands are single-line and complete immediately when nothing is buffered.
-	if !a.pending() && strings.HasPrefix(strings.TrimSpace(line), ".") {
-		return strings.TrimSpace(line), true
-	}
+// feed appends a raw input line to the buffer. Callers then drain complete
+// statements with take.
+func (a *accumulator) feed(line string) {
 	if a.pending() {
 		a.buf.WriteByte('\n')
 	}
 	a.buf.WriteString(line)
-	if idx := terminatingSemicolon(a.buf.String()); idx >= 0 {
-		full := a.buf.String()
-		a.buf.Reset()
-		return full[:idx], true
+}
+
+// take extracts the next complete statement (terminated by a bare ';') from the
+// buffer, retaining any post-semicolon remainder for the following statement so
+// that "SELECT 1; SELECT 2;" is not silently truncated. It returns complete=false
+// when the buffer holds no terminated statement yet. A whitespace-only remainder
+// is discarded so the continuation prompt does not linger.
+func (a *accumulator) take() (stmt string, complete bool) {
+	s := a.buf.String()
+	idx := terminatingSemicolon(s)
+	if idx < 0 {
+		return "", false
 	}
-	return "", false
+	rest := s[idx+1:]
+	a.buf.Reset()
+	if strings.TrimSpace(rest) != "" {
+		a.buf.WriteString(rest)
+	}
+	return s[:idx], true
 }
 
 // terminatingSemicolon returns the index of the first ';' outside a single-quoted

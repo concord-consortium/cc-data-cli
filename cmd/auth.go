@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"text/tabwriter"
 	"time"
@@ -28,7 +27,7 @@ func newAuthStatusCmd() *cobra.Command {
 		Long:  "Lists portals with stored credentials offline. --check validates each token against its server and shows its metadata. Always exits 0 when the command completes; per-portal validity travels in the output.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			res, err := auth.Status(context.Background(), check)
+			res, err := auth.Status(cmd.Context(), check)
 			if err != nil {
 				return err
 			}

@@ -183,9 +183,23 @@ func (d *Dataset) Delete() error {
 	if !ok {
 		return ErrBusy
 	}
-	// Release the flock handle before removing the folder it lives in.
+	// Tombstone-rename under the lock: renaming the live directory away atomically
+	// makes it vanish before removal, so a concurrent fetch (shared actLock) or a
+	// manifest write (dsLock) can no longer race into a half-removed tree; both
+	// operate on paths under the old directory and now fail cleanly. The flock
+	// handle is fd-based, so it survives the rename; we release it before removing
+	// the now-detached tombstone. The tombstone lives in the portal folder, not
+	// datasets/, so a listing never sees it, and a stale one from an interrupted
+	// delete is cleared on the next attempt.
+	portalDir := filepath.Dir(filepath.Dir(d.Dir))
+	tomb := filepath.Join(portalDir, fmt.Sprintf(".deleting-%s-%d", filepath.Base(d.Dir), os.Getpid()))
+	_ = os.RemoveAll(tomb)
+	if err := os.Rename(d.Dir, tomb); err != nil {
+		d.actLock.Unlock()
+		return err
+	}
 	d.actLock.Unlock()
-	return os.RemoveAll(d.Dir)
+	return os.RemoveAll(tomb)
 }
 
 // UpsertDownload records or replaces a download entry under the per-dataset lock.
@@ -252,15 +266,25 @@ func (d *Dataset) Purge() error {
 	if err != nil {
 		return err
 	}
-	if err := d.deleteArtifacts(); err != nil {
-		return err
-	}
+	// Commit the cleared manifest before deleting files: the manifest write is the
+	// commit point (matching the merge repoint discipline), so a failed write can
+	// never leave a surviving manifest that references already-deleted artifacts.
+	// Files orphaned by a mid-delete failure are re-cleanable by re-running Purge,
+	// which scans the directory rather than the manifest.
 	m.Stores = map[string]Store{}
 	m.Membership = map[string]MembershipRef{}
 	m.Downloads = nil
 	m.Attachments = nil
-	return writeManifestFile(d.Dir, m)
+	if err := purgeCommitManifest(d.Dir, m); err != nil {
+		return err
+	}
+	return d.deleteArtifacts()
 }
+
+// purgeCommitManifest is the manifest-commit step of Purge, isolated behind a
+// seam (like testHookAfterWrite in merge.go) so a test can inject a write failure
+// and prove Purge deletes nothing when the commit fails.
+var purgeCommitManifest = writeManifestFile
 
 // deleteArtifacts removes stores, segments, membership files, CSVs, and the
 // attachments directory, but never a lock file.

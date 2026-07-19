@@ -19,10 +19,17 @@ func TestConcurrentMergesDifferentRuns(t *testing.T) {
 	})
 
 	var wg sync.WaitGroup
+	var errA, errB error
 	wg.Add(2)
-	go func() { defer wg.Done(); d.MergeCompact("answers", 584, segA) }()
-	go func() { defer wg.Done(); d.MergeCompact("answers", 612, segB) }()
+	go func() { defer wg.Done(); _, errA = d.MergeCompact("answers", 584, segA) }()
+	go func() { defer wg.Done(); _, errB = d.MergeCompact("answers", 612, segB) }()
 	wg.Wait()
+	if errA != nil {
+		t.Fatalf("merge of run 584: %v", errA)
+	}
+	if errB != nil {
+		t.Fatalf("merge of run 612: %v", errB)
+	}
 
 	assertDistinct(t, d, "answers")
 	if got := len(storeIdentities(t, d, "answers")); got != 4 {

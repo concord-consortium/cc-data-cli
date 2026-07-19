@@ -37,7 +37,7 @@ type Client struct {
 // context so a large CSV or attachment is never cut off mid-body.
 func New(baseURL, token string) *Client {
 	return &Client{
-		HTTP:           &http.Client{},
+		HTTP:           &http.Client{CheckRedirect: refuseCrossOriginRedirect},
 		BaseURL:        strings.TrimRight(baseURL, "/"),
 		Token:          token,
 		MaxAttempts:    6,
@@ -46,6 +46,33 @@ func New(baseURL, token string) *Client {
 		RequestTimeout: 60 * time.Second,
 		randFloat:      rand.Float64,
 		sleep:          sleepCtx,
+	}
+}
+
+// refuseCrossOriginRedirect blocks any redirect that leaves the original
+// request's scheme+host. Neither the JSON API nor the S3 presigned GETs
+// legitimately redirect, and the bearer token must never be replayed to a
+// different origin, so a cross-origin redirect is always refused.
+func refuseCrossOriginRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) == 0 {
+		return nil
+	}
+	orig := via[0].URL
+	if req.URL.Scheme != orig.Scheme || req.URL.Host != orig.Host {
+		return fmt.Errorf("refusing cross-origin redirect to %s://%s", req.URL.Scheme, req.URL.Host)
+	}
+	return nil
+}
+
+// isIdempotent reports whether a method is safe to retry after a transport
+// error or a 429/5xx. Non-idempotent requests (POST, including the one-use
+// token exchange) are never blind-retried.
+func isIdempotent(method string) bool {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodPut, http.MethodDelete, http.MethodOptions, http.MethodTrace:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -73,6 +100,7 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 		u += "?" + query.Encode()
 	}
 
+	idempotent := isIdempotent(method)
 	var last error
 	for attempt := 0; attempt < c.MaxAttempts; attempt++ {
 		if attempt > 0 {
@@ -85,6 +113,11 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 		data, status, err := c.attempt(ctx, method, u, body)
 		if err != nil {
 			last = err
+			// A non-idempotent request (POST) may have reached the server, so
+			// a transport error is terminal rather than blind-retried.
+			if !idempotent {
+				return nil, err
+			}
 			continue
 		}
 
@@ -93,11 +126,12 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 		}
 
 		apiErr := decodeAPIError(status, data)
-		if status == http.StatusTooManyRequests || status >= 500 {
+		if idempotent && (status == http.StatusTooManyRequests || status >= 500) {
 			last = apiErr
 			continue
 		}
-		// Every 4xx-class coded error is a contract error, never blind-retried.
+		// Every 4xx-class coded error is a contract error, and any error on a
+		// non-idempotent request, is never blind-retried.
 		return nil, apiErr
 	}
 	return nil, &TransientError{Attempts: c.MaxAttempts, Last: last}

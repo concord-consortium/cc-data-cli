@@ -32,8 +32,8 @@ type Ref struct {
 func (r Ref) String() string { return r.Portal + "/" + r.Name }
 
 // ParseRef resolves "<portal>/<name>" or a bare "<name>" (under defaultPortal).
-// The name is not validated here beyond splitting; callers that create datasets
-// validate it with ValidateName.
+// The name is validated with ValidateName so no ref can carry path-traversal
+// segments into filesystem sinks (os.RemoveAll, MkdirAll) or MCP dataset_create.
 func ParseRef(raw, defaultPortal string) (Ref, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -61,6 +61,9 @@ func ParseRef(raw, defaultPortal string) (Ref, error) {
 	}
 	if name == "" {
 		return Ref{}, fmt.Errorf("dataset ref %q has no name", raw)
+	}
+	if err := ValidateName(name); err != nil {
+		return Ref{}, err
 	}
 	return Ref{Portal: host, Name: name}, nil
 }

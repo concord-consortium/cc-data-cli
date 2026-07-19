@@ -58,6 +58,9 @@ func ActivityLockFor(datasetDir string) *ActivityLock {
 
 // DownloadLockFor returns the process-wide per-download guard for a lock file
 // (seg_<type>_<run>.lock and friends) under a dataset's segments directory.
+// Unlike the dataset-keyed guards, download guards are keyed per-run, so the
+// registry entry is ref-counted and evicted on the last Unlock to keep a
+// long-lived MCP server's map from growing unboundedly across runs.
 func DownloadLockFor(datasetDir, lockName string) *DownloadLock {
 	path := filepath.Join(filepath.Clean(datasetDir), SegmentsDir, lockName)
 	registryMu.Lock()
@@ -78,6 +81,7 @@ type DownloadLock struct {
 	mu    sync.Mutex
 	flock *flock.Flock
 	held  bool
+	refs  int // registry references, guarded by registryMu
 }
 
 // TryLock acquires the guard without blocking, creating the segments directory
@@ -96,16 +100,28 @@ func (l *DownloadLock) TryLock() (bool, error) {
 		return false, err
 	}
 	l.held = true
+	registryMu.Lock()
+	l.refs++
+	registryMu.Unlock()
 	return true, nil
 }
 
-// Unlock releases the guard.
+// Unlock releases the guard and evicts its registry entry once no holder
+// remains, so per-run lock keys do not accumulate over the process lifetime.
 func (l *DownloadLock) Unlock() {
 	if !l.held {
 		return
 	}
 	l.held = false
 	l.flock.Unlock()
+	registryMu.Lock()
+	l.refs--
+	// Only evict when this exact guard is still the registered one; a concurrent
+	// DownloadLockFor may have already replaced it after an earlier eviction.
+	if l.refs == 0 && dlGuards[l.path] == l {
+		delete(dlGuards, l.path)
+	}
+	registryMu.Unlock()
 	l.mu.Unlock()
 }
 

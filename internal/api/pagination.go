@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/url"
 	"strconv"
 )
@@ -46,6 +47,7 @@ func FetchPage[T any](ctx context.Context, c *Client, path string, limit int, to
 func DrainPages[T any](ctx context.Context, c *Client, path string, limit int) ([]T, error) {
 	var all []T
 	token := ""
+	seen := map[string]bool{}
 	for {
 		page, err := FetchPage[T](ctx, c, path, limit, token, nil)
 		if err != nil {
@@ -55,7 +57,14 @@ func DrainPages[T any](ctx context.Context, c *Client, path string, limit int) (
 		if page.NextPageToken == nil || *page.NextPageToken == "" {
 			return all, nil
 		}
-		token = *page.NextPageToken
+		next := *page.NextPageToken
+		// A trusted server should never echo a token it already handed out;
+		// a repeat would loop forever accumulating duplicates, so stop.
+		if seen[next] {
+			return nil, fmt.Errorf("pagination stopped: server repeated page token")
+		}
+		seen[next] = true
+		token = next
 	}
 }
 

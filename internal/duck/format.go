@@ -87,7 +87,7 @@ func convert(v any) any {
 	case nil:
 		return nil
 	case time.Time:
-		return t.UTC().Format(time.RFC3339)
+		return t.UTC().Format(time.RFC3339Nano)
 	case []byte:
 		return string(t)
 	case *big.Int:
@@ -96,8 +96,10 @@ func convert(v any) any {
 		}
 		return t.String()
 	case *big.Float:
-		f, _ := t.Float64()
-		if t.IsInt() || withinFloat64(f) {
+		// Float64 reports whether the float64 is exact; only emit a JSON number
+		// when it is, otherwise render the exact value as a string so DECIMAL and
+		// wide big.Float values are not silently rounded to float64.
+		if f, acc := t.Float64(); acc == big.Exact {
 			return f
 		}
 		return t.Text('f', -1)
@@ -109,10 +111,6 @@ func convert(v any) any {
 	default:
 		return v
 	}
-}
-
-func withinFloat64(f float64) bool {
-	return !math.IsInf(f, 0) && !math.IsNaN(f)
 }
 
 func cellString(v any) string {
@@ -206,13 +204,17 @@ func renderJSON(w io.Writer, rows *sql.Rows, cols []string, array bool) error {
 		}
 		if array {
 			if !first {
-				io.WriteString(w, ",")
+				if _, err := io.WriteString(w, ","); err != nil {
+					return err
+				}
 			}
 			b, err := json.Marshal(obj)
 			if err != nil {
 				return err
 			}
-			w.Write(b)
+			if _, err := w.Write(b); err != nil {
+				return err
+			}
 		} else {
 			if err := enc.Encode(obj); err != nil {
 				return err

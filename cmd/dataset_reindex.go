@@ -22,6 +22,9 @@ func newReindexCmd() *cobra.Command {
 			}
 			echoRef(ref)
 			d := dataset.Open(root, ref)
+			if !d.Exists() {
+				return notFound(ref)
+			}
 			if err := d.Reindex(); err != nil {
 				return mutationErr(err)
 			}

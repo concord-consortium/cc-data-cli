@@ -100,6 +100,7 @@ func (Store) Save(portal, token, server string) error {
 		return err
 	}
 	pc := PortalCred{Server: server, StoredAt: now().UTC()}
+	keyringStored := false
 	if err := keyringSet(keyringService, portal, token); err != nil {
 		pc.Backend = BackendFile
 		pc.Token = token
@@ -108,9 +109,19 @@ func (Store) Save(portal, token, server string) error {
 		pc.Backend = BackendKeyring
 		// If a prior file-backed token existed, drop the inline copy.
 		pc.Token = ""
+		keyringStored = true
 	}
 	cf.Portals[portal] = pc
-	return writeFile(cf)
+	if err := writeFile(cf); err != nil {
+		if keyringStored {
+			// The keychain already holds the new token but the metadata file
+			// still points at the prior state; roll the keychain write back so
+			// the two can't disagree.
+			_ = keyringDelete(keyringService, portal)
+		}
+		return err
+	}
+	return nil
 }
 
 // Token returns the stored token for a portal.

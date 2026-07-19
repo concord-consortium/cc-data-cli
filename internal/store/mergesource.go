@@ -49,7 +49,7 @@ type MultiSource struct {
 }
 
 // NewMultiSource combines per-run segment indexes.
-func NewMultiSource(byRun map[int]*SegmentIndex) *MultiSource {
+func NewMultiSource(byRun map[int]*SegmentIndex) (*MultiSource, error) {
 	m := &MultiSource{byRun: byRun, owner: map[string]int{}}
 	best := map[string]stamp{}
 	runs := make([]int, 0, len(byRun))
@@ -60,7 +60,10 @@ func NewMultiSource(byRun map[int]*SegmentIndex) *MultiSource {
 	for _, run := range runs {
 		idx := byRun[run]
 		for _, key := range idx.Keys() {
-			st := readStamp(idx, key)
+			st, err := readStamp(idx, key)
+			if err != nil {
+				return nil, err
+			}
 			if cur, ok := best[key]; !ok || st.newerThan(cur) {
 				best[key] = st
 				m.owner[key] = run
@@ -72,7 +75,7 @@ func NewMultiSource(byRun map[int]*SegmentIndex) *MultiSource {
 		m.keys = append(m.keys, k)
 	}
 	sort.Strings(m.keys)
-	return m
+	return m, nil
 }
 
 func (m *MultiSource) Keys() []string          { return m.keys }
@@ -109,15 +112,17 @@ func (s stamp) newerThan(o stamp) bool {
 	return s.runID > o.runID
 }
 
-func readStamp(idx *SegmentIndex, key string) stamp {
+func readStamp(idx *SegmentIndex, key string) (stamp, error) {
 	rec, err := idx.Record(key)
 	if err != nil {
-		return stamp{}
+		return stamp{}, err
 	}
 	var fields struct {
 		FetchedAt string `json:"_fetched_at"`
 		RunID     int    `json:"_run_id"`
 	}
-	json.Unmarshal(bytes.TrimSpace(rec), &fields)
-	return stamp{fetchedAt: fields.FetchedAt, runID: fields.RunID}
+	if err := json.Unmarshal(bytes.TrimSpace(rec), &fields); err != nil {
+		return stamp{}, err
+	}
+	return stamp{fetchedAt: fields.FetchedAt, runID: fields.RunID}, nil
 }

@@ -3,6 +3,7 @@ package store
 import (
 	"bytes"
 	"encoding/json"
+	"strconv"
 )
 
 // DuckDB column type names.
@@ -91,6 +92,11 @@ func valueType(v json.RawMessage) string {
 		return "" // null does not constrain the type
 	default:
 		if bytes.ContainsAny(t, ".eE") {
+			return TypeDOUBLE
+		}
+		// An integer literal outside int64 range cannot be a DuckDB BIGINT and
+		// would fail at query time; fall through to DOUBLE (mirrors csvValueType).
+		if _, err := strconv.ParseInt(string(t), 10, 64); err != nil {
 			return TypeDOUBLE
 		}
 		return TypeBIGINT

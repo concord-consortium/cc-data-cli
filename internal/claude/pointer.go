@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/concord-consortium/cc-data-cli/internal/fsutil"
 )
 
 // pointerMarker identifies the cc-data line in ~/.claude/CLAUDE.md so it can be
@@ -41,7 +43,7 @@ func AddPointer() error {
 		content += "\n"
 	}
 	content += pointerLine + "\n"
-	return os.WriteFile(path, []byte(content), 0o644)
+	return writeFileAtomic(path, []byte(content), fileMode(path, 0o644))
 }
 
 // RemovePointer removes the skill pointer line from ~/.claude/CLAUDE.md.
@@ -65,5 +67,43 @@ func RemovePointer() error {
 		}
 		kept = append(kept, l)
 	}
-	return os.WriteFile(path, []byte(strings.Join(kept, "\n")), 0o644)
+	return writeFileAtomic(path, []byte(strings.Join(kept, "\n")), fileMode(path, 0o644))
+}
+
+// fileMode returns path's current permission bits, or def when it does not exist.
+func fileMode(path string, def os.FileMode) os.FileMode {
+	if fi, err := os.Stat(path); err == nil {
+		return fi.Mode().Perm()
+	}
+	return def
+}
+
+// writeFileAtomic writes data to path via a same-directory temp file, fsyncs it,
+// chmods it to mode, and atomically renames it into place, so an interrupt can
+// never truncate CLAUDE.md to a partial read-modify-write result.
+func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
+	dir := filepath.Dir(path)
+	f, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp)
+
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Chmod(mode); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return fsutil.RenameAtomic(tmp, path)
 }

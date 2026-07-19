@@ -34,9 +34,11 @@ func doubleDecode(record []byte) []byte {
 	if inner, ok := stateObj["interactiveState"]; ok {
 		var innerStr string
 		if err := json.Unmarshal(inner, &innerStr); err == nil {
-			var innerObj json.RawMessage
+			// Require the decoded value to be a JSON object, symmetric with the
+			// report_state handling above; a scalar/array/null is not merged in.
+			var innerObj map[string]json.RawMessage
 			if err := json.Unmarshal([]byte(innerStr), &innerObj); err == nil {
-				stateObj["interactiveState"] = innerObj
+				stateObj["interactiveState"] = mustMarshal(innerObj)
 			} else {
 				stateObj["interactiveState"] = jsonNull
 				obj["interactive_state_raw"] = mustMarshal(innerStr)

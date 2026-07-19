@@ -70,9 +70,13 @@ func Load() (*Config, error) {
 		c.Version = CurrentVersion
 	}
 	if c.ServerURL != "" {
-		if _, err := ValidateServerURL(c.ServerURL); err != nil {
+		origin, err := ValidateServerURL(c.ServerURL)
+		if err != nil {
 			return nil, fmt.Errorf("config.json server_url invalid: %w", err)
 		}
+		// Keep the canonical path-stripped origin so ServerOrigin() never
+		// returns a raw value that still carries an /api path.
+		c.ServerURL = origin
 	}
 	return &c, nil
 }
@@ -81,6 +85,15 @@ func Load() (*Config, error) {
 func (c *Config) Save() error {
 	if c.Version == 0 {
 		c.Version = CurrentVersion
+	}
+	if c.ServerURL != "" {
+		// Canonicalize on write so Save can never persist a value Load would
+		// reject, and so the stored origin has any /api path stripped.
+		origin, err := ValidateServerURL(c.ServerURL)
+		if err != nil {
+			return fmt.Errorf("server_url invalid: %w", err)
+		}
+		c.ServerURL = origin
 	}
 	dir, err := ConfigDir()
 	if err != nil {

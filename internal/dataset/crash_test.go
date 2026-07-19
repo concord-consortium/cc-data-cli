@@ -29,7 +29,15 @@ func TestCrashInjectionConverges(t *testing.T) {
 			})
 			crashAt(t, n)
 			func() {
-				defer func() { recover() }()
+				defer func() {
+					r := recover()
+					if r == nil {
+						t.Fatalf("boundary %d: expected a panic, but merge returned normally", n)
+					}
+					if want := fmt.Sprintf("simulated crash after write %d", n); r != want {
+						t.Fatalf("boundary %d: recovered %v, want %q", n, r, want)
+					}
+				}()
 				d.MergeCompact("answers", 612, segB)
 			}()
 			testHookAfterWrite = func(int) {}
@@ -83,7 +91,15 @@ func TestMembershipWriteFailureAborts(t *testing.T) {
 	// exactly like a mid-write failure right after the store rename.
 	crashAt(t, 1) // abort right after the store rename, before membership
 	func() {
-		defer func() { recover() }()
+		defer func() {
+			r := recover()
+			if r == nil {
+				t.Fatal("expected a panic, but merge returned normally")
+			}
+			if want := "simulated crash after write 1"; r != want {
+				t.Fatalf("recovered %v, want %q", r, want)
+			}
+		}()
 		d.MergeCompact("answers", 612, segB)
 	}()
 	testHookAfterWrite = func(int) {}

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -336,17 +337,32 @@ func TestGetReportStreamDiscipline(t *testing.T) {
 	rt := "answers"
 	srv := newReportServer(t, &reportServer{slug: "student-answers", reportType: &rt, csv: "student_id,x\nPrompt,p\nCorrect answer,c\n1,a\n"})
 	defer srv.Close()
+
+	// Capture the real stdout stream so we can prove two things about the output
+	// path: FetchReport itself writes no prose to stdout (all progress goes to
+	// opts.Progress), and rendering the returned result via the CLI's renderer
+	// emits exactly one JSON object line with no stray output.
+	var out bytes.Buffer
+	restore := output.SetStreams(&out, io.Discard)
+	defer restore()
+
 	result, _, cliErr := runFetch(t, d, srv, fetch1{})
 	if cliErr != nil {
 		t.Fatal(cliErr)
 	}
-	// The result line must be exactly one JSON object.
-	b, err := json.Marshal(result)
-	if err != nil {
+	if out.Len() != 0 {
+		t.Fatalf("FetchReport wrote to stdout (must stay clean for the result line): %q", out.String())
+	}
+
+	if err := output.ResultLine(result); err != nil {
 		t.Fatal(err)
 	}
+	lines := strings.Split(strings.TrimRight(out.String(), "\n"), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("expected exactly one stdout line, got %d: %q", len(lines), out.String())
+	}
 	var obj map[string]any
-	if err := json.Unmarshal(b, &obj); err != nil {
-		t.Fatalf("result line not a JSON object: %s", b)
+	if err := json.Unmarshal([]byte(lines[0]), &obj); err != nil {
+		t.Fatalf("result line not a JSON object: %s", lines[0])
 	}
 }

@@ -72,6 +72,34 @@ func TestPreCreate0600(t *testing.T) {
 	}
 }
 
+// TestPreCreate0600TightensExisting asserts PreCreate0600 chmods a pre-existing
+// file down to 0600 (a fresh-creation-only mode would leave a 0644 file at 0644)
+// without truncating its contents.
+func TestPreCreate0600TightensExisting(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows stat mode is not POSIX permission bits")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "repl_history")
+	if err := os.WriteFile(path, []byte("prior"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := PreCreate0600(path); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o600 {
+		t.Fatalf("mode = %v, want 0600", fi.Mode().Perm())
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || string(data) != "prior" {
+		t.Fatalf("content = %q err = %v, want %q preserved", data, err, "prior")
+	}
+}
+
 func TestRenameAtomic(t *testing.T) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "a")

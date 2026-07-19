@@ -17,8 +17,24 @@ permissions:
   contents: write
 
 jobs:
+  # Gate the whole release on the test suite so a tag whose tests fail cannot
+  # build or publish. Mirrors ci.yml's test step (go test ./...).
+  test:
+    name: test
+    runs-on: ubuntu-24.04
+    env:
+      CGO_ENABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Test
+        run: go test ./...
+
   build:
     name: build (${{ matrix.target }})
+    needs: test
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -81,7 +97,7 @@ jobs:
             dist/*.tar.gz
             dist/*_checksums.txt
             dist/*.sha256
-          if-no-files-found: warn
+          if-no-files-found: error
 
   publish:
     name: publish release + formula
@@ -99,15 +115,26 @@ jobs:
       - name: Verify checksums
         run: |
           cd dist
-          for f in *.tar.gz; do
-            shasum -a 256 "$f"
+          shopt -s nullglob
+          manifests=(*.sha256)
+          if [[ ${#manifests[@]} -eq 0 ]]; then
+            echo "no checksum manifests (*.sha256) found in dist; refusing to publish" >&2
+            exit 1
+          fi
+          # shasum -c recomputes each tarball's sha256 and fails on any mismatch or
+          # missing file. Under the default -eo pipefail shell a failure aborts here.
+          for m in "${manifests[@]}"; do
+            echo "verifying ${m}"
+            shasum -a 256 -c "${m}"
           done
 
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" dist/*.tar.gz \
+          # Attach the checksum manifests alongside the tarballs so consumers can
+          # verify downloads independently.
+          gh release create "${GITHUB_REF_NAME}" dist/*.tar.gz dist/*.sha256 \
             --title "${GITHUB_REF_NAME}" --generate-notes
 
       - name: Render and push the Homebrew formula

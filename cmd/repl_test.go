@@ -4,13 +4,15 @@ import "testing"
 
 func TestAccumulatorMultiLine(t *testing.T) {
 	var a accumulator
-	if _, complete := a.feed("SELECT 1"); complete {
+	a.feed("SELECT 1")
+	if _, complete := a.take(); complete {
 		t.Fatal("statement without ; should not be complete")
 	}
 	if !a.pending() {
 		t.Fatal("should be pending after a partial line")
 	}
-	stmt, complete := a.feed("FROM answers;")
+	a.feed("FROM answers;")
+	stmt, complete := a.take()
 	if !complete {
 		t.Fatal("statement with ; should complete")
 	}
@@ -24,7 +26,8 @@ func TestAccumulatorMultiLine(t *testing.T) {
 
 func TestAccumulatorSemicolonInString(t *testing.T) {
 	var a accumulator
-	stmt, complete := a.feed("SELECT ';' AS x;")
+	a.feed("SELECT ';' AS x;")
+	stmt, complete := a.take()
 	if !complete {
 		t.Fatal("should complete on the terminating ;")
 	}
@@ -35,16 +38,31 @@ func TestAccumulatorSemicolonInString(t *testing.T) {
 
 func TestAccumulatorEscapedQuote(t *testing.T) {
 	var a accumulator
-	stmt, complete := a.feed("SELECT 'a''b;c' AS x;")
+	a.feed("SELECT 'a''b;c' AS x;")
+	stmt, complete := a.take()
 	if !complete || stmt != "SELECT 'a''b;c' AS x" {
 		t.Fatalf("escaped-quote handling wrong: %q complete=%v", stmt, complete)
 	}
 }
 
-func TestAccumulatorDotCommand(t *testing.T) {
+// TestAccumulatorMultiStatement covers the #52 fix: a single line holding two
+// statements must yield both, not silently drop everything after the first ';'.
+func TestAccumulatorMultiStatement(t *testing.T) {
 	var a accumulator
-	stmt, complete := a.feed(".tables")
-	if !complete || stmt != ".tables" {
-		t.Fatalf("dot command should complete immediately: %q %v", stmt, complete)
+	a.feed("SELECT 1; SELECT 2;")
+
+	stmt, complete := a.take()
+	if !complete || stmt != "SELECT 1" {
+		t.Fatalf("first take = %q complete=%v, want %q", stmt, complete, "SELECT 1")
+	}
+	stmt, complete = a.take()
+	if !complete || stmt != " SELECT 2" {
+		t.Fatalf("second take = %q complete=%v, want %q", stmt, complete, " SELECT 2")
+	}
+	if _, complete := a.take(); complete {
+		t.Fatal("no third statement should remain")
+	}
+	if a.pending() {
+		t.Fatal("buffer should be empty after draining all statements")
 	}
 }

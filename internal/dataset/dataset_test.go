@@ -57,6 +57,75 @@ func TestCRUD(t *testing.T) {
 	}
 }
 
+// TestDeleteLeavesNoTombstoneResidue covers the tombstone-rename delete (finding
+// #19): the dataset dir is removed, no `.deleting-*` tombstone is left behind in
+// the portal folder, and a listing sees nothing.
+func TestDeleteLeavesNoTombstoneResidue(t *testing.T) {
+	root := t.TempDir()
+	ref := Ref{Portal: "learn.concord.org", Name: "gone"}
+	d, err := Create(root, ref, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Plant artifacts so removal has real work to do.
+	os.WriteFile(d.Path("answers.v1.jsonl"), []byte("{}\n"), 0o600)
+	os.MkdirAll(d.Path("segments"), 0o700)
+
+	if err := d.Delete(); err != nil {
+		t.Fatal(err)
+	}
+	if d.Exists() {
+		t.Fatal("dataset dir should be gone after delete")
+	}
+	// The tombstone lives one level up from datasets/; only the datasets/ dir
+	// should remain in the portal folder.
+	portalDir := filepath.Dir(filepath.Dir(d.Dir))
+	entries, err := os.ReadDir(portalDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if e.Name() != "datasets" {
+			t.Fatalf("delete left residue in the portal folder: %s", e.Name())
+		}
+	}
+	list, err := BuildListJSON(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Datasets) != 0 {
+		t.Fatalf("expected no datasets after delete, got %d", len(list.Datasets))
+	}
+}
+
+// TestPurgeKeepsArtifactsWhenManifestCommitFails is the negative control for the
+// #20 reorder: Purge commits the cleared manifest before deleting artifacts, so a
+// failed commit must leave every artifact intact. (The old delete-first order
+// would already have destroyed them by the time the commit failed.)
+func TestPurgeKeepsArtifactsWhenManifestCommitFails(t *testing.T) {
+	root := t.TempDir()
+	d, err := Create(root, Ref{Portal: "learn.concord.org", Name: "ds"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(d.Path("answers.v1.jsonl"), []byte("{}\n"), 0o600)
+	os.WriteFile(d.Path("report_584.csv"), []byte("a\n"), 0o600)
+
+	orig := purgeCommitManifest
+	purgeCommitManifest = func(string, *Manifest) error { return errors.New("injected commit failure") }
+	t.Cleanup(func() { purgeCommitManifest = orig })
+
+	if err := d.Purge(); err == nil {
+		t.Fatal("expected Purge to fail when the manifest commit fails")
+	}
+	if _, err := os.Stat(d.Path("answers.v1.jsonl")); err != nil {
+		t.Fatalf("Purge must not delete the store when the manifest commit fails: %v", err)
+	}
+	if _, err := os.Stat(d.Path("report_584.csv")); err != nil {
+		t.Fatalf("Purge must not delete the CSV when the manifest commit fails: %v", err)
+	}
+}
+
 func TestCreateRejectsReservedName(t *testing.T) {
 	root := t.TempDir()
 	_, err := Create(root, Ref{Portal: "learn.concord.org", Name: "main"}, "")
