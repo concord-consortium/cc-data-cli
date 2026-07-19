@@ -22,6 +22,7 @@ type presignServer struct {
 	*httptest.Server
 	presignCalls  int32
 	lastDispos    string
+	lastSource    string
 	notFoundDocID string
 }
 
@@ -46,6 +47,9 @@ func newPresignServer(t *testing.T, ps *presignServer) *presignServer {
 			}
 			json.Unmarshal(body, &req)
 			ps.lastDispos = req.Disposition
+			if len(req.Attachments) > 0 {
+				ps.lastSource = req.Attachments[0].Source
+			}
 			var results []string
 			for _, a := range req.Attachments {
 				if a.DocID == ps.notFoundDocID {
@@ -191,6 +195,22 @@ func TestAttachmentsResumeAndRefresh(t *testing.T) {
 	}
 }
 
+// TestAttachmentsPresignUsesSourceKey guards the presign lookup-key bug: the
+// request must carry the record's source_key (the /sources/{source}/... segment),
+// not the firebase project.
+func TestAttachmentsPresignUsesSourceKey(t *testing.T) {
+	d := seedAnswers(t, 584, answerWithAttachment("e1", "q1", "d1", "a.mp3", "p/a.mp3"))
+	ps := newPresignServer(t, &presignServer{})
+	defer ps.Close()
+
+	if _, err := runAttachments(t, d, ps, AttachmentOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if ps.lastSource != "s" {
+		t.Fatalf("presign source must be the record source_key %q, got %q", "s", ps.lastSource)
+	}
+}
+
 func TestAttachmentsURLMode(t *testing.T) {
 	d := seedAnswers(t, 584, answerWithAttachment("e1", "q1", "d1", "a.mp3", "p/a.mp3"))
 	ps := newPresignServer(t, &presignServer{})
@@ -212,8 +232,9 @@ func TestAttachmentsURLMode(t *testing.T) {
 	if !strings.HasPrefix(strings.TrimSpace(out.String()), "http") {
 		t.Fatalf("--url single should print a bare URL, got %q", out.String())
 	}
-	// Nothing written to the dataset.
-	if _, err := os.Stat(d.Path("attachments/" + dataset.FileID12("report-service-pro", "p/a.mp3") + "_a.mp3")); !os.IsNotExist(err) {
+	// Nothing written to the dataset. The on-disk hash is keyed by the record's
+	// source_key ("s"), not a firebase project.
+	if _, err := os.Stat(d.Path("attachments/" + dataset.FileID12("s", "p/a.mp3") + "_a.mp3")); !os.IsNotExist(err) {
 		t.Fatal("--url must not download files")
 	}
 	after, _ := os.ReadFile(d.Path("manifest.json"))

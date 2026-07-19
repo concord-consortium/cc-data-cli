@@ -11,7 +11,6 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/concord-consortium/cc-data-cli/internal/config"
 	"github.com/concord-consortium/cc-data-cli/internal/store"
 )
 
@@ -72,11 +71,6 @@ func SanitizeFilename(name string) string {
 	return base
 }
 
-// firebaseSource returns the dataset portal's firebase source.
-func (d *Dataset) firebaseSource() string {
-	return config.FirebaseSource(d.Ref.Portal)
-}
-
 // ScanRecordAttachments extracts attachment refs from one record.
 func (d *Dataset) ScanRecordAttachments(typ string, record []byte) []AttachRef {
 	var obj map[string]json.RawMessage
@@ -93,7 +87,11 @@ func (d *Dataset) ScanRecordAttachments(typ string, record []byte) []AttachRef {
 		docID = jsonString(obj["history_id"])
 	}
 	stateNames := stateAttachmentNames(obj["report_state"])
-	source := d.firebaseSource()
+	// The presign endpoint looks the doc up at /sources/{source}/... so source must
+	// be the record's own source_key (the reporting LARA/AP host), NOT the firebase
+	// project (report-service-dev/-pro). The firebase project is selected
+	// server-side by the report-server, not carried in this field.
+	source := id.SourceKey
 
 	refs := make([]AttachRef, 0, len(attachments))
 	for name, meta := range attachments {

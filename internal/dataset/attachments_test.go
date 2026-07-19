@@ -59,6 +59,9 @@ func TestScanHistoryUsesHistoryID(t *testing.T) {
 	if refs[0].PublicPath != "p/a.mp3" || refs[0].Name != "audioFile" {
 		t.Fatalf("ref = %+v", refs[0])
 	}
+	if refs[0].Source != "s" {
+		t.Fatalf("source must be the record source_key, got %q", refs[0].Source)
+	}
 }
 
 func TestScanAnswersUsesID(t *testing.T) {
@@ -67,6 +70,11 @@ func TestScanAnswersUsesID(t *testing.T) {
 	refs := d.ScanRecordAttachments("answers", rec)
 	if len(refs) != 1 || refs[0].DocID != "DOC" {
 		t.Fatalf("answers doc_id should be id: %+v", refs)
+	}
+	// Source must be the record's source_key (the /sources/{source}/... segment),
+	// not the firebase project.
+	if refs[0].Source != "s" {
+		t.Fatalf("source must be the record source_key, got %q", refs[0].Source)
 	}
 }
 
