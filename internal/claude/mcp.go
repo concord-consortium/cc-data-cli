@@ -46,6 +46,33 @@ func RegisterMCP() (MCPRegisterResult, error) {
 	return MCPRegisterResult{Registered: true, Binary: exe}, nil
 }
 
+// MCPUnregisterResult describes what UnregisterMCP did.
+type MCPUnregisterResult struct {
+	Removed       bool   // the registration was removed this run
+	NotPresent    bool   // nothing was registered
+	SkippedReason string // non-empty when unregistration was skipped (no claude CLI)
+}
+
+// UnregisterMCP removes the cc-data MCP server registration that RegisterMCP added
+// (user scope). It is idempotent (an already-absent server is reported, not an
+// error) and a graceful no-op when the claude CLI is not installed.
+func UnregisterMCP() (MCPUnregisterResult, error) {
+	claudeBin, err := exec.LookPath("claude")
+	if err != nil {
+		return MCPUnregisterResult{SkippedReason: "the claude CLI was not found on PATH"}, nil
+	}
+	out, err := exec.Command(claudeBin, "mcp", "remove", "-s", "user", MCPServerName).CombinedOutput()
+	text := strings.TrimSpace(string(out))
+	if err != nil {
+		// "No MCP server named ..." means it was never registered: idempotent success.
+		if strings.Contains(strings.ToLower(text), "no mcp server named") {
+			return MCPUnregisterResult{NotPresent: true}, nil
+		}
+		return MCPUnregisterResult{}, fmt.Errorf("claude mcp remove failed: %v: %s", err, text)
+	}
+	return MCPUnregisterResult{Removed: true}, nil
+}
+
 // ManualMCPCommand is the command a user can run to register the MCP server
 // themselves (shown when automatic registration is skipped or fails).
 func ManualMCPCommand(binary string) string {

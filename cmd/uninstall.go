@@ -23,7 +23,7 @@ func newUninstallCmd() *cobra.Command {
 	var removeCreds bool
 	cmd := &cobra.Command{
 		Use:   "uninstall",
-		Short: "Remove the Claude Code skill and pointer",
+		Short: "Remove the Claude Code skill, pointer, and MCP registration",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			errOut := output.Stderr()
@@ -31,6 +31,9 @@ func newUninstallCmd() *cobra.Command {
 				return output.Internalf("removing skill: %v", err)
 			}
 			fmt.Fprintln(errOut, "Removed the cc-data skill and the ~/.claude/CLAUDE.md pointer.")
+
+			// Unregister the MCP server that init registered (mirror of init).
+			unregisterMCP(errOut)
 
 			var credErr error
 			if removeCreds {
@@ -49,6 +52,20 @@ func newUninstallCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&removeCreds, "credentials", false, "also revoke and remove stored credentials and config")
 	return cmd
+}
+
+// unregisterMCP removes the Claude Code MCP registration and reports the outcome.
+// Failures are warnings, not fatal: the skill removal already succeeded.
+func unregisterMCP(errOut io.Writer) {
+	res, err := claude.UnregisterMCP()
+	if err != nil {
+		fmt.Fprintf(errOut, "Warning: could not unregister the Claude Code MCP server: %v\n", err)
+		fmt.Fprintf(errOut, "  Remove it manually with: claude mcp remove -s user %s\n", claude.MCPServerName)
+		return
+	}
+	if res.Removed {
+		fmt.Fprintf(errOut, "Unregistered the Claude Code MCP server %q.\n", claude.MCPServerName)
+	}
 }
 
 // removeCredentials revokes each portal's token (the logout path) then deletes it,
