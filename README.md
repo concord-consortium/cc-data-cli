@@ -6,6 +6,8 @@ A command-line tool for [Concord Consortium](https://concord.org) researchers to
 
 > **Status: early development.** The commands and layout described below are the design target (see [REPORT-77](https://concord-consortium.atlassian.net/browse/REPORT-77) and the [REPORT-71 design doc](https://gist.github.com/dougmartin/034b3004e9cd42f6e9960a478358d622)); not everything is implemented yet.
 
+> **New to `cc-data`? Start with the [Researcher Guide](docs/researcher-guide.md)**: how to log in, connect it to Claude Code, how datasets are organized, and the kinds of questions you can ask. The rest of this README is the design and security reference.
+
 ## What it does
 
 - **Authenticate once** against a report-server portal via a browser loopback login (`cc-data login`). Tokens are stored per portal in your OS keychain (macOS Keychain / Linux Secret Service / Windows Credential Manager), with a `0600` `~/.config/cc-data/credentials.json` fallback.
@@ -72,18 +74,23 @@ Every command has real per-command help; `cc-data get answers --help` is the aut
 - Purge or delete datasets when you no longer need them (`cc-data dataset purge|delete`); don't archive them to shared drives. `dataset list`/`show` display each dataset's age so retention stays visible. Researchers legitimately keep datasets for years; cleanup is your call, but make it a deliberate one.
 - If the OS keychain is unavailable, credentials fall back to `~/.config/cc-data/credentials.json` with `0600` permissions (on Windows, where POSIX mode bits don't exist, the file relies on your user profile's ACLs instead). Revoke tokens you no longer use via the report server's token-management UI or `cc-data logout`.
 - **What Claude may auto-read:** the Claude skill directs Claude to run `cc-data dataset show --json` (a summary of labels, counts, and coverage rendered from `manifest.json`) to understand a dataset, not to read the raw JSONL/CSV data files by default. Querying student data through DuckDB is an explicit, user-driven step.
-- A presigned attachment URL (from `get attachments --url`) is a short-lived, credential-free capability to one student's file; don't paste it into shared or persistent channels.
+- A presigned attachment URL (from `get attachments --url`) is a short-lived, credential-free capability to one student's file; don't paste it into shared or persistent channels. Prefer downloading into the dataset over `--url`.
+- **Manual token entry:** on a headless or SSH host, `cc-data login --token -` reads the token from stdin (piped, or an echo-off prompt on a TTY) — the recommended manual form. The bare `--token <value>` form works but is discouraged: flag values land in shell history and process lists.
+- **Dataset-folder trust boundary:** the DuckDB sandbox confines `query`/`repl` to the named dataset folders. On the bundled DuckDB the sandbox resolves symlinks, so this is a *writable-files* boundary, not a symlink escape: anyone who can write into a dataset folder can plant files your queries then read as trusted, so a dataset folder inherits the trust of whoever can write to it.
+- **`--server` trust boundary:** `cc-data login --server <origin>` drives the entire login and token exchange against `<origin>`. The CLI enforces an allowlist (a `concord.org`/`concordqa.org` host or subdomain, or a loopback host; http only for loopback) so a social-engineered `--server` cannot capture your login. Widening it is deliberately a code change.
 - Claude never drives the browser login. On an expired or missing token the CLI emits a structured `NOT_AUTHENTICATED` error and a human runs `cc-data login`.
 
 ## Development
 
-The CLI is written in Go. DuckDB is embedded via [`go-duckdb`](https://github.com/marcboeker/go-duckdb) (cgo), so builds are per-platform native; there is no trivial cross-compile.
+The CLI is written in Go. DuckDB is embedded via [`duckdb-go`](https://github.com/duckdb/duckdb-go) (cgo), so builds are per-platform native; there is no trivial cross-compile.
 
 ```
 go build ./...
 ```
 
-Releases are built with goreleaser on native GitHub Actions runners per platform, with a Homebrew formula for install.
+Releases are built with goreleaser on native GitHub Actions runners per platform, with a Homebrew formula for install (`brew install concord-consortium/tap/cc-data`). Note that `brew uninstall` removes only the binary; run `cc-data uninstall` first to remove the Claude skill, the `~/.claude/CLAUDE.md` pointer, and (optionally) your stored credentials. Your datasets are never removed automatically — `cc-data uninstall` prints where they remain.
+
+A direct browser download of a macOS binary triggers a one-time online Gatekeeper check on first run (the binaries are notarized but not stapled); a `brew install` carries no quarantine, so Gatekeeper does not assess it.
 
 The client/server seam is a versioned HTTP contract (`/api/v1/...`) against the Concord report server; this repo shares no code with it.
 
