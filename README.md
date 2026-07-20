@@ -6,6 +6,8 @@ A command-line tool for [Concord Consortium](https://concord.org) researchers to
 
 > **Status: early development.** The commands and layout described below are the design target (see [REPORT-77](https://concord-consortium.atlassian.net/browse/REPORT-77) and the [REPORT-71 design doc](https://gist.github.com/dougmartin/034b3004e9cd42f6e9960a478358d622)); not everything is implemented yet.
 
+> **New to `cc-data`? Start with the [Researcher Guide](docs/researcher-guide.md)**: how to log in, connect it to Claude Code, how datasets are organized, and the kinds of questions you can ask. The rest of this README is the design and security reference.
+
 ## What it does
 
 - **Authenticate once** against a report-server portal via a browser loopback login (`cc-data login`). Tokens are stored per portal in your OS keychain (macOS Keychain / Linux Secret Service / Windows Credential Manager), with a `0600` `~/.config/cc-data/credentials.json` fallback.
