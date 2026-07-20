@@ -42,6 +42,15 @@ guessing flags.
   `timestamp`, `user_id`, `primary_user_id`): process, timing, and sequence data.
   `dataset show --json` lists each download's `report_type` so the run kind is
   obvious.
+  - The two time columns are in different units: `time` is epoch **seconds**
+    (`to_timestamp(time)`), `timestamp` is epoch **milliseconds**
+    (`to_timestamp(timestamp/1000)`). Both resolve to the same instant; use
+    `timestamp` for sub-second ordering within a session. Order an event trace by
+    `timestamp` (or `time`), not row order. Passing `timestamp` straight to
+    `to_timestamp` gives year 57814, and dividing `time` by 1000 gives 1970, so
+    match the unit. `parameters` and `extras` are VARCHAR holding JSON: parse with
+    `::JSON`, e.g. `json_extract_string(extras::JSON, '$.activityPage')` (a bar
+    change's `parameters` are `{bar, value, via}`).
 
 ## Views
 
@@ -57,7 +66,15 @@ like `wildfire_2026.answers`):
   stores plus `report_prompts`, which key by position-independent
   `remote_endpoint`/`question_id`. `res_<N>_<question_id>_answer` columns are
   VARCHAR (they hold prompt text on pseudo-header rows), so aggregate numerically
-  with `TRY_CAST`, e.g. `sum(TRY_CAST(res_1_q_answer AS DOUBLE))`.
+  with `TRY_CAST`, e.g. `sum(TRY_CAST(res_1_q_answer AS DOUBLE))`. Runs are
+  combined by column name (`UNION ALL BY NAME`), so runs with different schemas
+  coexist: a column present in only some runs is NULL for the rows of runs that
+  lack it (not an error, no misalignment). For example a
+  `student-actions-with-metadata` run adds roster columns (`student_name`,
+  `class`, `learner_id`, ...) that are NULL for a plain `student-actions` run's
+  rows, while shared columns like `event`/`time` populate for both. When a column
+  exists only for some runs, scope by `run_id` (or filter via `downloads`, which
+  carries `run_id`, `type`, `slug`, `report_type`, `complete`).
 - `report_prompts` — the prompt and correct-answer text keyed by the
   `res_<N>_<question_id>_*` columns.
 - `answers`, `history` — the identity-keyed stores (double-decoded
