@@ -35,6 +35,13 @@ guessing flags.
   `--url`; a presigned URL is a credential-free capability to a student's file.
 - Datasets are duplicate-free by construction: re-fetching a run replaces its
   records. Create a dataset per point-in-time pull to compare over time.
+- Report runs have a `report_type` (`answers`, `log`, `usage`). Log runs (slug
+  `student-actions`) are fetchable with `get report` too and yield a clickstream
+  event log (columns include `session`, `application`, `activity`, `event`,
+  `event_value`, `time`, `parameters`, `extras`, `run_remote_endpoint`,
+  `timestamp`, `user_id`, `primary_user_id`): process, timing, and sequence data.
+  `dataset show --json` lists each download's `report_type` so the run kind is
+  obvious.
 
 ## Views
 
@@ -62,13 +69,27 @@ like `wildfire_2026.answers`):
 - Reports-to-stores join: `reports.res_<N>_remote_endpoint =
   answers.remote_endpoint`, with `res_<N>_<question_id>_*` pairing to
   `answers.question_id`.
-- `attachment_files` — per-file metadata and local paths.
+- `attachment_files` — per-file metadata (including `content_type`) and local paths.
 - `attachment_states` — offloaded CODAP/SageModeler state as `filename`, `id12`,
   `name`, raw `content`, and `state = TRY_CAST(content AS JSON)`. Extract with
   `state->>'$.path'` (scalar) or `unnest(from_json(state, '["json"]'))` (arrays);
   `state IS NULL AND content IS NOT NULL` marks a file that failed to parse.
+  Narrow: only the state the current answer points at.
+- `attachment_content` view: like `attachment_states` but covers EVERY offloaded
+  text/JSON attachment (`id12`, `name`, `source`, `public_path`, `content`,
+  `state`), not just the current-answer one, so you can diff every saved snapshot
+  of a doc across a session's history. Binary attachments (audio, images) are
+  excluded here (not UTF-8 text) but remain downloadable via `attachment_files`.
 - `downloads` — a manifest dimension table.
 - Per-run views: `report_<run>`, `answers_<run>`, `history_<run>`.
+
+Learner identity (within a portal): in `answers`/`history`, a learner-run is keyed
+by `remote_endpoint` (one per student per offering-run); `platform_user_id` can
+split within a run and `source_key` is the data-source host, so do not count
+learners by either. Join to `reports` on `remote_endpoint = res_<N>_remote_endpoint`
+to attach the person: `user_id` is the Portal user (the learner) and `learner_id`
+is that user in one offering. Count distinct learners by `user_id` (or `learner_id`);
+cross-portal identity is out of scope.
 
 ## Multi-dataset (longitudinal)
 

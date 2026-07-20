@@ -61,6 +61,7 @@ func (vs viewSet) statements() []viewStmt {
 	stmts = append(stmts, vs.downloadsView())
 	stmts = append(stmts, vs.attachmentFilesView())
 	stmts = append(stmts, vs.attachmentStatesView())
+	stmts = append(stmts, vs.attachmentContentView())
 	stmts = append(stmts, vs.perDownloadViews()...)
 	return stmts
 }
@@ -232,13 +233,13 @@ func (vs viewSet) downloadsView() viewStmt {
 // attachmentFilesView is a VALUES table from the manifest attachment index.
 func (vs viewSet) attachmentFilesView() viewStmt {
 	name := vs.prefix + `"attachment_files"`
-	header := "(id12, name, source, public_path, size, file)"
+	header := "(id12, name, source, public_path, content_type, size, file)"
 	var rows []string
 	for _, af := range vs.m.Attachments {
-		rows = append(rows, fmt.Sprintf("(%s, %s, %s, %s, %d, %s)",
-			sqlStr(af.ID12), sqlStr(af.Name), sqlStr(af.Source), sqlStr(af.PublicPath), af.Size, vs.file(af.File)))
+		rows = append(rows, fmt.Sprintf("(%s, %s, %s, %s, %s, %d, %s)",
+			sqlStr(af.ID12), sqlStr(af.Name), sqlStr(af.Source), sqlStr(af.PublicPath), sqlStr(af.ContentType), af.Size, vs.file(af.File)))
 	}
-	fallback := fmt.Sprintf("CREATE VIEW %s AS SELECT CAST(NULL AS VARCHAR) AS id12, CAST(NULL AS VARCHAR) AS name, CAST(NULL AS VARCHAR) AS source, CAST(NULL AS VARCHAR) AS public_path, CAST(NULL AS BIGINT) AS size, CAST(NULL AS VARCHAR) AS file WHERE false", name)
+	fallback := fmt.Sprintf("CREATE VIEW %s AS SELECT CAST(NULL AS VARCHAR) AS id12, CAST(NULL AS VARCHAR) AS name, CAST(NULL AS VARCHAR) AS source, CAST(NULL AS VARCHAR) AS public_path, CAST(NULL AS VARCHAR) AS content_type, CAST(NULL AS BIGINT) AS size, CAST(NULL AS VARCHAR) AS file WHERE false", name)
 	if len(rows) == 0 {
 		return viewStmt{name: name, primary: fallback, fallback: fallback}
 	}
@@ -264,6 +265,34 @@ func (vs viewSet) attachmentStatesView() viewStmt {
 	}
 	inner := strings.Join(members, "\nUNION ALL BY NAME\n")
 	primary := fmt.Sprintf("CREATE VIEW %s AS SELECT filename, id12, name, content, TRY_CAST(content AS JSON) AS state FROM (%s)", name, inner)
+	return viewStmt{name: name, primary: primary, fallback: fallback}
+}
+
+// attachmentContentView exposes the text content of every downloaded attachment
+// (regardless of the current-answer State flag), so historical/offloaded states
+// - e.g. every saved CODAP/SageModeler snapshot across a session's history, not
+// just the one the current answer points at - are queryable and diffable.
+// attachment_states stays as the narrow current-answer view for back-compat.
+func (vs viewSet) attachmentContentView() viewStmt {
+	name := vs.prefix + `"attachment_content"`
+	var members []string
+	for _, af := range vs.m.Attachments {
+		// read_text requires valid UTF-8, so binary attachments (audio, images)
+		// cannot be exposed as text; they remain downloadable via attachment_files.
+		// Offloaded states are JSON/text, which is the point of this view.
+		if !isTextContentType(af.ContentType) {
+			continue
+		}
+		members = append(members, fmt.Sprintf(
+			"SELECT %s AS id12, %s AS name, %s AS source, %s AS public_path, filename, content FROM read_text(%s)",
+			sqlStr(af.ID12), sqlStr(af.Name), sqlStr(af.Source), sqlStr(af.PublicPath), vs.file(af.File)))
+	}
+	fallback := fmt.Sprintf("CREATE VIEW %s AS SELECT CAST(NULL AS VARCHAR) AS id12, CAST(NULL AS VARCHAR) AS name, CAST(NULL AS VARCHAR) AS source, CAST(NULL AS VARCHAR) AS public_path, CAST(NULL AS VARCHAR) AS filename, CAST(NULL AS VARCHAR) AS content, CAST(NULL AS JSON) AS state WHERE false", name)
+	if len(members) == 0 {
+		return viewStmt{name: name, primary: fallback, fallback: fallback}
+	}
+	inner := strings.Join(members, "\nUNION ALL BY NAME\n")
+	primary := fmt.Sprintf("CREATE VIEW %s AS SELECT id12, name, source, public_path, filename, content, TRY_CAST(content AS JSON) AS state FROM (%s)", name, inner)
 	return viewStmt{name: name, primary: primary, fallback: fallback}
 }
 
@@ -385,6 +414,19 @@ func parseMemberKey(key string) (typ string, run int, ok bool) {
 }
 
 // sqlStr single-quotes a string literal, doubling embedded quotes.
+// isTextContentType reports whether an attachment's content is safe to expose as
+// text via read_text (which requires valid UTF-8). Offloaded states are JSON;
+// binary types (audio, images) are excluded. An unknown/blank type is excluded
+// to stay safe against binary payloads.
+func isTextContentType(ct string) bool {
+	ct = strings.ToLower(ct)
+	return strings.HasPrefix(ct, "text/") ||
+		strings.Contains(ct, "json") ||
+		strings.Contains(ct, "xml") ||
+		strings.Contains(ct, "csv") ||
+		strings.Contains(ct, "svg")
+}
+
 func sqlStr(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 }

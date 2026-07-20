@@ -135,7 +135,7 @@ func TestEngineUnknownReportTypeExcluded(t *testing.T) {
 func TestEngineFreshDatasetAllViewsQueryable(t *testing.T) {
 	d := newDS(t, "empty")
 	e := openEngine(t, []DatasetSpec{{DS: d}}, nil)
-	for _, v := range []string{"reports", "report_prompts", "answers", "history", "run_membership", "downloads", "attachment_files", "attachment_states"} {
+	for _, v := range []string{"reports", "report_prompts", "answers", "history", "run_membership", "downloads", "attachment_files", "attachment_states", "attachment_content"} {
 		if n := queryInt(t, e, "SELECT count(*) FROM "+v); n != 0 {
 			t.Fatalf("fresh view %s should have 0 rows, got %d", v, n)
 		}
