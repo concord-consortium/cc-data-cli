@@ -107,7 +107,12 @@ func (d *Dataset) Reindex() error {
 	// fields are always rebuilt from the filesystem below.
 	prior := d.priorDownloadIndex()
 	m.Downloads = nil
+	memberKeys := make([]string, 0, len(newestMember))
 	for key := range newestMember {
+		memberKeys = append(memberKeys, key)
+	}
+	sort.Strings(memberKeys) // deterministic Downloads ordering
+	for _, key := range memberKeys {
 		typ, run, ok := parseMembershipKey(key)
 		if !ok {
 			continue
@@ -131,8 +136,41 @@ func (d *Dataset) Reindex() error {
 		m.Downloads = append(m.Downloads, dl)
 	}
 
+	// Carry forward attachments downloads: reindex has no path that rebuilds them
+	// from the filesystem (only get_attachments writes them), so without this the
+	// attachments entry and its scanned/coverage provenance fall off the manifest.
+	// Sort by run for deterministic Downloads ordering; Files are reconciled against
+	// the rebuilt on-disk index below.
+	var attach []Download
+	for k, dl := range prior {
+		if k.typ == "attachments" {
+			attach = append(attach, dl)
+		}
+	}
+	sort.Slice(attach, func(i, j int) bool { return attach[i].RunID < attach[j].RunID })
+	m.Downloads = append(m.Downloads, attach...)
+
 	if err := d.RebuildAttachmentIndex(m); err != nil {
 		return err
+	}
+	// Reconcile carried attachments Files against the rebuilt on-disk index: a file
+	// GC'd or removed since the last fetch must not linger in the entry. Coverage
+	// (the historical fetch record) is preserved as-is.
+	onDisk := make(map[string]bool, len(m.Attachments))
+	for _, af := range m.Attachments {
+		onDisk[af.File] = true
+	}
+	for i := range m.Downloads {
+		if m.Downloads[i].Type != "attachments" {
+			continue
+		}
+		kept := make([]string, 0, len(m.Downloads[i].Files))
+		for _, f := range m.Downloads[i].Files {
+			if onDisk[f] {
+				kept = append(kept, f)
+			}
+		}
+		m.Downloads[i].Files = kept
 	}
 	return d.WriteManifest(m)
 }
