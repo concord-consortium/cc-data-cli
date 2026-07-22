@@ -69,7 +69,7 @@ tag looks like `v0.1.0`); the assets follow the pattern
 leading `v`:
 
 ```
-VERSION=0.1.0   # the current version, from the Releases page
+VERSION=X.Y.Z   # replace with the current version from the Releases page, e.g. 0.1.0
 curl -fsSL -o cc-data.tar.gz \
   "https://github.com/concord-consortium/cc-data-cli/releases/download/v${VERSION}/cc-data_${VERSION}_linux_amd64.tar.gz"
 tar xzf cc-data.tar.gz
