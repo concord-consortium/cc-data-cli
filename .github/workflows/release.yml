@@ -72,7 +72,8 @@ jobs:
       - name: Prepare macOS notarization key
         if: matrix.macos
         run: |
-          echo "${{ secrets.AC_API_KEY }}" | base64 --decode > "$RUNNER_TEMP/ac_api_key.p8"
+          # macOS ships BSD base64: decode is -D (GNU's --decode is not supported).
+          echo "${{ secrets.AC_API_KEY }}" | base64 -D > "$RUNNER_TEMP/ac_api_key.p8"
           echo "AC_API_KEY_PATH=$RUNNER_TEMP/ac_api_key.p8" >> "$GITHUB_ENV"
 
       # The notarization key above only authenticates the Apple submission; codesign
@@ -87,7 +88,7 @@ jobs:
         run: |
           KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
           KEYCHAIN_PW="$(uuidgen)"
-          echo "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          echo "$MACOS_CERT_P12" | base64 -D > "$RUNNER_TEMP/cert.p12"  # BSD base64: -D, not --decode
           security create-keychain -p "$KEYCHAIN_PW" "$KEYCHAIN"
           # Keep it unlocked for the whole job (default relocks after 5 minutes idle).
           security set-keychain-settings -lut 21600 "$KEYCHAIN"
