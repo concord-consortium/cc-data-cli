@@ -148,14 +148,26 @@ jobs:
           shopt -s nullglob
           manifests=(*.sha256)
           if [[ ${#manifests[@]} -eq 0 ]]; then
-            echo "no checksum manifests (*.sha256) found in dist; refusing to publish" >&2
+            echo "no checksum files (*.sha256) found in dist; refusing to publish" >&2
             exit 1
           fi
-          # shasum -c recomputes each tarball's sha256 and fails on any mismatch or
-          # missing file. Under the default -eo pipefail shell a failure aborts here.
+          # goreleaser's split checksums are one file per artifact containing just the
+          # bare sha256 hash (no filename), so `shasum -c` cannot parse them. Recompute
+          # each tarball's hash and compare it to its .sha256 file. Under the default
+          # -eo pipefail shell any mismatch or missing file aborts the job.
           for m in "${manifests[@]}"; do
-            echo "verifying ${m}"
-            shasum -a 256 -c "${m}"
+            tarball="${m%.sha256}"
+            if [[ ! -f "${tarball}" ]]; then
+              echo "checksum file ${m} has no matching artifact ${tarball}" >&2
+              exit 1
+            fi
+            expected="$(tr -d '[:space:]' < "${m}")"
+            actual="$(shasum -a 256 "${tarball}" | awk '{print $1}')"
+            if [[ "${expected}" != "${actual}" ]]; then
+              echo "checksum mismatch for ${tarball}: expected ${expected}, got ${actual}" >&2
+              exit 1
+            fi
+            echo "ok: ${tarball}"
           done
 
       - name: Create GitHub release
