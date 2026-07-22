@@ -52,6 +52,27 @@ func TestReleaseWorkflowTargets(t *testing.T) {
 	}
 }
 
+// TestReleaseWorkflowImportsSigningCert guards the load-bearing cert-import step:
+// the App Store Connect key only authenticates notarization, so codesign also needs
+// the Developer ID cert + key imported into a keychain. Without this, every macOS
+// build fails with "no identity found" even when all secrets are set.
+func TestReleaseWorkflowImportsSigningCert(t *testing.T) {
+	rel := readFile(t, ".github/workflows/release.yml")
+	// Match the actual step inputs, not the bare secret names: those also appear in
+	// the "Required secrets" header comment, so a comment alone would satisfy the
+	// test even if the import step's env bindings were removed.
+	for _, want := range []string{
+		"MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}",
+		"MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}",
+		"security import",
+		"security create-keychain",
+	} {
+		if !strings.Contains(rel, want) {
+			t.Fatalf("release workflow must import the Developer ID signing certificate; missing %q", want)
+		}
+	}
+}
+
 func TestCIMatrixCoversFiveTargets(t *testing.T) {
 	ci := readFile(t, ".github/workflows/ci.yml")
 	for _, runner := range []string{"ubuntu-24.04", "ubuntu-24.04-arm", "macos-15", "macos-15-intel", "windows-2022"} {
