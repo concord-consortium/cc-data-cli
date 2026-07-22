@@ -28,10 +28,61 @@ whenever you want to run it yourself.
 
 ## 1. Installing the CLI
 
-> **TBD.** Installation instructions (Homebrew formula and direct download) will
-> be added here once releases are published. For now, assume you have the
-> `cc-data` command available on your `PATH`. Everything below works the same way
-> regardless of how the binary got installed.
+`cc-data` is distributed for **macOS** and **Linux**. The macOS builds are signed
+and notarized by Apple, so they install and run without security prompts.
+
+### macOS (recommended: Homebrew)
+
+```
+brew tap --trust concord-consortium/tap
+brew install cc-data
+```
+
+- The `--trust` is required. Homebrew 6.0 and later make you trust a third-party
+  tap before installing from it (a supply-chain security measure). If you tapped
+  without it, run `brew trust concord-consortium/tap` before `brew install`.
+- Homebrew installs into its own prefix and removes the download quarantine, so
+  there is no Gatekeeper prompt.
+- Don't have Homebrew? Install it first from [brew.sh](https://brew.sh).
+
+**Without Homebrew:** download the macOS archive for your chip from the
+[Releases page](https://github.com/concord-consortium/cc-data-cli/releases)
+(`darwin_arm64` for Apple Silicon, `darwin_amd64` for Intel), unpack it, and move
+`cc-data` onto your `PATH`. The binary is notarized, so on first run macOS does a
+quick online check with Apple and then lets it run.
+
+### Linux (x86-64)
+
+With Homebrew on Linux:
+
+```
+brew tap --trust concord-consortium/tap
+brew install cc-data
+```
+
+Or download directly (replace `X.Y.Z` with the latest version from the
+[Releases page](https://github.com/concord-consortium/cc-data-cli/releases)):
+
+```
+curl -fsSL -o cc-data.tar.gz \
+  https://github.com/concord-consortium/cc-data-cli/releases/download/vX.Y.Z/cc-data_X.Y.Z_linux_amd64.tar.gz
+tar xzf cc-data.tar.gz
+sudo mv cc-data /usr/local/bin/
+```
+
+Only x86-64 (amd64) Linux has a prebuilt binary; on ARM Linux, build from source.
+
+### Build from source (any platform)
+
+```
+git clone https://github.com/concord-consortium/cc-data-cli.git
+cd cc-data-cli
+go build -o cc-data .
+```
+
+Requires Go 1.25 or newer and a C compiler (Xcode Command Line Tools on macOS,
+`gcc`/`clang` on Linux), because the embedded DuckDB database is a cgo dependency.
+A source build reports its version as `dev`, which is expected.
 
 ---
 
