@@ -58,7 +58,15 @@ func TestReleaseWorkflowTargets(t *testing.T) {
 // build fails with "no identity found" even when all secrets are set.
 func TestReleaseWorkflowImportsSigningCert(t *testing.T) {
 	rel := readFile(t, ".github/workflows/release.yml")
-	for _, want := range []string{"MACOS_CERT_P12", "MACOS_CERT_PASSWORD", "security import", "security create-keychain"} {
+	// Match the actual step inputs, not the bare secret names: those also appear in
+	// the "Required secrets" header comment, so a comment alone would satisfy the
+	// test even if the import step's env bindings were removed.
+	for _, want := range []string{
+		"MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}",
+		"MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}",
+		"security import",
+		"security create-keychain",
+	} {
 		if !strings.Contains(rel, want) {
 			t.Fatalf("release workflow must import the Developer ID signing certificate; missing %q", want)
 		}
