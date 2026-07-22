@@ -96,6 +96,23 @@ func TestRenderedGoreleaserConfigsAreGitignored(t *testing.T) {
 	}
 }
 
+// TestChecksumVerifyHandlesSplitFormat guards the fix for the publish-job failure:
+// goreleaser's split checksum files contain only the bare hash (no filename), which
+// `shasum -c` cannot parse. The verify step must recompute and compare, not shell out
+// to `shasum -c`.
+func TestChecksumVerifyHandlesSplitFormat(t *testing.T) {
+	rel := readFile(t, ".github/workflows/release.yml")
+	if strings.Contains(rel, "shasum -a 256 -c ") {
+		t.Fatal("verify step uses `shasum -c`, which cannot parse goreleaser's bare-hash split checksums")
+	}
+	// It must recompute each tarball's hash and compare to the .sha256 file.
+	for _, want := range []string{`tarball="${m%.sha256}"`, "checksum mismatch"} {
+		if !strings.Contains(rel, want) {
+			t.Fatalf("verify step must recompute and compare checksums; missing %q", want)
+		}
+	}
+}
+
 func readFile(t *testing.T, path string) string {
 	t.Helper()
 	data, err := os.ReadFile(path)
