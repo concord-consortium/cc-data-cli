@@ -5,7 +5,10 @@ name: Release
 # below (Admin/Account Holder access required to create them).
 #
 # Required secrets:
-#   MACOS_SIGN_IDENTITY, AC_API_KEY (base64 .p8), AC_API_KEY_ID, AC_API_ISSUER
+#   MACOS_SIGN_IDENTITY (the "Developer ID Application: ..." identity codesign uses)
+#   MACOS_CERT_P12 (base64 of the Developer ID cert + private key, exported as .p12)
+#   MACOS_CERT_PASSWORD (the .p12 export password)
+#   AC_API_KEY (base64 .p8), AC_API_KEY_ID, AC_API_ISSUER (App Store Connect notarization key)
 #   HOMEBREW_TAP_TOKEN (repo-scoped push token for concord-consortium/homebrew-tap)
 
 on:
@@ -66,11 +69,37 @@ jobs:
       - name: Render per-platform goreleaser config
         run: scripts/gen-goreleaser.sh ${{ matrix.goos }} ${{ matrix.goarch }} .goreleaser.${{ matrix.target }}.yaml
 
-      - name: Prepare macOS signing key
+      - name: Prepare macOS notarization key
         if: matrix.macos
         run: |
           echo "${{ secrets.AC_API_KEY }}" | base64 --decode > "$RUNNER_TEMP/ac_api_key.p8"
           echo "AC_API_KEY_PATH=$RUNNER_TEMP/ac_api_key.p8" >> "$GITHUB_ENV"
+
+      # The notarization key above only authenticates the Apple submission; codesign
+      # still needs the Developer ID cert + private key in a keychain. Import them
+      # into a throwaway keychain and add it to the search list so codesign can find
+      # the identity by name. Without this step codesign fails with "no identity found".
+      - name: Import Developer ID signing certificate
+        if: matrix.macos
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PW="$(uuidgen)"
+          echo "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KEYCHAIN_PW" "$KEYCHAIN"
+          # Keep it unlocked for the whole job (default relocks after 5 minutes idle).
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PW" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" \
+            -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          # Allow codesign to use the private key without an interactive UI prompt.
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PW" "$KEYCHAIN" >/dev/null
+          # Prepend the signing keychain to the search list so codesign resolves the identity.
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          rm -f "$RUNNER_TEMP/cert.p12"
+          security find-identity -v -p codesigning "$KEYCHAIN"
 
       - name: Build, sign, notarize, archive
         env:
