@@ -46,10 +46,10 @@ brew install cc-data
   there is no Gatekeeper prompt.
 - Don't have Homebrew? Install it first from [brew.sh](https://brew.sh).
 
-**Without Homebrew:** download the macOS archive for your chip from the
-[Releases page](https://github.com/concord-consortium/cc-data-cli/releases),
-`cc-data_<version>_darwin_arm64.tar.gz` for Apple Silicon or
-`cc-data_<version>_darwin_amd64.tar.gz` for Intel, unpack it, and move `cc-data`
+**Without Homebrew:** open the latest release on the
+[Releases page](https://github.com/concord-consortium/cc-data-cli/releases) and,
+under **Assets**, download the archive whose name ends in `_darwin_arm64.tar.gz`
+(Apple Silicon) or `_darwin_amd64.tar.gz` (Intel). Unpack it and move `cc-data`
 onto your `PATH`. The binary is notarized, so on first run macOS does a quick
 online check with Apple and then lets it run.
 
@@ -62,12 +62,16 @@ brew tap --trust concord-consortium/tap
 brew install cc-data
 ```
 
-Or download directly (replace `X.Y.Z` with the latest version from the
-[Releases page](https://github.com/concord-consortium/cc-data-cli/releases)):
+Or download directly. Find the current version on the
+[Releases page](https://github.com/concord-consortium/cc-data-cli/releases) (the
+tag looks like `v0.1.0`); the assets follow the pattern
+`cc-data_<version>_<os>_<arch>.tar.gz`. Set `VERSION` to that version without the
+leading `v`:
 
 ```
+VERSION=X.Y.Z   # replace with the current version from the Releases page, e.g. 0.1.0
 curl -fsSL -o cc-data.tar.gz \
-  https://github.com/concord-consortium/cc-data-cli/releases/download/vX.Y.Z/cc-data_X.Y.Z_linux_amd64.tar.gz
+  "https://github.com/concord-consortium/cc-data-cli/releases/download/v${VERSION}/cc-data_${VERSION}_linux_amd64.tar.gz"
 tar xzf cc-data.tar.gz
 sudo mv cc-data /usr/local/bin/
 ```
