@@ -28,8 +28,9 @@ whenever you want to run it yourself.
 
 ## 1. Installing the CLI
 
-`cc-data` is distributed for **macOS** and **Linux**. The macOS builds are signed
-and notarized by Apple, so they install and run without security prompts.
+`cc-data` ships **prebuilt binaries for macOS and Linux** (on any other platform,
+including Windows, you can build from source, see below). The macOS builds are
+signed and notarized by Apple, so they install and run without security prompts.
 
 ### macOS (recommended: Homebrew)
 
@@ -46,10 +47,11 @@ brew install cc-data
 - Don't have Homebrew? Install it first from [brew.sh](https://brew.sh).
 
 **Without Homebrew:** download the macOS archive for your chip from the
-[Releases page](https://github.com/concord-consortium/cc-data-cli/releases)
-(`darwin_arm64` for Apple Silicon, `darwin_amd64` for Intel), unpack it, and move
-`cc-data` onto your `PATH`. The binary is notarized, so on first run macOS does a
-quick online check with Apple and then lets it run.
+[Releases page](https://github.com/concord-consortium/cc-data-cli/releases),
+`cc-data_<version>_darwin_arm64.tar.gz` for Apple Silicon or
+`cc-data_<version>_darwin_amd64.tar.gz` for Intel, unpack it, and move `cc-data`
+onto your `PATH`. The binary is notarized, so on first run macOS does a quick
+online check with Apple and then lets it run.
 
 ### Linux (x86-64)
 
