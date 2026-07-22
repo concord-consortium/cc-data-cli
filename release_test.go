@@ -82,6 +82,20 @@ func TestCIMatrixCoversFiveTargets(t *testing.T) {
 	}
 }
 
+// TestRenderedGoreleaserConfigsAreGitignored guards the fix for the "git is in a
+// dirty state" release failure: gen-goreleaser.sh renders .goreleaser.<target>.yaml
+// into the working tree, and goreleaser release aborts if that untracked file makes
+// the tree dirty. The rendered configs must be ignored; the base config must not be.
+func TestRenderedGoreleaserConfigsAreGitignored(t *testing.T) {
+	gi := readFile(t, ".gitignore")
+	if !strings.Contains(gi, ".goreleaser.*.yaml") {
+		t.Fatal(".gitignore must ignore rendered per-platform configs (.goreleaser.*.yaml)")
+	}
+	if !strings.Contains(gi, "!.goreleaser.base.yaml") {
+		t.Fatal(".gitignore must keep the committed .goreleaser.base.yaml tracked")
+	}
+}
+
 func readFile(t *testing.T, path string) string {
 	t.Helper()
 	data, err := os.ReadFile(path)

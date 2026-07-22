@@ -1,0 +1,9 @@
+# Per-platform goreleaser configs are rendered into the tree at release time by
+# scripts/gen-goreleaser.sh. They must stay untracked-but-ignored so that
+# `goreleaser release` does not abort with "git is in a dirty state". The base
+# config is committed and must not be ignored.
+.goreleaser.*.yaml
+!.goreleaser.base.yaml
+
+# goreleaser build output
+/dist/
