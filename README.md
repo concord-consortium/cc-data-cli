@@ -90,6 +90,8 @@ go build ./...
 
 Releases are built with goreleaser on native GitHub Actions runners per platform, with a Homebrew formula for install (`brew install concord-consortium/tap/cc-data`). Note that `brew uninstall` removes only the binary; run `cc-data uninstall` first to remove the Claude skill, the `~/.claude/CLAUDE.md` pointer, and (optionally) your stored credentials. Your datasets are never removed automatically — `cc-data uninstall` prints where they remain.
 
+The macOS signing/notarization and Homebrew-tap credentials the release needs live in this repo's GitHub Actions secrets. Maintainers can re-create those secrets from `cc-data-release-secrets.zip` in the **Developer Admin** 1Password vault, which bundles the credentials and a script that sets them. It exists so the release secrets can be restored, rotated, or handed to a new maintainer without redoing the Apple and GitHub setup from scratch (the tap push token in particular is a fine-grained GitHub PAT that must be rotated at least yearly).
+
 A direct browser download of a macOS binary triggers a one-time online Gatekeeper check on first run (the binaries are notarized but not stapled); a `brew install` carries no quarantine, so Gatekeeper does not assess it.
 
 The client/server seam is a versioned HTTP contract (`/api/v1/...`) against the Concord report server; this repo shares no code with it.
