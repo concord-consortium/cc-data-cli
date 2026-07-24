@@ -7,10 +7,10 @@ import (
 )
 
 // TestResolvePortal covers what reports list and reports jobs add over
-// config.ResolvePortal: the default_portal fallback layered on top of it. The
-// accepted portal spellings themselves are config.TestResolvePortal's to pin, so
-// only one alias case appears here, as a check that expansion is reached at all.
-// There is no --server on these commands; the server comes from the stored
+// auth.ResolvePortalTarget: the default_portal fallback layered on top of it.
+// The accepted portal spellings themselves are config.TestPortalMatrix's to pin,
+// so only one alias case appears here, as a check that expansion is reached at
+// all. There is no --server on these commands; the server comes from the stored
 // credential.
 func TestResolvePortal(t *testing.T) {
 	cases := []struct {

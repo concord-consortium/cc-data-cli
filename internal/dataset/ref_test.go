@@ -160,6 +160,16 @@ func TestParseRefForExistingReachesRefusedFolder(t *testing.T) {
 	if _, err := ParseRefForExisting(cfg, root, "staging/absent"); err == nil {
 		t.Error("an alias portal with no folder should still be refused")
 	}
+
+	// An invalid name reports as an invalid name, not as the alias refusal, so
+	// the message matches what a hostname portal would give for the same ref.
+	_, err = ParseRefForExisting(cfg, root, "staging/MAIN")
+	if err == nil {
+		t.Fatal("an invalid dataset name should be refused")
+	}
+	if !strings.Contains(err.Error(), "invalid dataset name") {
+		t.Errorf("staging/MAIN should report the name error, got: %v", err)
+	}
 	// And never for a syntax refusal: that is the traversal guard, not a policy.
 	for _, raw := range []string{"../wildfire", "../../wildfire"} {
 		if _, err := ParseRefForExisting(cfg, root, raw); err == nil {

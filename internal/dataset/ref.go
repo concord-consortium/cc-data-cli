@@ -55,30 +55,35 @@ func ParseRefForConfig(cfg *config.Config, raw string) (Ref, error) {
 // syntax refusal, so a traversal cannot reach os.RemoveAll by claiming the
 // folder exists.
 func ParseRefForExisting(cfg *config.Config, dataRoot, raw string) (Ref, error) {
-	ref, err := ParseRefForConfig(cfg, raw)
-	if err == nil {
-		return ref, nil
+	defaultPortal, err := cfg.DefaultPortalValue()
+	if err != nil {
+		return Ref{}, err
 	}
+	portalValue, name, err := splitRef(raw, defaultPortal)
+	if err != nil {
+		return Ref{}, err
+	}
+	portal, portalErr := config.ParsePortalIdentity(portalValue)
+	if portalErr == nil {
+		return buildRef(portal, name, raw)
+	}
+	// Only an alias refusal is salvageable; a syntax refusal is the traversal
+	// guard and must stand.
 	var alias *config.AliasPortalError
-	if !errors.As(err, &alias) {
+	if !errors.As(portalErr, &alias) {
+		return Ref{}, portalErr
+	}
+	// Validate the name before consulting the disk, so an invalid name still
+	// reports as one rather than as the alias refusal. If the name is fine but no
+	// folder exists, the alias refusal stands: naming the hostname is the fix.
+	ref, err := buildRef(alias.Portal, name, raw)
+	if err != nil {
 		return Ref{}, err
 	}
-	defaultPortal, derr := cfg.DefaultPortalValue()
-	if derr != nil {
-		return Ref{}, err
+	if !Open(dataRoot, ref).Exists() {
+		return Ref{}, portalErr
 	}
-	_, name, serr := splitRef(raw, defaultPortal)
-	if serr != nil {
-		return Ref{}, err
-	}
-	candidate, cerr := buildRef(alias.Portal, name, raw)
-	if cerr != nil {
-		return Ref{}, err
-	}
-	if !Open(dataRoot, candidate).Exists() {
-		return Ref{}, err
-	}
-	return candidate, nil
+	return ref, nil
 }
 
 // ParseRef resolves "<portal>/<name>" or a bare "<name>" (under defaultPortal).
