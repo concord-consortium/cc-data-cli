@@ -78,7 +78,38 @@ func Load() (*Config, error) {
 		// returns a raw value that still carries an /api path.
 		c.ServerURL = origin
 	}
+	if err := c.normalizeDefaultPortal(); err != nil {
+		// Name the file: this refusal fails every command, including the ones
+		// that never read default_portal, so the error has to say what to edit.
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
 	return &c, nil
+}
+
+// normalizeDefaultPortal parses default_portal and stores it back in normalized
+// form, so every consumer sees one value. Left raw, "https://learn.concord.org"
+// and "learn.concord.org" name the same portal but two different dataset
+// folders, and the URL-shaped one is not even a single path component.
+func (c *Config) normalizeDefaultPortal() error {
+	if c.DefaultPortal == "" {
+		return nil
+	}
+	p, err := ParsePortalIdentity(c.DefaultPortal)
+	if err != nil {
+		return fmt.Errorf("default_portal: %w", err)
+	}
+	c.DefaultPortal = p.Host()
+	return nil
+}
+
+// DefaultPortalValue returns the configured default portal, zero when unset.
+// Load and Save have already accepted the value, so a parse failure here means
+// the Config was built in memory with an unparsed portal.
+func (c *Config) DefaultPortalValue() (Portal, error) {
+	if c.DefaultPortal == "" {
+		return Portal{}, nil
+	}
+	return ParsePortalIdentity(c.DefaultPortal)
 }
 
 // Save writes the config atomically at 0600.
@@ -94,6 +125,9 @@ func (c *Config) Save() error {
 			return fmt.Errorf("server_url invalid: %w", err)
 		}
 		c.ServerURL = origin
+	}
+	if err := c.normalizeDefaultPortal(); err != nil {
+		return err
 	}
 	dir, err := ConfigDir()
 	if err != nil {
@@ -149,8 +183,7 @@ func ValidateServerURL(raw string) (string, error) {
 	if u.Host == "" {
 		return "", fmt.Errorf("server URL %q has no host", raw)
 	}
-	host, _ := splitHostPort(u.Host)
-	host = strings.ToLower(host)
+	host := strings.ToLower(splitHostPort(u.Host))
 
 	if isLoopback(host) {
 		return u.Scheme + "://" + u.Host, nil

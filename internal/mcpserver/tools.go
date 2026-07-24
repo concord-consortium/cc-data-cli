@@ -7,7 +7,6 @@ import (
 
 	"github.com/concord-consortium/cc-data-cli/internal/api"
 	"github.com/concord-consortium/cc-data-cli/internal/auth"
-	"github.com/concord-consortium/cc-data-cli/internal/config"
 	"github.com/concord-consortium/cc-data-cli/internal/dataset"
 	"github.com/concord-consortium/cc-data-cli/internal/duck"
 	"github.com/concord-consortium/cc-data-cli/internal/fetch"
@@ -36,7 +35,7 @@ func registerTools(s *mcp.Server, opts Options) {
 			return nil, res, err
 		})
 
-	mcp.AddTool(s, &mcp.Tool{Name: "reports_list", Description: "List the user's report runs for a portal.", Annotations: readOnly},
+	mcp.AddTool(s, &mcp.Tool{Name: "reports_list", Description: "List the user's report runs for a portal. The portal may be a hostname or an environment alias (prod / staging / dev).", Annotations: readOnly},
 		func(ctx context.Context, req *mcp.CallToolRequest, in portalIn) (*mcp.CallToolResult, reportview.RunsPayload, error) {
 			client, err := portalClient(in.Portal)
 			if err != nil {
@@ -49,7 +48,7 @@ func registerTools(s *mcp.Server, opts Options) {
 			return nil, reportview.Runs(runs), nil
 		})
 
-	mcp.AddTool(s, &mcp.Tool{Name: "reports_jobs", Description: "List a run's post-processing jobs.", Annotations: readOnly},
+	mcp.AddTool(s, &mcp.Tool{Name: "reports_jobs", Description: "List a run's post-processing jobs. The portal may be a hostname or an environment alias (prod / staging / dev).", Annotations: readOnly},
 		func(ctx context.Context, req *mcp.CallToolRequest, in reportsJobsIn) (*mcp.CallToolResult, reportview.JobsPayload, error) {
 			client, err := portalClient(in.Portal)
 			if err != nil {
@@ -98,7 +97,7 @@ func registerTools(s *mcp.Server, opts Options) {
 			if err != nil {
 				return nil, nil, err
 			}
-			ref, err := dataset.ParseRef(in.Ref, cfg.DefaultPortal)
+			ref, err := dataset.ParseRefForConfig(cfg, in.Ref)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -123,7 +122,7 @@ func registerTools(s *mcp.Server, opts Options) {
 
 	mcp.AddTool(s, &mcp.Tool{Name: "dataset_show", Description: "Show a dataset's holdings and warnings.", Annotations: readOnly},
 		func(ctx context.Context, req *mcp.CallToolRequest, in datasetShowIn) (*mcp.CallToolResult, dataset.ShowJSON, error) {
-			d, _, err := openDataset(in.Ref)
+			d, _, err := openExistingDataset(in.Ref)
 			if err != nil {
 				return nil, dataset.ShowJSON{}, err
 			}
@@ -169,7 +168,7 @@ func registerTools(s *mcp.Server, opts Options) {
 			if !in.Confirm {
 				return nil, nil, fmt.Errorf("dataset_delete requires confirm:true")
 			}
-			d, _, err := openDataset(in.Ref)
+			d, _, err := openExistingDataset(in.Ref)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -184,7 +183,7 @@ func registerTools(s *mcp.Server, opts Options) {
 			if !in.Confirm {
 				return nil, nil, fmt.Errorf("dataset_purge requires confirm:true")
 			}
-			d, _, err := openDataset(in.Ref)
+			d, _, err := openExistingDataset(in.Ref)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -233,8 +232,11 @@ func fetchResult(result any, err error) (*mcp.CallToolResult, mapOut, error) {
 	return nil, mapOut{}, nil
 }
 
+// portalClient resolves a portal argument to an authenticated client, accepting
+// the same environment aliases and hostnames the CLI's --portal does, including
+// a portal only a stored credential vouches for.
 func portalClient(portal string) (*api.Client, error) {
-	host, err := config.NormalizePortal(portal)
+	host, _, err := auth.ResolvePortalTarget(portal)
 	if err != nil {
 		return nil, err
 	}
@@ -259,7 +261,7 @@ func queryHandler(opts Options) func(context.Context, *mcp.CallToolRequest, quer
 			if i := strings.Index(raw, "="); i >= 0 {
 				alias, refStr = raw[:i], raw[i+1:]
 			}
-			ref, perr := dataset.ParseRef(refStr, cfg.DefaultPortal)
+			ref, perr := dataset.ParseRefForConfig(cfg, refStr)
 			if perr != nil {
 				return nil, queryOut{}, perr
 			}

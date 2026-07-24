@@ -32,10 +32,10 @@ func TestSaveTokenRoundTripKeyring(t *testing.T) {
 	keyring.MockInit()
 
 	var s Store
-	if err := s.Save("learn.concord.org", "ccd_abc", "https://report-server.concord.org"); err != nil {
+	if err := s.Save(config.MustPortal("learn.concord.org"), "ccd_abc", "https://report-server.concord.org"); err != nil {
 		t.Fatal(err)
 	}
-	got, err := s.Token("learn.concord.org")
+	got, err := s.Token(config.MustPortal("learn.concord.org"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,10 +62,10 @@ func TestSaveFallbackToFile(t *testing.T) {
 	t.Cleanup(func() { keyringSet = origSet })
 
 	var s Store
-	if err := s.Save("localhost:8080", "ccd_file", "http://localhost:4000"); err != nil {
+	if err := s.Save(config.MustPortal("localhost:8080"), "ccd_file", "http://localhost:4000"); err != nil {
 		t.Fatal(err)
 	}
-	got, err := s.Token("localhost:8080")
+	got, err := s.Token(config.MustPortal("localhost:8080"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,13 +85,13 @@ func TestDelete(t *testing.T) {
 	setupHome(t)
 	keyring.MockInit()
 	var s Store
-	if err := s.Save("a.concord.org", "ccd_a", "https://report-server.concord.org"); err != nil {
+	if err := s.Save(config.MustPortal("a.concord.org"), "ccd_a", "https://report-server.concord.org"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Delete("a.concord.org"); err != nil {
+	if err := s.Delete(config.MustPortal("a.concord.org")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Token("a.concord.org"); !errors.Is(err, ErrNotFound) {
+	if _, err := s.Token(config.MustPortal("a.concord.org")); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected ErrNotFound after delete, got %v", err)
 	}
 }
@@ -101,7 +101,7 @@ func TestListOrdering(t *testing.T) {
 	keyring.MockInit()
 	var s Store
 	for _, p := range []string{"c.concord.org", "a.concord.org", "b.concord.org"} {
-		if err := s.Save(p, "ccd_"+p, "https://report-server.concord.org"); err != nil {
+		if err := s.Save(config.MustPortal(p), "ccd_"+p, "https://report-server.concord.org"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -127,7 +127,7 @@ func TestCredFilePermission(t *testing.T) {
 	setupHome(t)
 	keyring.MockInit()
 	var s Store
-	if err := s.Save("learn.concord.org", "ccd_abc", "https://report-server.concord.org"); err != nil {
+	if err := s.Save(config.MustPortal("learn.concord.org"), "ccd_abc", "https://report-server.concord.org"); err != nil {
 		t.Fatal(err)
 	}
 	dir, _ := config.ConfigDir()

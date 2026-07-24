@@ -44,14 +44,18 @@ func newDatasetCreateCmd() *cobra.Command {
 					return err
 				}
 			} else {
-				if cfg.DefaultPortal == "" {
+				defaultPortal, err := cfg.DefaultPortalValue()
+				if err != nil {
+					return output.Usagef("%v", err)
+				}
+				if defaultPortal.IsZero() {
 					return output.Usagef("no dataset name given and no default_portal configured")
 				}
-				name, err := dataset.AutoName(root, cfg.DefaultPortal, description)
+				name, err := dataset.AutoName(root, defaultPortal, description)
 				if err != nil {
 					return err
 				}
-				ref = dataset.Ref{Portal: cfg.DefaultPortal, Name: name}
+				ref = dataset.Ref{Portal: defaultPortal, Name: name}
 			}
 			echoRef(ref)
 			if _, err := dataset.Create(root, ref, description); err != nil {
@@ -143,7 +147,7 @@ func newDatasetDeleteCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			ref, err := resolveRef(cfg, args[0])
+			ref, err := resolveExistingRef(cfg, root, args[0])
 			if err != nil {
 				return err
 			}
@@ -178,7 +182,7 @@ func newDatasetPurgeCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			ref, err := resolveRef(cfg, args[0])
+			ref, err := resolveExistingRef(cfg, root, args[0])
 			if err != nil {
 				return err
 			}

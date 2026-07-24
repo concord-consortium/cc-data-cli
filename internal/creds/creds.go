@@ -94,7 +94,8 @@ func writeFile(cf *CredFile) error {
 
 // Save stores a token for a portal, preferring the OS keychain and falling back
 // to the inline credentials file with a one-line stderr note.
-func (Store) Save(portal, token, server string) error {
+func (Store) Save(p config.Portal, token, server string) error {
+	portal := p.Host()
 	cf, err := readFile()
 	if err != nil {
 		return err
@@ -125,7 +126,8 @@ func (Store) Save(portal, token, server string) error {
 }
 
 // Token returns the stored token for a portal.
-func (Store) Token(portal string) (string, error) {
+func (Store) Token(p config.Portal) (string, error) {
+	portal := p.Host()
 	cf, err := readFile()
 	if err != nil {
 		return "", err
@@ -141,7 +143,8 @@ func (Store) Token(portal string) (string, error) {
 }
 
 // Get returns the token and the recorded minting server origin for a portal.
-func (s Store) Get(portal string) (token, server string, err error) {
+func (s Store) Get(p config.Portal) (token, server string, err error) {
+	portal := p.Host()
 	cf, err := readFile()
 	if err != nil {
 		return "", "", err
@@ -150,7 +153,7 @@ func (s Store) Get(portal string) (token, server string, err error) {
 	if !ok {
 		return "", "", ErrNotFound
 	}
-	token, err = s.Token(portal)
+	token, err = s.Token(p)
 	if err != nil {
 		return "", "", err
 	}
@@ -158,7 +161,8 @@ func (s Store) Get(portal string) (token, server string, err error) {
 }
 
 // Delete removes a portal's credential from the keychain and the metadata file.
-func (Store) Delete(portal string) error {
+func (Store) Delete(p config.Portal) error {
+	portal := p.Host()
 	cf, err := readFile()
 	if err != nil {
 		return err

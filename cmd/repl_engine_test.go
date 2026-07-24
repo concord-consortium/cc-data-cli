@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/concord-consortium/cc-data-cli/internal/config"
 	"github.com/concord-consortium/cc-data-cli/internal/dataset"
 	"github.com/concord-consortium/cc-data-cli/internal/duck"
 	"github.com/concord-consortium/cc-data-cli/internal/fsutil"
@@ -17,7 +18,7 @@ import (
 
 func TestReplExecuteAndDotTables(t *testing.T) {
 	root := t.TempDir()
-	d, err := dataset.Create(root, dataset.Ref{Portal: "learn.concord.org", Name: "ds"}, "")
+	d, err := dataset.Create(root, dataset.Ref{Portal: config.MustPortal("learn.concord.org"), Name: "ds"}, "")
 	if err != nil {
 		t.Fatal(err)
 	}

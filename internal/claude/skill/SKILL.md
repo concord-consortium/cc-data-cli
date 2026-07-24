@@ -17,13 +17,22 @@ guessing flags.
   warnings.
 - List datasets with `cc-data dataset list --json`.
 - A dataset ref is `<portal>/<name>` (e.g. `learn.concord.org/wildfire`); a bare
-  `<name>` resolves under the configured default portal.
+  `<name>` resolves under the configured default portal. Dataset refs take a
+  hostname only: the environment aliases below are **refused** here rather than
+  expanded, so `staging/wildfire` is an error naming the hostname to use. If a
+  `get` returns `NOT_AUTHENTICATED`, check the ref's portal is a hostname before
+  relaying a login.
 
 ## Auth
 
 - If a command fails with `{"error":"NOT_AUTHENTICATED",...}`, relay to the user:
-  run `cc-data login --portal <portal>`. Never drive the browser login yourself.
+  run `cc-data login --portal <portal>`, or `cc-data login <environment>` for one
+  of the environments (`prod`, `staging`, `dev`), which sets the portal and its
+  paired report server together. Never drive the browser login yourself.
 - Auth is per portal. `cc-data auth status --check` shows validity and metadata.
+- The environment names also work wherever a `portal` is passed: the `--portal`
+  flag on `logout`/`reports list`/`reports jobs`, and the `portal` argument of
+  the `reports_list` / `reports_jobs` MCP tools.
 
 ## Fetching data
 

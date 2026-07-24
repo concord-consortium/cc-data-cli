@@ -1,6 +1,7 @@
 package api
 
 import (
+	"github.com/concord-consortium/cc-data-cli/internal/config"
 	"github.com/concord-consortium/cc-data-cli/internal/creds"
 	"github.com/concord-consortium/cc-data-cli/internal/output"
 )
@@ -8,7 +9,7 @@ import (
 // ForPortal builds a client whose base URL is the portal credential's recorded
 // minting server, never the global config server_url, so a bearer token is only
 // ever sent to the origin that issued it.
-func ForPortal(portal string) (*Client, error) {
+func ForPortal(portal config.Portal) (*Client, error) {
 	var store creds.Store
 	token, server, err := store.Get(portal)
 	if err != nil {

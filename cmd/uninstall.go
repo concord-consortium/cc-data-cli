@@ -83,7 +83,10 @@ func removeCredentials(errOut io.Writer) error {
 		// uninstall for minutes per portal (the API client has no overall
 		// timeout, only per-attempt deadlines across its retry budget).
 		ctx, cancel := context.WithTimeout(context.Background(), revokeTimeout)
-		lerr := auth.Logout(ctx, info.Portal, errOut)
+		// The host comes back from our own credential store, so it is adopted
+		// rather than re-parsed: uninstall has to be able to revoke everything
+		// that is stored, including a legacy single-label portal.
+		lerr := auth.Logout(ctx, config.AdoptStoredPortal(info.Portal), errOut)
 		cancel()
 		if lerr != nil {
 			fmt.Fprintf(errOut, "warning: could not revoke token for %s: %v (it may still be active; revoke it in the token UI)\n", info.Portal, lerr)

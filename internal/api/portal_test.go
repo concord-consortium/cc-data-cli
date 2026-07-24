@@ -40,11 +40,11 @@ func TestOriginRuleUsesCredentialServer(t *testing.T) {
 	}
 
 	var store creds.Store
-	if err := store.Save("learn.concord.org", "ccd_portalA", credServer.URL); err != nil {
+	if err := store.Save(config.MustPortal("learn.concord.org"), "ccd_portalA", credServer.URL); err != nil {
 		t.Fatal(err)
 	}
 
-	cl, err := ForPortal("learn.concord.org")
+	cl, err := ForPortal(config.MustPortal("learn.concord.org"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func TestForPortalNotAuthedWhenAbsent(t *testing.T) {
 		t.Setenv("USERPROFILE", home)
 	}
 	keyring.MockInit()
-	_, err := ForPortal("missing.concord.org")
+	_, err := ForPortal(config.MustPortal("missing.concord.org"))
 	cliErr := err
 	if cliErr == nil {
 		t.Fatal("expected NOT_AUTHENTICATED")

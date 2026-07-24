@@ -3,6 +3,7 @@
 package dataset
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"regexp"
@@ -25,19 +26,85 @@ var reservedSchemaNames = map[string]bool{
 
 // Ref is a resolved dataset reference.
 type Ref struct {
-	Portal string // real host
+	Portal config.Portal
 	Name   string
 }
 
-func (r Ref) String() string { return r.Portal + "/" + r.Name }
+func (r Ref) String() string { return r.Portal.Host() + "/" + r.Name }
+
+// ParseRefForConfig resolves a ref against the configured default portal. Every
+// caller goes through this rather than reading cfg.DefaultPortal directly, so
+// the raw config string never reaches a Ref unparsed.
+func ParseRefForConfig(cfg *config.Config, raw string) (Ref, error) {
+	defaultPortal, err := cfg.DefaultPortalValue()
+	if err != nil {
+		return Ref{}, err
+	}
+	return ParseRef(raw, defaultPortal)
+}
+
+// ParseRefForExisting resolves a ref for a command that inspects or removes a
+// dataset already on disk, making one exception ParseRefForConfig does not: a
+// portal refused only for naming an environment is accepted when a dataset
+// actually exists under it.
+//
+// dataset list builds its rows from folder names and never parses them, so
+// without this a folder written before the alias refusal existed would be
+// visible and untouchable, removable only with rm -rf. The exception is
+// deliberately narrow: only *config.AliasPortalError is salvageable, never a
+// syntax refusal, so a traversal cannot reach os.RemoveAll by claiming the
+// folder exists.
+func ParseRefForExisting(cfg *config.Config, dataRoot, raw string) (Ref, error) {
+	ref, err := ParseRefForConfig(cfg, raw)
+	if err == nil {
+		return ref, nil
+	}
+	var alias *config.AliasPortalError
+	if !errors.As(err, &alias) {
+		return Ref{}, err
+	}
+	defaultPortal, derr := cfg.DefaultPortalValue()
+	if derr != nil {
+		return Ref{}, err
+	}
+	_, name, serr := splitRef(raw, defaultPortal)
+	if serr != nil {
+		return Ref{}, err
+	}
+	candidate, cerr := buildRef(alias.Portal, name, raw)
+	if cerr != nil {
+		return Ref{}, err
+	}
+	if !Open(dataRoot, candidate).Exists() {
+		return Ref{}, err
+	}
+	return candidate, nil
+}
 
 // ParseRef resolves "<portal>/<name>" or a bare "<name>" (under defaultPortal).
-// The name is validated with ValidateName so no ref can carry path-traversal
-// segments into filesystem sinks (os.RemoveAll, MkdirAll) or MCP dataset_create.
-func ParseRef(raw, defaultPortal string) (Ref, error) {
+// Neither half can carry path-traversal segments into filesystem sinks
+// (os.RemoveAll, MkdirAll) or MCP dataset_create: the name is validated with
+// ValidateName, and the portal by config.ParsePortalIdentity, which is also what
+// refuses an environment alias here.
+func ParseRef(raw string, defaultPortal config.Portal) (Ref, error) {
+	portalValue, name, err := splitRef(raw, defaultPortal)
+	if err != nil {
+		return Ref{}, err
+	}
+	portal, err := config.ParsePortalIdentity(portalValue)
+	if err != nil {
+		return Ref{}, err
+	}
+	return buildRef(portal, name, raw)
+}
+
+// splitRef splits a ref into the portal value to parse and the dataset name,
+// without deciding whether either is acceptable. ParseRefForExisting reuses it
+// to recover the name after the portal has been refused.
+func splitRef(raw string, defaultPortal config.Portal) (portalValue, name string, err error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		return Ref{}, fmt.Errorf("dataset ref is empty")
+		return "", "", fmt.Errorf("dataset ref is empty")
 	}
 	// Strip an optional scheme so the first-slash split names the dataset, not
 	// the "//" of a scheme.
@@ -45,38 +112,39 @@ func ParseRef(raw, defaultPortal string) (Ref, error) {
 	if i := strings.Index(raw, "://"); i >= 0 {
 		scheme, raw = raw[:i+3], raw[i+3:]
 	}
-	var portalPart, name string
+	var portalPart string
 	if i := strings.Index(raw, "/"); i >= 0 {
 		portalPart, name = raw[:i], raw[i+1:]
 	} else {
 		name = raw
-		if defaultPortal == "" {
-			return Ref{}, fmt.Errorf("no portal in ref %q and no default_portal configured", raw)
+		if defaultPortal.IsZero() {
+			return "", "", fmt.Errorf("no portal in ref %q and no default_portal configured", raw)
 		}
-		portalPart = defaultPortal
+		portalPart = defaultPortal.Host()
 	}
-	host, err := config.NormalizePortal(scheme + portalPart)
-	if err != nil {
-		return Ref{}, err
-	}
+	return scheme + portalPart, name, nil
+}
+
+// buildRef validates the name half and assembles the ref.
+func buildRef(portal config.Portal, name, raw string) (Ref, error) {
 	if name == "" {
 		return Ref{}, fmt.Errorf("dataset ref %q has no name", raw)
 	}
 	if err := ValidateName(name); err != nil {
 		return Ref{}, err
 	}
-	return Ref{Portal: host, Name: name}, nil
+	return Ref{Portal: portal, Name: name}, nil
 }
 
 // Dir returns the dataset directory under a data root, using the filesystem
 // folder encoding for the portal host.
 func (r Ref) Dir(dataRoot string) string {
-	return filepath.Join(dataRoot, config.PortalFolder(r.Portal), "datasets", r.Name)
+	return filepath.Join(dataRoot, r.Portal.Folder(), "datasets", r.Name)
 }
 
 // PortalDatasetsDir returns the datasets directory for a portal under a data root.
-func PortalDatasetsDir(dataRoot, portalHost string) string {
-	return filepath.Join(dataRoot, config.PortalFolder(portalHost), "datasets")
+func PortalDatasetsDir(dataRoot string, portal config.Portal) string {
+	return filepath.Join(dataRoot, portal.Folder(), "datasets")
 }
 
 // ValidateName enforces the dataset name alphabet and the reserved-schema

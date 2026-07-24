@@ -13,6 +13,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/concord-consortium/cc-data-cli/internal/config"
 	"github.com/concord-consortium/cc-data-cli/internal/creds"
 	"github.com/zalando/go-keyring"
 )
@@ -186,7 +187,7 @@ func TestFullAuthFlowCurrentServer(t *testing.T) {
 
 	var progress strings.Builder
 	err := Login(context.Background(), LoginOptions{
-		Portal:   "learn.concord.org",
+		Portal:   config.MustPortal("learn.concord.org"),
 		Server:   fs.URL,
 		Progress: &progress,
 	})
@@ -199,7 +200,7 @@ func TestFullAuthFlowCurrentServer(t *testing.T) {
 
 	// Stored credential should point at the fake server.
 	var store creds.Store
-	_, server, err := store.Get("learn.concord.org")
+	_, server, err := store.Get(config.MustPortal("learn.concord.org"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,10 +221,10 @@ func TestFullAuthFlowCurrentServer(t *testing.T) {
 	}
 
 	// logout revokes and removes local.
-	if err := Logout(context.Background(), "learn.concord.org", &progress); err != nil {
+	if err := Logout(context.Background(), config.MustPortal("learn.concord.org"), &progress); err != nil {
 		t.Fatalf("logout: %v", err)
 	}
-	if _, _, err := store.Get("learn.concord.org"); err == nil {
+	if _, _, err := store.Get(config.MustPortal("learn.concord.org")); err == nil {
 		t.Fatal("credential should be gone after logout")
 	}
 }
@@ -235,7 +236,7 @@ func TestAuthFlowOlderServerDegradation(t *testing.T) {
 	defer browserStub(t)()
 
 	var progress strings.Builder
-	if err := Login(context.Background(), LoginOptions{Portal: "learn.concord.org", Server: fs.URL, Progress: &progress}); err != nil {
+	if err := Login(context.Background(), LoginOptions{Portal: config.MustPortal("learn.concord.org"), Server: fs.URL, Progress: &progress}); err != nil {
 		t.Fatalf("login: %v", err)
 	}
 
@@ -250,14 +251,14 @@ func TestAuthFlowOlderServerDegradation(t *testing.T) {
 	}
 
 	// logout on the older server warns but still deletes locally and succeeds.
-	if err := Logout(context.Background(), "learn.concord.org", &progress); err != nil {
+	if err := Logout(context.Background(), config.MustPortal("learn.concord.org"), &progress); err != nil {
 		t.Fatalf("older-server logout should succeed: %v", err)
 	}
 	if !strings.Contains(progress.String(), "may still be active") {
 		t.Fatalf("expected older-server logout warning, got: %s", progress.String())
 	}
 	var store creds.Store
-	if _, _, err := store.Get("learn.concord.org"); err == nil {
+	if _, _, err := store.Get(config.MustPortal("learn.concord.org")); err == nil {
 		t.Fatal("credential should be gone after older-server logout")
 	}
 }
@@ -269,11 +270,11 @@ func TestLogoutAlreadyRevoked(t *testing.T) {
 
 	// Store a credential whose token the server does not know (already revoked).
 	var store creds.Store
-	if err := store.Save("learn.concord.org", "ccd_dead", fs.URL); err != nil {
+	if err := store.Save(config.MustPortal("learn.concord.org"), "ccd_dead", fs.URL); err != nil {
 		t.Fatal(err)
 	}
 	var progress strings.Builder
-	if err := Logout(context.Background(), "learn.concord.org", &progress); err != nil {
+	if err := Logout(context.Background(), config.MustPortal("learn.concord.org"), &progress); err != nil {
 		t.Fatalf("logout with dead token should still succeed: %v", err)
 	}
 	if !strings.Contains(progress.String(), "nothing needed revoking") {

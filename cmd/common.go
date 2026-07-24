@@ -26,7 +26,18 @@ func loadRuntime() (*config.Config, string, error) {
 
 // resolveRef parses a dataset ref against the configured default portal.
 func resolveRef(cfg *config.Config, raw string) (dataset.Ref, error) {
-	ref, err := dataset.ParseRef(raw, cfg.DefaultPortal)
+	ref, err := dataset.ParseRefForConfig(cfg, raw)
+	if err != nil {
+		return dataset.Ref{}, output.Usagef("%v", err)
+	}
+	return ref, nil
+}
+
+// resolveExistingRef is resolveRef for the commands that inspect or remove a
+// dataset already on disk, which must be able to reach anything dataset list
+// shows, including a folder under a portal the parser would otherwise refuse.
+func resolveExistingRef(cfg *config.Config, dataRoot, raw string) (dataset.Ref, error) {
+	ref, err := dataset.ParseRefForExisting(cfg, dataRoot, raw)
 	if err != nil {
 		return dataset.Ref{}, output.Usagef("%v", err)
 	}

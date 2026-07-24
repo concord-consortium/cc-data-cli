@@ -110,9 +110,26 @@ in your config folder). You stay logged in until the token expires or you
 `cc-data logout`.
 
 - With no options, login targets the **production portal, `learn.concord.org`**.
-- To use a different portal, pass `--portal`, e.g.
-  `cc-data login --portal learn.portal.staging.concord.org`. Each portal is a
-  separate login with its own data.
+- To use a different portal, name an environment: `cc-data login staging`. The
+  environments researchers use are `prod` and `staging` (`prod` also accepts
+  `production`, and `staging` also accepts `stage`); there is a third, `dev`,
+  that points at a portal and report server running on your own machine, for
+  people developing `cc-data` itself. Naming an environment this way sets both
+  the portal and the report server that goes with it, so a staging login does
+  not end up pointed at the production server unless you explicitly say
+  `--server`. Each portal is a separate login with its own data.
+- `--portal` still takes a full hostname when you need one that has no short
+  name, e.g. `cc-data login --portal learn.portal.staging.concord.org`, and the
+  environment names work there too (`--portal staging`). Every spelling of a
+  known portal brings the same paired report server with it.
+- Which report server a login uses is decided in this order: an explicit
+  `--server`, then the server paired with the portal you landed on, then the
+  server of the environment you named, then the `server_url` in your config,
+  then the built-in production default. A known portal always brings its own
+  paired server, and naming an environment covers a portal that has none (so
+  `cc-data login dev --portal localhost:3005` still talks to the dev report
+  server), which leaves `server_url` for a portal you reach without either; when
+  something outranks it, the login prints a line saying which server it used.
 - Logins are per portal: you can be logged into several at once, and each
   dataset belongs to exactly one of them.
 
@@ -203,8 +220,8 @@ cc-data reports list
 
 This lists your report runs with their `run_id`, `slug`, and state (add `--json`
 to include the `report_type`). (Add `--portal <portal>` for a non-production
-portal.) Through Claude, the same thing is just asking "what report runs do I
-have?"
+portal; `--portal staging` works as well as the full hostname.) Through Claude,
+the same thing is just asking "what report runs do I have?"
 
 ### A complete session
 
@@ -258,7 +275,12 @@ dataset named `wildfire` on `learn.concord.org` lives in
 
 - A dataset is identified by `<portal>/<name>`, e.g.
   `learn.concord.org/wildfire`. (If you set a default portal, a bare `wildfire`
-  works too.)
+  works too.) The portal here is always a full hostname, never an environment
+  name: it is also the folder your data lives in. `staging/wildfire` is refused
+  with the hostname to use, rather than quietly making a dataset under a portal
+  called `staging` that you could never log in to. For the same reason the
+  `default_portal` setting takes a full hostname, and `cc-data` refuses to start
+  if you put an environment name there.
 - Into a dataset you can pull four kinds of data for any run:
   - **report**: the report CSV (answers reports, and log/action reports).
   - **answers**: the raw student answer records.
@@ -339,7 +361,7 @@ report types listed above.
 ## 6. What kinds of questions can I ask?
 
 Here's the range of questions the data supports, grouped by the kind of data they
-draw on. You can ask any of these of Claude in plain English — **you don't need to
+draw on. You can ask any of these of Claude in plain English: **you don't need to
 know SQL.** The SQL snippets shown throughout this section are just there to
 illustrate what Claude writes and runs for you under the hood; you can read them to
 see what's happening, or copy them into `cc-data query --dataset <ref> "..."` if
@@ -475,8 +497,8 @@ write the cross-dataset query for you.
   You're almost certainly pointed at a different portal or report server than the
   one that has the run. Run IDs are specific to a portal *and* to the report server
   behind it. Check what your login targets with `cc-data auth status`, and re-run
-  `cc-data login` with the right `--portal` (and `--server`, if you use a
-  non-default report server) if it's wrong.
+  `cc-data login` for the right environment if it's wrong: `cc-data login staging`
+  sets the portal and its report server together, which is the usual fix for this.
 - **"dataset is busy" / "download busy".** Another `get` or query is already
   running against that dataset. Wait for it to finish and retry; `cc-data`
   serializes access so a dataset is never left half-written.
