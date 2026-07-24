@@ -35,13 +35,13 @@ signed and notarized by Apple, so they install and run without security prompts.
 ### macOS (recommended: Homebrew)
 
 ```
-brew tap --trust concord-consortium/tap
+brew tap concord-consortium/tap
+brew trust concord-consortium/tap
 brew install cc-data
 ```
 
-- The `--trust` is required. Homebrew 6.0 and later make you trust a third-party
-  tap before installing from it (a supply-chain security measure). If you tapped
-  without it, run `brew trust concord-consortium/tap` before `brew install`.
+- The trust command is required. Homebrew 6.0 and later make you trust a third-party
+  tap before installing from it (a supply-chain security measure).
 - Homebrew installs into its own prefix and removes the download quarantine, so
   there is no Gatekeeper prompt.
 - Don't have Homebrew? Install it first from [brew.sh](https://brew.sh).
