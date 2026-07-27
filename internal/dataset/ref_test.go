@@ -34,7 +34,10 @@ func TestParseRef(t *testing.T) {
 		{"portal/", "", "", "", true}, // empty name
 		// The portal half can no longer carry a traversal into Ref.Dir.
 		{"../wildfire", "", "", "", true},
-		{"..%2fwildfire", "", "", "", true},
+		// With a default portal set, "..%2f..%2fwildfire" resolves the portal and
+		// is refused by name validation (the %2f keeps it one slash-free token), so
+		// this exercises the name guard rather than the missing-default path.
+		{"..%2f..%2fwildfire", "learn.concord.org", "", "", true},
 	}
 	for _, c := range cases {
 		ref, err := ParseRef(c.raw, portal(c.def))
@@ -79,18 +82,38 @@ func TestParseRefRejectsEnvironmentAliases(t *testing.T) {
 	}
 }
 
-// TestParseRefStaysInsideTheDataRoot is the property the traversal rows above
-// protect: Ref.Dir feeds MkdirAll and, via dataset delete, os.RemoveAll.
+// TestParseRefStaysInsideTheDataRoot is the property the traversal rows protect:
+// Ref.Dir feeds MkdirAll and, via dataset delete, os.RemoveAll. It checks two
+// things that are otherwise easy to conflate: that an accepted ref's Dir stays
+// under the root (the assertion, run on real accepted refs), and that the
+// traversal inputs are refused before they can reach Dir at all.
 func TestParseRefStaysInsideTheDataRoot(t *testing.T) {
 	root := filepath.Join("/data", "root")
-	for _, raw := range []string{"../wildfire", "../../wildfire", "./wildfire", "..%2f..%2fwildfire"} {
-		ref, err := ParseRef(raw, config.Portal{})
+	def := config.MustPortal("learn.concord.org")
+
+	// Accepted refs must resolve strictly inside the root. This is the case the
+	// old version never reached, because every input it tried was refused.
+	accepted := 0
+	for _, raw := range []string{"wildfire", "learn.concord.org/wildfire", "localhost:8080/ds", "a-b.concord.org/x"} {
+		ref, err := ParseRef(raw, def)
 		if err != nil {
-			continue // refused outright, which is the preferred outcome
+			t.Errorf("ParseRef(%q) should be accepted: %v", raw, err)
+			continue
 		}
+		accepted++
 		dir := filepath.Clean(ref.Dir(root))
 		if !strings.HasPrefix(dir, filepath.Clean(root)+string(filepath.Separator)) {
 			t.Errorf("ParseRef(%q).Dir escapes the data root: %s", raw, dir)
+		}
+	}
+	if accepted == 0 {
+		t.Fatal("no accepted ref reached the containment assertion")
+	}
+
+	// Traversal inputs never produce a ref, so they never reach Dir.
+	for _, raw := range []string{"../wildfire", "../../wildfire", "./wildfire"} {
+		if _, err := ParseRef(raw, def); err == nil {
+			t.Errorf("ParseRef(%q) must be refused", raw)
 		}
 	}
 }
@@ -126,9 +149,10 @@ func TestRefDirEncoding(t *testing.T) {
 	}
 }
 
-// TestParseRefForExistingReachesRefusedFolder covers the exception the inspect
-// and remove commands make. dataset list builds its rows from folder names and
-// never parses them, so a folder written under a portal the parser now refuses
+// TestParseRefForExistingReachesRefusedFolder covers the exception every command
+// that names an existing dataset makes. dataset list builds its rows from folder
+// names and never parses them, so a folder written under a portal this build now
+// refuses (an environment-alias name, or a host shape an earlier build allowed)
 // would otherwise be visible and removable only with rm -rf.
 func TestParseRefForExistingReachesRefusedFolder(t *testing.T) {
 	root := t.TempDir()
@@ -156,9 +180,33 @@ func TestParseRefForExistingReachesRefusedFolder(t *testing.T) {
 		t.Errorf("ParseRefForExisting = %+v", ref)
 	}
 
+	// The same salvage reaches a folder under a host shape 0.1.0's laxer
+	// NormalizePortal accepted but this build rejects (an underscore). Without it,
+	// such a folder would be listed but removable only with rm -rf.
+	underscored := Ref{Portal: config.AdoptStoredPortal("a_b.concord.org"), Name: "wildfire"}
+	if err := os.MkdirAll(underscored.Dir(root), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(underscored.Dir(root), "manifest.json"), []byte(`{"name":"wildfire"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ParseRefForConfig(cfg, "a_b.concord.org/wildfire"); err == nil {
+		t.Error("ParseRefForConfig should still refuse an underscored host")
+	}
+	uref, err := ParseRefForExisting(cfg, root, "a_b.concord.org/wildfire")
+	if err != nil {
+		t.Fatalf("a stranded underscored-host dataset should be reachable: %v", err)
+	}
+	if uref.Portal.Host() != "a_b.concord.org" || uref.Name != "wildfire" {
+		t.Errorf("ParseRefForExisting = %+v", uref)
+	}
+
 	// The exception is only for what is actually on disk.
 	if _, err := ParseRefForExisting(cfg, root, "staging/absent"); err == nil {
 		t.Error("an alias portal with no folder should still be refused")
+	}
+	if _, err := ParseRefForExisting(cfg, root, "a_b.concord.org/absent"); err == nil {
+		t.Error("an underscored host with no folder should still be refused")
 	}
 
 	// An invalid name reports as an invalid name, not as the alias refusal, so

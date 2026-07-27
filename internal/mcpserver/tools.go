@@ -122,7 +122,7 @@ func registerTools(s *mcp.Server, opts Options) {
 
 	mcp.AddTool(s, &mcp.Tool{Name: "dataset_show", Description: "Show a dataset's holdings and warnings.", Annotations: readOnly},
 		func(ctx context.Context, req *mcp.CallToolRequest, in datasetShowIn) (*mcp.CallToolResult, dataset.ShowJSON, error) {
-			d, _, err := openExistingDataset(in.Ref)
+			d, _, err := openDataset(in.Ref)
 			if err != nil {
 				return nil, dataset.ShowJSON{}, err
 			}
@@ -168,7 +168,7 @@ func registerTools(s *mcp.Server, opts Options) {
 			if !in.Confirm {
 				return nil, nil, fmt.Errorf("dataset_delete requires confirm:true")
 			}
-			d, _, err := openExistingDataset(in.Ref)
+			d, _, err := openDataset(in.Ref)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -183,7 +183,7 @@ func registerTools(s *mcp.Server, opts Options) {
 			if !in.Confirm {
 				return nil, nil, fmt.Errorf("dataset_purge requires confirm:true")
 			}
-			d, _, err := openExistingDataset(in.Ref)
+			d, _, err := openDataset(in.Ref)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -261,7 +261,7 @@ func queryHandler(opts Options) func(context.Context, *mcp.CallToolRequest, quer
 			if i := strings.Index(raw, "="); i >= 0 {
 				alias, refStr = raw[:i], raw[i+1:]
 			}
-			ref, perr := dataset.ParseRefForConfig(cfg, refStr)
+			ref, perr := dataset.ParseRefForExisting(cfg, root, refStr)
 			if perr != nil {
 				return nil, queryOut{}, perr
 			}

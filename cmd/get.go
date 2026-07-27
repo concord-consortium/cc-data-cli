@@ -25,7 +25,7 @@ func openDatasetForFetch(datasetRef string) (*dataset.Dataset, *api.Client, erro
 	if err != nil {
 		return nil, nil, err
 	}
-	ref, err := resolveRef(cfg, datasetRef)
+	ref, err := resolveExistingRef(cfg, root, datasetRef)
 	if err != nil {
 		return nil, nil, err
 	}

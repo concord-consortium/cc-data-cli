@@ -127,6 +127,6 @@ provenance, e.g.
 ## Sensitive data
 
 Datasets hold sensitive student data. You may auto-read the
-`dataset show --json` summary and manifest; do not dump raw JSONL stores into the
+`dataset show --json` summary; do not dump raw JSONL stores into the
 conversation by default. Suggest `cc-data dataset purge <ref>` when data is no
 longer needed rather than archiving it to shared drives.

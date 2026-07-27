@@ -32,6 +32,14 @@ func TestValidateServerURL(t *testing.T) {
 		{"http://report-server.concord.org", true, ""}, // http not allowed off loopback
 		{"ftp://report-server.concord.org", true, ""},
 		{"https://", true, ""},
+		// The returned origin's host is lowercased, so a mixed-case server_url
+		// canonicalizes to the same origin the pairing produces (otherwise the
+		// login notice reports it as "not used" against the server it names, and
+		// the SERVER column renders unevenly). Scheme case is normalized by
+		// url.Parse; a trailing slash and an /api path are already stripped.
+		{"https://REPORT-SERVER.CONCORD.ORG", false, "https://report-server.concord.org"},
+		{"https://Report-Server.Concord.org/api", false, "https://report-server.concord.org"},
+		{"HTTP://LOCALHOST:4000", false, "http://localhost:4000"},
 	}
 	for _, c := range cases {
 		got, err := ValidateServerURL(c.in)

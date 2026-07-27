@@ -163,6 +163,40 @@ func TestPortalFolderStaysOneComponent(t *testing.T) {
 	}
 }
 
+// TestAdoptExistingPortal pins the salvage helper the existing-dataset parsers
+// use: it accepts what ParsePortalIdentity refuses for being an alias or a host
+// shape an earlier build allowed, but never a value that is not a single safe
+// path component, so the traversal guard is preserved.
+func TestAdoptExistingPortal(t *testing.T) {
+	accepted := map[string]string{
+		"staging":           "staging",           // an environment alias name
+		"a_b.concord.org":   "a_b.concord.org",   // an underscore host
+		"HOST_3000":         "host_3000",         // lowercased
+		"https://a_b.local": "a_b.local",         // scheme stripped
+		"[::1]:3000":        "[::1]:3000",        // an IPv6 literal, still one folder
+		"learn.concord.org": "learn.concord.org", // an ordinary host
+	}
+	for in, wantHost := range accepted {
+		p, ok := AdoptExistingPortal(in)
+		if !ok {
+			t.Errorf("AdoptExistingPortal(%q) should be accepted", in)
+			continue
+		}
+		if p.Host() != wantHost {
+			t.Errorf("AdoptExistingPortal(%q) host = %q, want %q", in, p.Host(), wantHost)
+		}
+		// Whatever it accepts must be a single path component.
+		if f := p.Folder(); f == "" || f == "." || f == ".." || strings.ContainsAny(f, `/\`) {
+			t.Errorf("AdoptExistingPortal(%q) folder %q is not one safe component", in, f)
+		}
+	}
+	for _, in := range []string{"", "   ", "..", ".", "../escaped", "https://../x"} {
+		if _, ok := AdoptExistingPortal(in); ok {
+			t.Errorf("AdoptExistingPortal(%q) should be refused", in)
+		}
+	}
+}
+
 // TestUnshapedHostErrorCarriesThePortal pins the one escape hatch: a shape
 // refusal hands back the parsed portal so auth can accept a host that a stored
 // credential vouches for, and it names the environments, since a typo'd alias is

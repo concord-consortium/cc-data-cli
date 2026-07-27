@@ -38,9 +38,11 @@ func TestRenderStatusShowsServer(t *testing.T) {
 		if !strings.Contains(lines[1], config.StagingServer) {
 			t.Errorf("check=%v: staging row omits its server: %q", check, lines[1])
 		}
-		// A credential with no recorded server reads as "-" rather than blank.
-		if !strings.Contains(lines[2], " - ") {
-			t.Errorf("check=%v: a serverless credential should show -: %q", check, lines[2])
+		// A credential with no recorded server reads as "-" in the SERVER column
+		// (the second field), not merely somewhere on the line.
+		fields := strings.Fields(lines[2])
+		if len(fields) < 2 || fields[1] != "-" {
+			t.Errorf("check=%v: a serverless credential should show - in the SERVER column: %q", check, lines[2])
 		}
 	}
 }

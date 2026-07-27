@@ -85,7 +85,7 @@ func resolveDatasetSpecs(refs []string) ([]duck.DatasetSpec, error) {
 		if i := strings.Index(raw, "="); i >= 0 {
 			alias, refStr = raw[:i], raw[i+1:]
 		}
-		ref, err := resolveRef(cfg, refStr)
+		ref, err := resolveExistingRef(cfg, root, refStr)
 		if err != nil {
 			return nil, err
 		}

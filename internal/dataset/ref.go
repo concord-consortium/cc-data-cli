@@ -3,7 +3,6 @@
 package dataset
 
 import (
-	"errors"
 	"fmt"
 	"path/filepath"
 	"regexp"
@@ -43,17 +42,20 @@ func ParseRefForConfig(cfg *config.Config, raw string) (Ref, error) {
 	return ParseRef(raw, defaultPortal)
 }
 
-// ParseRefForExisting resolves a ref for a command that inspects or removes a
-// dataset already on disk, making one exception ParseRefForConfig does not: a
-// portal refused only for naming an environment is accepted when a dataset
+// ParseRefForExisting resolves a ref for any command that names a dataset
+// already on disk (everything but create), making one exception ParseRefForConfig
+// does not: a portal ParsePortalIdentity refuses is accepted when a dataset
 // actually exists under it.
 //
 // dataset list builds its rows from folder names and never parses them, so
-// without this a folder written before the alias refusal existed would be
-// visible and untouchable, removable only with rm -rf. The exception is
-// deliberately narrow: only *config.AliasPortalError is salvageable, never a
-// syntax refusal, so a traversal cannot reach os.RemoveAll by claiming the
-// folder exists.
+// without this a folder an earlier, laxer build wrote could be visible and
+// untouchable, removable only with rm -rf. That covers two kinds of stranded
+// folder: an environment-alias name, and a host shape 0.1.0's NormalizePortal
+// accepted but this build rejects (an underscore, an IPv6 literal). Both route
+// through config.AdoptExistingPortal, which refuses anything that is not a single
+// safe path component, so a traversal can never reach os.RemoveAll by claiming
+// the folder exists. When no folder exists the original strict refusal stands,
+// since for a genuinely new dataset the fix is to name the hostname.
 func ParseRefForExisting(cfg *config.Config, dataRoot, raw string) (Ref, error) {
 	defaultPortal, err := cfg.DefaultPortalValue()
 	if err != nil {
@@ -67,16 +69,14 @@ func ParseRefForExisting(cfg *config.Config, dataRoot, raw string) (Ref, error) 
 	if portalErr == nil {
 		return buildRef(portal, name, raw)
 	}
-	// Only an alias refusal is salvageable; a syntax refusal is the traversal
-	// guard and must stand.
-	var alias *config.AliasPortalError
-	if !errors.As(portalErr, &alias) {
+	adopted, ok := config.AdoptExistingPortal(portalValue)
+	if !ok {
 		return Ref{}, portalErr
 	}
 	// Validate the name before consulting the disk, so an invalid name still
-	// reports as one rather than as the alias refusal. If the name is fine but no
-	// folder exists, the alias refusal stands: naming the hostname is the fix.
-	ref, err := buildRef(alias.Portal, name, raw)
+	// reports as one rather than as the portal refusal. If the name is fine but no
+	// folder exists, the strict refusal stands.
+	ref, err := buildRef(adopted, name, raw)
 	if err != nil {
 		return Ref{}, err
 	}
@@ -130,8 +130,15 @@ func splitRef(raw string, defaultPortal config.Portal) (portalValue, name string
 	return scheme + portalPart, name, nil
 }
 
-// buildRef validates the name half and assembles the ref.
+// buildRef validates both halves and assembles the ref. It is the single choke
+// point every Ref passes through, so it also rejects a zero portal: a Ref{}
+// portal would make Ref.Dir resolve to <root>/datasets/<name>, a location
+// dataset list never scans. Every caller supplies a parsed or adopted portal, so
+// this only fires on a programming error.
 func buildRef(portal config.Portal, name, raw string) (Ref, error) {
+	if portal.IsZero() {
+		return Ref{}, fmt.Errorf("dataset ref %q has no portal", raw)
+	}
 	if name == "" {
 		return Ref{}, fmt.Errorf("dataset ref %q has no name", raw)
 	}

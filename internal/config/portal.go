@@ -152,23 +152,13 @@ func MustPortal(host string) Portal {
 	return p
 }
 
-// parseHost reduces a portal value to hostname form: scheme stripped,
-// lowercased, trailing slash removed, port preserved for dev portals.
+// parseHost reduces a portal value to hostname form (scheme stripped,
+// lowercased, trailing slash removed, port preserved) and enforces the host
+// shape that keeps a portal usable as a single filesystem path component.
 func parseHost(v string) (Portal, error) {
-	p := strings.TrimSpace(v)
-	if p == "" {
-		return Portal{}, fmt.Errorf("portal is empty")
-	}
-	if !strings.Contains(p, "://") {
-		p = "https://" + p
-	}
-	u, err := url.Parse(p)
+	host, err := normalizeHost(v)
 	if err != nil {
-		return Portal{}, fmt.Errorf("invalid portal %q: %w", v, err)
-	}
-	host := strings.ToLower(u.Host)
-	if host == "" {
-		return Portal{}, fmt.Errorf("invalid portal %q: no host", v)
+		return Portal{}, err
 	}
 	if err := checkHostSyntax(host); err != nil {
 		return Portal{}, fmt.Errorf("invalid portal %q: %w", v, err)
@@ -176,10 +166,55 @@ func parseHost(v string) (Portal, error) {
 	return Portal{host: host}, nil
 }
 
-// hostSyntax is a hostname or dotted IPv4 literal: it must start and end
-// alphanumeric, so "." and ".." and anything leading with a separator are out.
-// Underscore is excluded on purpose: Portal.Folder encodes the port separator as
-// "_", so a host containing one would decode back to a different host.
+// normalizeHost is parseHost without the shape check: scheme stripped,
+// lowercased, port preserved. It is the reduction an older, laxer build applied,
+// so AdoptExistingPortal can reproduce the folder name that build wrote.
+func normalizeHost(v string) (string, error) {
+	p := strings.TrimSpace(v)
+	if p == "" {
+		return "", fmt.Errorf("portal is empty")
+	}
+	if !strings.Contains(p, "://") {
+		p = "https://" + p
+	}
+	u, err := url.Parse(p)
+	if err != nil {
+		return "", fmt.Errorf("invalid portal %q: %w", v, err)
+	}
+	host := strings.ToLower(u.Host)
+	if host == "" {
+		return "", fmt.Errorf("invalid portal %q: no host", v)
+	}
+	return host, nil
+}
+
+// AdoptExistingPortal returns the portal a value names for the purpose of
+// reaching a dataset already on disk, for a value ParsePortalIdentity refused.
+// It accepts what that parser rejects for being an alias or for a host shape an
+// earlier, laxer build allowed (an underscore, an IPv6 literal), since folders
+// under such portals can exist today. It never accepts a value that is not a
+// single safe path component, so the traversal guard is preserved; ok is false
+// then, and for anything that cannot be a host at all.
+func AdoptExistingPortal(v string) (Portal, bool) {
+	host, err := normalizeHost(v)
+	if err != nil {
+		return Portal{}, false
+	}
+	p := Portal{host: host}
+	folder := p.Folder()
+	if folder == "" || folder == "." || folder == ".." || strings.ContainsAny(folder, `/\`) {
+		return Portal{}, false
+	}
+	return p, true
+}
+
+// hostSyntax is a permissive host-shape check, not a strict hostname grammar: it
+// requires the host to start and end alphanumeric, so "." and ".." and anything
+// leading with a separator are out, but it tolerates odd interior runs like
+// "a..b" (harmless: still one reversible path component, which is the property
+// that matters). Underscore is excluded on purpose: Portal.Folder encodes the
+// port separator as "_", so a host containing one would decode to a different
+// host.
 var hostSyntax = regexp.MustCompile(`^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$`)
 
 // checkHostSyntax rejects anything not shaped like a host. This is what makes a
@@ -231,11 +266,13 @@ func (e *UnshapedHostError) Error() string {
 		e.Portal.Host(), strings.Join(environmentNames, ", "))
 }
 
-// checkPortalShape passes a dotted name, an IP literal, and loopback, so only
-// the spellings that cannot be a real portal are turned away.
+// checkPortalShape passes a dotted name and loopback, so only the spellings that
+// cannot be a real portal (a single non-loopback label) are turned away. It runs
+// after checkHostSyntax, which has already rejected IPv6 literals, so a colon can
+// no longer survive in the host here.
 func checkPortalShape(p Portal) error {
 	h := splitHostPort(p.host)
-	if strings.Contains(h, ".") || strings.Contains(h, ":") || isLoopback(h) {
+	if strings.Contains(h, ".") || isLoopback(h) {
 		return nil
 	}
 	return &UnshapedHostError{Portal: p}

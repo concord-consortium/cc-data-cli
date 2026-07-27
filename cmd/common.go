@@ -24,7 +24,8 @@ func loadRuntime() (*config.Config, string, error) {
 	return cfg, root, nil
 }
 
-// resolveRef parses a dataset ref against the configured default portal.
+// resolveRef parses a dataset ref against the configured default portal. Only
+// create uses it: a new dataset must name a portal the parser fully accepts.
 func resolveRef(cfg *config.Config, raw string) (dataset.Ref, error) {
 	ref, err := dataset.ParseRefForConfig(cfg, raw)
 	if err != nil {
@@ -33,9 +34,10 @@ func resolveRef(cfg *config.Config, raw string) (dataset.Ref, error) {
 	return ref, nil
 }
 
-// resolveExistingRef is resolveRef for the commands that inspect or remove a
-// dataset already on disk, which must be able to reach anything dataset list
-// shows, including a folder under a portal the parser would otherwise refuse.
+// resolveExistingRef is resolveRef for every command that names a dataset
+// already on disk (show, delete, purge, rename, edit, reindex, get, query). It
+// must reach anything dataset list shows, including a folder under a portal the
+// parser would otherwise refuse, so the fix for such a folder is not rm -rf.
 func resolveExistingRef(cfg *config.Config, dataRoot, raw string) (dataset.Ref, error) {
 	ref, err := dataset.ParseRefForExisting(cfg, dataRoot, raw)
 	if err != nil {

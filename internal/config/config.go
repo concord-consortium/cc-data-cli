@@ -79,9 +79,10 @@ func Load() (*Config, error) {
 		c.ServerURL = origin
 	}
 	if err := c.normalizeDefaultPortal(); err != nil {
-		// Name the file: this refusal fails every command, including the ones
-		// that never read default_portal, so the error has to say what to edit.
-		return nil, fmt.Errorf("%s: %w", path, err)
+		// Name the file and the remedy: this refusal fails every command,
+		// including the ones that never read default_portal, so the error has to
+		// say both what to edit and that removing the key is a valid fix.
+		return nil, fmt.Errorf("%s: %w (remove or fix default_portal to continue)", path, err)
 	}
 	return &c, nil
 }
@@ -184,9 +185,15 @@ func ValidateServerURL(raw string) (string, error) {
 		return "", fmt.Errorf("server URL %q has no host", raw)
 	}
 	host := strings.ToLower(splitHostPort(u.Host))
+	// Lowercase the returned origin's host too (the port is numeric, so
+	// lowercasing the whole authority is safe). Otherwise a mixed-case server_url
+	// would be stored and compared in its original case, spuriously reading as
+	// "different" from the canonical lowercase origins and rendering unevenly in
+	// the SERVER column.
+	origin := u.Scheme + "://" + strings.ToLower(u.Host)
 
 	if isLoopback(host) {
-		return u.Scheme + "://" + u.Host, nil
+		return origin, nil
 	}
 	if u.Scheme != "https" {
 		return "", fmt.Errorf("server URL %q must use https (http is accepted only for loopback)", raw)
@@ -194,7 +201,7 @@ func ValidateServerURL(raw string) (string, error) {
 	if !isAllowedServerHost(host) {
 		return "", fmt.Errorf("server host %q is not allowed: must be concord.org, concordqa.org, a subdomain of either, or loopback", host)
 	}
-	return u.Scheme + "://" + u.Host, nil
+	return origin, nil
 }
 
 func isLoopback(host string) bool {

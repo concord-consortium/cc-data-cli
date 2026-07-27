@@ -76,26 +76,17 @@ func loadRuntime() (*config.Config, string, error) {
 	return cfg, root, nil
 }
 
-// openExistingDataset is openDataset for the tools that inspect or remove a
-// dataset already on disk. dataset_list builds its rows from folder names, so
-// these have to reach anything it shows, including a folder under a portal the
-// parser would otherwise refuse.
-func openExistingDataset(refStr string) (*dataset.Dataset, config.Portal, error) {
-	return openDatasetWith(refStr, dataset.ParseRefForExisting)
-}
-
+// openDataset resolves a ref that names a dataset already on disk. Every MCP
+// tool that opens a dataset (all but dataset_create) goes through it, so it uses
+// the salvaging parser: dataset_list builds its rows from folder names, and this
+// has to reach anything it shows, including a folder under a portal the strict
+// parser would refuse.
 func openDataset(refStr string) (*dataset.Dataset, config.Portal, error) {
-	return openDatasetWith(refStr, func(cfg *config.Config, _ string, raw string) (dataset.Ref, error) {
-		return dataset.ParseRefForConfig(cfg, raw)
-	})
-}
-
-func openDatasetWith(refStr string, parse func(*config.Config, string, string) (dataset.Ref, error)) (*dataset.Dataset, config.Portal, error) {
 	cfg, root, err := loadRuntime()
 	if err != nil {
 		return nil, config.Portal{}, err
 	}
-	ref, err := parse(cfg, root, refStr)
+	ref, err := dataset.ParseRefForExisting(cfg, root, refStr)
 	if err != nil {
 		return nil, config.Portal{}, err
 	}
