@@ -1,7 +1,9 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -18,12 +20,26 @@ func TestValidateServerURL(t *testing.T) {
 		{"http://localhost:4000", false, "http://localhost:4000"},
 		{"https://localhost:4000", false, "https://localhost:4000"},
 		{"http://127.0.0.1:4000", false, "http://127.0.0.1:4000"},
+		// A bracketed IPv6 loopback is loopback with or without a port.
+		{"http://[::1]:4000", false, "http://[::1]:4000"},
+		{"http://[::1]", false, "http://[::1]"},
+		// Only a matched pair of brackets is unwrapped, so a stray one cannot
+		// be trimmed into a host that reads as loopback.
+		{"http://localhost]", true, ""},
 		{"https://evil-concord.org", true, ""},
 		{"https://concord.org.evil.com", true, ""},
 		{"https://notconcord.org", true, ""},
 		{"http://report-server.concord.org", true, ""}, // http not allowed off loopback
 		{"ftp://report-server.concord.org", true, ""},
 		{"https://", true, ""},
+		// The returned origin's host is lowercased, so a mixed-case server_url
+		// canonicalizes to the same origin the pairing produces (otherwise the
+		// login notice reports it as "not used" against the server it names, and
+		// the SERVER column renders unevenly). Scheme case is normalized by
+		// url.Parse; a trailing slash and an /api path are already stripped.
+		{"https://REPORT-SERVER.CONCORD.ORG", false, "https://report-server.concord.org"},
+		{"https://Report-Server.Concord.org/api", false, "https://report-server.concord.org"},
+		{"HTTP://LOCALHOST:4000", false, "http://localhost:4000"},
 	}
 	for _, c := range cases {
 		got, err := ValidateServerURL(c.in)
@@ -98,6 +114,126 @@ func TestConfigRoundTripAndHomeExpansion(t *testing.T) {
 	}
 	if loaded.ServerOrigin() != "https://report-server.concordqa.org" {
 		t.Fatalf("server origin = %q", loaded.ServerOrigin())
+	}
+}
+
+// TestSaveRejectsAliasDefaultPortal keeps Save from writing a config Load would
+// refuse, which would leave every command failing on a file the CLI wrote
+// itself.
+func TestSaveRejectsAliasDefaultPortal(t *testing.T) {
+	home := t.TempDir()
+	homeDir = func() (string, error) { return home, nil }
+	t.Cleanup(func() { homeDir = defaultHomeDir })
+
+	c := &Config{DefaultPortal: "staging"}
+	err := c.Save()
+	if err == nil {
+		t.Fatal("saving an alias default_portal should error")
+	}
+	if !strings.Contains(err.Error(), "environment alias") {
+		t.Fatalf("error should explain the alias: %v", err)
+	}
+	path, err := Path()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("a rejected Save should not have written config.json")
+	}
+}
+
+// TestLoadRejectsAliasDefaultPortal pins the refusal to treat an environment
+// alias as a portal host. default_portal is also the literal portal of a bare
+// dataset ref and the on-disk folder identity, so accepting "staging" here would
+// store a credential under a host by that name and build the auth URL
+// "https://staging".
+func TestLoadRejectsAliasDefaultPortal(t *testing.T) {
+	home := t.TempDir()
+	homeDir = func() (string, error) { return home, nil }
+	t.Cleanup(func() { homeDir = defaultHomeDir })
+
+	dir := filepath.Join(home, ".config", "cc-data")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, alias := range []string{"staging", "prod", "dev", "STAGING"} {
+		body := []byte(`{"version":1,"default_portal":"` + alias + `"}`)
+		if err := os.WriteFile(filepath.Join(dir, "config.json"), body, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, err := Load()
+		if err == nil {
+			t.Errorf("default_portal %q should be rejected as an alias", alias)
+			continue
+		}
+		if !strings.Contains(err.Error(), "environment alias") {
+			t.Errorf("default_portal %q error should explain the alias: %v", alias, err)
+		}
+		// This refusal fails every command, so the error has to name the file
+		// the user has to edit to recover.
+		path, perr := Path()
+		if perr != nil {
+			t.Fatal(perr)
+		}
+		if !strings.Contains(err.Error(), path) {
+			t.Errorf("default_portal %q error should name %s: %v", alias, path, err)
+		}
+	}
+
+	// A full hostname is still accepted.
+	body := []byte(`{"version":1,"default_portal":"` + StagingPortal + `"}`)
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("a full hostname default_portal should load: %v", err)
+	}
+	if c.DefaultPortal != StagingPortal {
+		t.Fatalf("default_portal = %q", c.DefaultPortal)
+	}
+}
+
+// TestLoadNormalizesDefaultPortal pins that the value is canonicalized once, at
+// load. Left raw, "https://learn.concord.org" and "learn.concord.org" name the
+// same portal but two different dataset folders, and the auto-named
+// "dataset create" path filed data under the URL-shaped one, where dataset list
+// could not see it.
+func TestLoadNormalizesDefaultPortal(t *testing.T) {
+	home := t.TempDir()
+	homeDir = func() (string, error) { return home, nil }
+	t.Cleanup(func() { homeDir = defaultHomeDir })
+
+	dir := filepath.Join(home, ".config", "cc-data")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range []string{"https://learn.concord.org", "https://learn.concord.org/", "Learn.Concord.Org"} {
+		body := []byte(`{"version":1,"default_portal":"` + raw + `"}`)
+		if err := os.WriteFile(filepath.Join(dir, "config.json"), body, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		c, err := Load()
+		if err != nil {
+			t.Errorf("default_portal %q should load: %v", raw, err)
+			continue
+		}
+		if c.DefaultPortal != ProductionPortal {
+			t.Errorf("default_portal %q loaded as %q, want %q", raw, c.DefaultPortal, ProductionPortal)
+		}
+		p, err := c.DefaultPortalValue()
+		if err != nil || p.Host() != ProductionPortal {
+			t.Errorf("DefaultPortalValue for %q = (%q, %v)", raw, p.Host(), err)
+		}
+	}
+
+	// A value that cannot be a folder is refused outright, naming the file.
+	body := []byte(`{"version":1,"default_portal":"../../escaped"}`)
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(); err == nil {
+		t.Error("a traversal default_portal should be rejected")
 	}
 }
 

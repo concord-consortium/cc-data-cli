@@ -55,14 +55,17 @@ func Status(ctx context.Context, check bool) (StatusResult, error) {
 			StoredAt: info.StoredAt,
 		}
 		if check {
-			checkPortal(ctx, info.Portal, &ps)
+			// The host comes back from our own credential store, so it is adopted
+			// rather than re-parsed: a legacy single-label portal still has to be
+			// checkable here.
+			checkPortal(ctx, config.AdoptStoredPortal(info.Portal), &ps)
 		}
 		res.Portals = append(res.Portals, ps)
 	}
 	return res, nil
 }
 
-func checkPortal(ctx context.Context, portal string, ps *PortalStatus) {
+func checkPortal(ctx context.Context, portal config.Portal, ps *PortalStatus) {
 	ps.Checked = true
 	client, err := api.ForPortal(portal)
 	if err != nil {

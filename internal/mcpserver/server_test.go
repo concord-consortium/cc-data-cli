@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"testing"
 
+	"github.com/concord-consortium/cc-data-cli/internal/config"
 	"github.com/concord-consortium/cc-data-cli/internal/dataset"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/zalando/go-keyring"
@@ -155,7 +156,7 @@ func TestMCPDatasetShowParity(t *testing.T) {
 	_, out := callJSON(t, cs, "dataset_show", map[string]any{"ref": "learn.concord.org/ds"})
 
 	// The tool payload must equal the CLI's BuildShowJSON for the same dataset.
-	d := dataset.Open(root, dataset.Ref{Portal: "learn.concord.org", Name: "ds"})
+	d := dataset.Open(root, dataset.Ref{Portal: config.MustPortal("learn.concord.org"), Name: "ds"})
 	cliJSON, _ := d.BuildShowJSON(false)
 	cliBytes, _ := json.Marshal(cliJSON)
 	toolBytes, _ := json.Marshal(out)
@@ -173,7 +174,7 @@ func TestMCPDatasetShowParity(t *testing.T) {
 func TestMCPQueryTruncation(t *testing.T) {
 	root := setupEnv(t)
 	cs := connect(t)
-	if _, err := dataset.Create(root, dataset.Ref{Portal: "learn.concord.org", Name: "ds"}, ""); err != nil {
+	if _, err := dataset.Create(root, dataset.Ref{Portal: config.MustPortal("learn.concord.org"), Name: "ds"}, ""); err != nil {
 		t.Fatal(err)
 	}
 	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{

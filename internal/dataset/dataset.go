@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/concord-consortium/cc-data-cli/internal/config"
 	"github.com/concord-consortium/cc-data-cli/internal/store"
 )
 
@@ -322,13 +323,13 @@ func isArtifactFile(name string) bool {
 
 // AutoName generates a {date}_{slug} name (slug from description) or a
 // {date}_{n} counter scanning existing names.
-func AutoName(dataRoot, portalHost, description string) (string, error) {
+func AutoName(dataRoot string, portal config.Portal, description string) (string, error) {
 	date := clock().UTC().Format("2006-01-02")
 	if slug := kebab(description); slug != "" {
 		return date + "_" + slug, nil
 	}
 	existing := map[string]bool{}
-	dir := PortalDatasetsDir(dataRoot, portalHost)
+	dir := PortalDatasetsDir(dataRoot, portal)
 	if entries, err := os.ReadDir(dir); err == nil {
 		for _, e := range entries {
 			if e.IsDir() {

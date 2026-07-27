@@ -16,14 +16,17 @@ import (
 // DefaultLoginTimeout matches the server's grant TTL.
 const DefaultLoginTimeout = 5 * time.Minute
 
-// LoginOptions parameterizes a login. Portal is a normalized host and Server a
+// LoginOptions parameterizes a login. Portal is a parsed portal and Server a
 // validated origin; a non-empty Token skips the PKCE flow and stores directly.
+// PortalOrigin is the scheme-bearing form of Portal for the auth URL; when empty
+// it is derived from Portal.
 type LoginOptions struct {
-	Portal   string
-	Server   string
-	Token    string
-	Timeout  time.Duration
-	Progress io.Writer
+	Portal       config.Portal
+	PortalOrigin string
+	Server       string
+	Token        string
+	Timeout      time.Duration
+	Progress     io.Writer
 }
 
 // Login runs the PKCE loopback flow (or stores a manual token) and saves the
@@ -70,7 +73,11 @@ func pkceFlow(ctx context.Context, opts LoginOptions) (string, error) {
 	}
 	defer lb.Close()
 
-	authURL := buildAuthURL(opts.Server, opts.Portal, lb.RedirectURI(), state, challenge)
+	portalOrigin := opts.PortalOrigin
+	if portalOrigin == "" {
+		portalOrigin = opts.Portal.Origin()
+	}
+	authURL := buildAuthURL(opts.Server, portalOrigin, lb.RedirectURI(), state, challenge)
 	RedirectBrowserOutput(opts.Progress)
 	fmt.Fprintf(opts.Progress, "Opening browser to log in. If it does not open, visit:\n%s\n", authURL)
 	_ = OpenBrowser(authURL)
@@ -90,9 +97,9 @@ func pkceFlow(ctx context.Context, opts LoginOptions) (string, error) {
 	return token, nil
 }
 
-func buildAuthURL(server, portalHost, redirectURI, state, challenge string) string {
+func buildAuthURL(server, portalOrigin, redirectURI, state, challenge string) string {
 	q := url.Values{}
-	q.Set("portal", config.PortalOrigin(portalHost))
+	q.Set("portal", portalOrigin)
 	q.Set("redirect_uri", redirectURI)
 	q.Set("state", state)
 	q.Set("code_challenge", challenge)

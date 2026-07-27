@@ -44,7 +44,7 @@ func TestGenerateStateUnique(t *testing.T) {
 }
 
 func TestBuildAuthURL(t *testing.T) {
-	u := buildAuthURL("https://report-server.concord.org", "learn.concord.org", "http://127.0.0.1:5000/callback", "st", "ch")
+	u := buildAuthURL("https://report-server.concord.org", "https://learn.concord.org", "http://127.0.0.1:5000/callback", "st", "ch")
 	for _, needle := range []string{
 		"portal=https%3A%2F%2Flearn.concord.org",
 		"redirect_uri=http%3A%2F%2F127.0.0.1%3A5000%2Fcallback",

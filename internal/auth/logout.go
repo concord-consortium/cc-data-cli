@@ -7,6 +7,7 @@ import (
 	"io"
 
 	"github.com/concord-consortium/cc-data-cli/internal/api"
+	"github.com/concord-consortium/cc-data-cli/internal/config"
 	"github.com/concord-consortium/cc-data-cli/internal/creds"
 )
 
@@ -14,7 +15,7 @@ import (
 // (already invalid) or a 404 (older server without the revoke route) still
 // removes the local credential and exits successfully; only an unexpected error
 // aborts before local deletion.
-func Logout(ctx context.Context, portal string, progress io.Writer) error {
+func Logout(ctx context.Context, portal config.Portal, progress io.Writer) error {
 	var store creds.Store
 	token, server, err := store.Get(portal)
 	if errors.Is(err, creds.ErrNotFound) {

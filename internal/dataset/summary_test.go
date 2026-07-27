@@ -4,6 +4,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/concord-consortium/cc-data-cli/internal/config"
 )
 
 func TestShowJSONSchema(t *testing.T) {
@@ -68,8 +70,8 @@ func TestListJSON(t *testing.T) {
 	clock = fixedClock
 	defer func() { clock = defaultClock }()
 	root := t.TempDir()
-	Create(root, Ref{Portal: "learn.concord.org", Name: "a"}, "first")
-	Create(root, Ref{Portal: "localhost:8080", Name: "b"}, "second")
+	Create(root, Ref{Portal: config.MustPortal("learn.concord.org"), Name: "a"}, "first")
+	Create(root, Ref{Portal: config.MustPortal("localhost:8080"), Name: "b"}, "second")
 
 	list, err := BuildListJSON(root)
 	if err != nil {

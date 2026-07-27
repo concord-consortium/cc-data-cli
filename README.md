@@ -44,17 +44,18 @@ A dataset is a named, single-portal, user-managed workspace meant to combine man
 - Writes are atomic and paged downloads are resumable: pages append to a per-download segment with the cursor saved, then merge into the store as a new version with an atomic swap. An interrupted `get` picks up from its last cursor, a truncated pull is honestly marked incomplete, and queries only ever see complete, duplicate-free data.
 - Datasets are purely local. `cc-data dataset delete` and `purge` only touch your disk.
 
-Every `get`/`query`/`repl` names its dataset as `<portal>/<name>`; a bare `<name>` resolves under the optional `default_portal` config.
+Every `get`/`query`/`repl` names its dataset as `<portal>/<name>`; a bare `<name>` resolves under the optional `default_portal` config. Both are hostnames: the environment aliases (`prod`/`staging`/`dev`) expand on `--portal`/`--server`, and are refused in a dataset ref and in `default_portal`, with the hostname to use named in the error. The portal there is also the on-disk folder, so expanding would give one dataset two names and taking it literally would file data under a portal that can never hold a credential. One parser owns every portal value, and it is what guarantees a portal is a single path component: `../wildfire` is refused rather than resolving outside your data root.
 
 ## Commands (sketch)
 
 ```
 cc-data init                                  # install the Claude skill + prompt for login
-cc-data login --portal <portal>               # browser loopback login; token stored per portal
-cc-data logout                                # revoke the current token server-side
+cc-data login [prod|staging|dev]              # browser loopback login; the environment sets portal + server
+cc-data login --portal <portal|env>           # or name the portal directly; token stored per portal
+cc-data logout --portal <portal|env>          # revoke and remove that portal's stored token
 cc-data auth status                           # stored credentials per portal + default_portal
-cc-data reports list --portal <portal>
-cc-data reports jobs <run-id> --portal <portal>   # list a run's post-processing outputs
+cc-data reports list --portal <portal|env>
+cc-data reports jobs <run-id> --portal <portal|env>   # list a run's post-processing outputs
 cc-data dataset create|list|show|rename|edit|delete|purge|reindex ...   # list/show take --json (and show --full)
 cc-data get report      <run-id> --dataset <portal>/<name> [--job <id>]
 cc-data get answers     <run-id> --dataset <portal>/<name>
@@ -77,7 +78,7 @@ Every command has real per-command help; `cc-data get answers --help` is the aut
 - A presigned attachment URL (from `get attachments --url`) is a short-lived, credential-free capability to one student's file; don't paste it into shared or persistent channels. Prefer downloading into the dataset over `--url`.
 - **Manual token entry:** on a headless or SSH host, `cc-data login --token -` reads the token from stdin (piped, or an echo-off prompt on a TTY) — the recommended manual form. The bare `--token <value>` form works but is discouraged: flag values land in shell history and process lists.
 - **Dataset-folder trust boundary:** the DuckDB sandbox confines `query`/`repl` to the named dataset folders. On the bundled DuckDB the sandbox resolves symlinks, so this is a *writable-files* boundary, not a symlink escape: anyone who can write into a dataset folder can plant files your queries then read as trusted, so a dataset folder inherits the trust of whoever can write to it.
-- **`--server` trust boundary:** `cc-data login --server <origin>` drives the entire login and token exchange against `<origin>`. The CLI enforces an allowlist (a `concord.org`/`concordqa.org` host or subdomain, or a loopback host; http only for loopback) so a social-engineered `--server` cannot capture your login. Widening it is deliberately a code change.
+- **`--server` trust boundary:** `cc-data login --server <origin>` drives the entire login and token exchange against `<origin>`. The CLI enforces an allowlist (a `concord.org`/`concordqa.org` host or subdomain, or a loopback host; http only for loopback) so a social-engineered `--server` cannot capture your login. Widening it is deliberately a code change. The environment aliases (`prod`/`staging`/`dev`) expand to origins that are then checked against the same allowlist, so naming an environment is not a way around it.
 - Claude never drives the browser login. On an expired or missing token the CLI emits a structured `NOT_AUTHENTICATED` error and a human runs `cc-data login`.
 
 ## Development

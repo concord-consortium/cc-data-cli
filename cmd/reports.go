@@ -8,6 +8,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/concord-consortium/cc-data-cli/internal/api"
+	"github.com/concord-consortium/cc-data-cli/internal/auth"
 	"github.com/concord-consortium/cc-data-cli/internal/config"
 	"github.com/concord-consortium/cc-data-cli/internal/output"
 	"github.com/concord-consortium/cc-data-cli/internal/reportview"
@@ -23,18 +24,22 @@ func newReportsCmd() *cobra.Command {
 	return cmd
 }
 
-// resolvePortal normalizes the --portal flag or the configured default.
-func resolvePortal(cfg *config.Config, flagVal string) (string, error) {
+// resolvePortal resolves the --portal flag or the configured default to a
+// portal host. These commands have no --server flag (the server comes from the
+// stored credential), so only the portal side of an environment alias applies.
+// A portal only a stored credential vouches for is reachable here for the same
+// reason it is at logout: its runs would otherwise be impossible to list.
+func resolvePortal(cfg *config.Config, flagVal string) (config.Portal, error) {
 	raw := flagVal
 	if raw == "" {
 		raw = cfg.DefaultPortal
 	}
 	if raw == "" {
-		return "", output.Usagef("--portal is required (no default_portal configured)")
+		return config.Portal{}, output.Usagef("--portal is required (no default_portal configured)")
 	}
-	host, err := config.NormalizePortal(raw)
+	host, _, err := auth.ResolvePortalTarget(raw)
 	if err != nil {
-		return "", output.Usagef("%v", err)
+		return config.Portal{}, output.Usagef("%v", err)
 	}
 	return host, nil
 }
@@ -43,7 +48,7 @@ func newReportsListCmd() *cobra.Command {
 	var portal string
 	var asJSON bool
 	cmd := &cobra.Command{
-		Use:   "list --portal <portal>",
+		Use:   "list --portal <portal|env>",
 		Short: "List the user's report runs",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -70,7 +75,7 @@ func newReportsListCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&portal, "portal", "", "portal to list runs for")
+	cmd.Flags().StringVar(&portal, "portal", "", "portal to list runs for: an environment alias or a hostname")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "emit JSON instead of a table")
 	return cmd
 }
@@ -79,7 +84,7 @@ func newReportsJobsCmd() *cobra.Command {
 	var portal string
 	var asJSON bool
 	cmd := &cobra.Command{
-		Use:   "jobs <run-id> --portal <portal>",
+		Use:   "jobs <run-id> --portal <portal|env>",
 		Short: "List a run's post-processing jobs",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -110,7 +115,7 @@ func newReportsJobsCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&portal, "portal", "", "portal the run belongs to")
+	cmd.Flags().StringVar(&portal, "portal", "", "portal the run belongs to: an environment alias or a hostname")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "emit JSON instead of a table")
 	return cmd
 }

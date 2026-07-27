@@ -69,7 +69,7 @@ func (d *Dataset) BuildShowJSON(full bool) (*ShowJSON, error) {
 		Ref:         d.Ref.String(),
 		Name:        m.Name,
 		Description: m.Description,
-		Portal:      d.Ref.Portal,
+		Portal:      d.Ref.Portal.Host(),
 		CreatedAt:   m.CreatedAt,
 		Totals:      manifestTotals(m),
 		SizeBytes:   size,

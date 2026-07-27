@@ -53,21 +53,33 @@ func renderStatus(res auth.StatusResult, check bool) {
 		return
 	}
 	tw := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
+	// Portal and server sit next to each other: a run belongs to a portal *and*
+	// the report server behind it, so the pair is what identifies a login.
 	if check {
-		fmt.Fprintln(tw, "PORTAL\tBACKEND\tSTORED\tVALID\tLABEL\tLAST USED\tREPORT ACCESS")
+		fmt.Fprintln(tw, "PORTAL\tSERVER\tBACKEND\tSTORED\tVALID\tLABEL\tLAST USED\tREPORT ACCESS")
 	} else {
-		fmt.Fprintln(tw, "PORTAL\tBACKEND\tSTORED")
+		fmt.Fprintln(tw, "PORTAL\tSERVER\tBACKEND\tSTORED")
 	}
 	for _, p := range res.Portals {
 		if check {
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-				p.Portal, p.Backend, fmtTime(p.StoredAt),
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+				p.Portal, serverText(p.Server), p.Backend, fmtTime(p.StoredAt),
 				validText(p), labelText(p.Label), lastUsedText(p), reportAccessText(p))
 		} else {
-			fmt.Fprintf(tw, "%s\t%s\t%s\n", p.Portal, p.Backend, fmtTime(p.StoredAt))
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", p.Portal, serverText(p.Server), p.Backend, fmtTime(p.StoredAt))
 		}
 	}
 	tw.Flush()
+}
+
+// serverText renders a credential's recorded report server. A credential stored
+// before the server was recorded has none, which is what makes its fetches fail;
+// showing that as "-" is the point of the column.
+func serverText(server string) string {
+	if server == "" {
+		return "-"
+	}
+	return server
 }
 
 func fmtTime(t time.Time) string {

@@ -76,18 +76,23 @@ func loadRuntime() (*config.Config, string, error) {
 	return cfg, root, nil
 }
 
-func openDataset(refStr string) (*dataset.Dataset, string, error) {
+// openDataset resolves a ref that names a dataset already on disk. Every MCP
+// tool that opens a dataset (all but dataset_create) goes through it, so it uses
+// the salvaging parser: dataset_list builds its rows from folder names, and this
+// has to reach anything it shows, including a folder under a portal the strict
+// parser would refuse.
+func openDataset(refStr string) (*dataset.Dataset, config.Portal, error) {
 	cfg, root, err := loadRuntime()
 	if err != nil {
-		return nil, "", err
+		return nil, config.Portal{}, err
 	}
-	ref, err := dataset.ParseRef(refStr, cfg.DefaultPortal)
+	ref, err := dataset.ParseRefForExisting(cfg, root, refStr)
 	if err != nil {
-		return nil, "", err
+		return nil, config.Portal{}, err
 	}
 	d := dataset.Open(root, ref)
 	if !d.Exists() {
-		return nil, "", &output.CLIError{Code: "NOT_FOUND", Message: "dataset " + ref.String() + " does not exist"}
+		return nil, config.Portal{}, &output.CLIError{Code: "NOT_FOUND", Message: "dataset " + ref.String() + " does not exist"}
 	}
 	return d, ref.Portal, nil
 }

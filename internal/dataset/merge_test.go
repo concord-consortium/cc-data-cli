@@ -9,13 +9,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/concord-consortium/cc-data-cli/internal/config"
 	"github.com/concord-consortium/cc-data-cli/internal/store"
 )
 
 func newDataset(t *testing.T) *Dataset {
 	t.Helper()
 	root := t.TempDir()
-	d, err := Create(root, Ref{Portal: "learn.concord.org", Name: "ds"}, "")
+	d, err := Create(root, Ref{Portal: config.MustPortal("learn.concord.org"), Name: "ds"}, "")
 	if err != nil {
 		t.Fatal(err)
 	}

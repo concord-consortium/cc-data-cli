@@ -6,13 +6,15 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/concord-consortium/cc-data-cli/internal/config"
 )
 
 func fixedClock() time.Time { return time.Date(2026, 7, 17, 0, 0, 0, 0, time.UTC) }
 
 func TestCRUD(t *testing.T) {
 	root := t.TempDir()
-	ref := Ref{Portal: "learn.concord.org", Name: "wildfire"}
+	ref := Ref{Portal: config.MustPortal("learn.concord.org"), Name: "wildfire"}
 
 	d, err := Create(root, ref, "Wildfire study")
 	if err != nil {
@@ -62,7 +64,7 @@ func TestCRUD(t *testing.T) {
 // the portal folder, and a listing sees nothing.
 func TestDeleteLeavesNoTombstoneResidue(t *testing.T) {
 	root := t.TempDir()
-	ref := Ref{Portal: "learn.concord.org", Name: "gone"}
+	ref := Ref{Portal: config.MustPortal("learn.concord.org"), Name: "gone"}
 	d, err := Create(root, ref, "")
 	if err != nil {
 		t.Fatal(err)
@@ -104,7 +106,7 @@ func TestDeleteLeavesNoTombstoneResidue(t *testing.T) {
 // would already have destroyed them by the time the commit failed.)
 func TestPurgeKeepsArtifactsWhenManifestCommitFails(t *testing.T) {
 	root := t.TempDir()
-	d, err := Create(root, Ref{Portal: "learn.concord.org", Name: "ds"}, "")
+	d, err := Create(root, Ref{Portal: config.MustPortal("learn.concord.org"), Name: "ds"}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +130,7 @@ func TestPurgeKeepsArtifactsWhenManifestCommitFails(t *testing.T) {
 
 func TestCreateRejectsReservedName(t *testing.T) {
 	root := t.TempDir()
-	_, err := Create(root, Ref{Portal: "learn.concord.org", Name: "main"}, "")
+	_, err := Create(root, Ref{Portal: config.MustPortal("learn.concord.org"), Name: "main"}, "")
 	if err == nil {
 		t.Fatal("create main should be rejected")
 	}
@@ -136,7 +138,7 @@ func TestCreateRejectsReservedName(t *testing.T) {
 
 func TestPurgeKeepsShell(t *testing.T) {
 	root := t.TempDir()
-	ref := Ref{Portal: "learn.concord.org", Name: "ds"}
+	ref := Ref{Portal: config.MustPortal("learn.concord.org"), Name: "ds"}
 	d, err := Create(root, ref, "desc")
 	if err != nil {
 		t.Fatal(err)
@@ -176,7 +178,7 @@ func TestPurgeKeepsShell(t *testing.T) {
 
 func TestMutationBusyWhenActivityHeld(t *testing.T) {
 	root := t.TempDir()
-	ref := Ref{Portal: "learn.concord.org", Name: "ds"}
+	ref := Ref{Portal: config.MustPortal("learn.concord.org"), Name: "ds"}
 	d, err := Create(root, ref, "")
 	if err != nil {
 		t.Fatal(err)
@@ -206,7 +208,7 @@ func TestAutoName(t *testing.T) {
 	clock = fixedClock
 	defer func() { clock = defaultClock }()
 	root := t.TempDir()
-	name, err := AutoName(root, "learn.concord.org", "Wildfire Study!")
+	name, err := AutoName(root, config.MustPortal("learn.concord.org"), "Wildfire Study!")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,8 +220,8 @@ func TestAutoName(t *testing.T) {
 	}
 
 	// No description: counter.
-	os.MkdirAll(filepath.Join(PortalDatasetsDir(root, "learn.concord.org"), "2026-07-17_1"), 0o700)
-	name2, _ := AutoName(root, "learn.concord.org", "")
+	os.MkdirAll(filepath.Join(PortalDatasetsDir(root, config.MustPortal("learn.concord.org")), "2026-07-17_1"), 0o700)
+	name2, _ := AutoName(root, config.MustPortal("learn.concord.org"), "")
 	if name2 != "2026-07-17_2" {
 		t.Fatalf("counter name = %q", name2)
 	}

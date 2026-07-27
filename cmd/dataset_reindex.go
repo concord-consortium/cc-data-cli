@@ -16,7 +16,7 @@ func newReindexCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			ref, err := resolveRef(cfg, args[0])
+			ref, err := resolveExistingRef(cfg, root, args[0])
 			if err != nil {
 				return err
 			}

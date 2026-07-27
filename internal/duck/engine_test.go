@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/concord-consortium/cc-data-cli/internal/config"
 	"github.com/concord-consortium/cc-data-cli/internal/dataset"
 	"github.com/concord-consortium/cc-data-cli/internal/store"
 )
@@ -54,7 +55,7 @@ func addReportCSV(t *testing.T, d *dataset.Dataset, run int, reportType, content
 func newDS(t *testing.T, name string) *dataset.Dataset {
 	t.Helper()
 	root := t.TempDir()
-	d, err := dataset.Create(root, dataset.Ref{Portal: "learn.concord.org", Name: name}, "")
+	d, err := dataset.Create(root, dataset.Ref{Portal: config.MustPortal("learn.concord.org"), Name: name}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,9 +205,9 @@ func TestEngineMultiDatasetSchemas(t *testing.T) {
 
 func TestEngineSchemaCollisionRequiresAlias(t *testing.T) {
 	root := t.TempDir()
-	d1, _ := dataset.Create(root, dataset.Ref{Portal: "a.concord.org", Name: "same"}, "")
+	d1, _ := dataset.Create(root, dataset.Ref{Portal: config.MustPortal("a.concord.org"), Name: "same"}, "")
 	root2 := t.TempDir()
-	d2, _ := dataset.Create(root2, dataset.Ref{Portal: "b.concord.org", Name: "same"}, "")
+	d2, _ := dataset.Create(root2, dataset.Ref{Portal: config.MustPortal("b.concord.org"), Name: "same"}, "")
 
 	_, err := Open(context.Background(), []DatasetSpec{{DS: d1}, {DS: d2}}, nil, io.Discard)
 	if err == nil {
@@ -238,7 +239,7 @@ func TestEngineDataRootWithQuote(t *testing.T) {
 	if err := os.MkdirAll(base, 0o700); err != nil {
 		t.Skipf("cannot create quote dir: %v", err)
 	}
-	d, err := dataset.Create(base, dataset.Ref{Portal: "learn.concord.org", Name: "ds"}, "")
+	d, err := dataset.Create(base, dataset.Ref{Portal: config.MustPortal("learn.concord.org"), Name: "ds"}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -305,8 +306,8 @@ func TestResolveSchemasLegacyMainRequiresAlias(t *testing.T) {
 	// A legacy dataset named "main" (constructed via Open, bypassing the create
 	// validator) must require an alias in a multi-dataset registration.
 	specs := []DatasetSpec{
-		{DS: dataset.Open(root, dataset.Ref{Portal: "learn.concord.org", Name: "wildfire"})},
-		{DS: dataset.Open(root, dataset.Ref{Portal: "learn.concord.org", Name: "main"})},
+		{DS: dataset.Open(root, dataset.Ref{Portal: config.MustPortal("learn.concord.org"), Name: "wildfire"})},
+		{DS: dataset.Open(root, dataset.Ref{Portal: config.MustPortal("learn.concord.org"), Name: "main"})},
 	}
 	if _, err := resolveSchemas(specs); err == nil {
 		t.Fatal("a legacy dataset named main should require an alias")
@@ -321,7 +322,7 @@ func TestResolveSchemasLegacyMainRequiresAlias(t *testing.T) {
 		t.Fatalf("aliased schema = %q", schemas[1])
 	}
 	// A single dataset named main uses the default schema and is fine.
-	if _, err := resolveSchemas([]DatasetSpec{{DS: dataset.Open(root, dataset.Ref{Portal: "p", Name: "main"})}}); err != nil {
+	if _, err := resolveSchemas([]DatasetSpec{{DS: dataset.Open(root, dataset.Ref{Portal: config.MustPortal("p"), Name: "main"})}}); err != nil {
 		t.Fatalf("single main dataset should be allowed: %v", err)
 	}
 }
