@@ -135,6 +135,13 @@ question without joining through `Portal::Offering`.
 **Identity:** a result row is `(class_id, runnable_id)`. A class appears once per
 activity it ran, so a distinct-class count must dedupe on `class_id`.
 
+**Not yet captured: the offering id.** "Offering" is the portal's name for an
+assignment — a specific runnable assigned to a specific class — and its id is the
+key several other systems use to locate a class's data. `report_learners` already
+carries `offering_id`, so adding it is a one-line change to the row hash in
+`find_dataflow_classes.rb`; it was left out only because nothing needed it yet.
+Add it the moment a downstream lookup asks for an assignment rather than a class.
+
 **Sample row** (values redacted):
 
 ```
@@ -166,3 +173,61 @@ brain,1.4,true,<int>,<class name>,<school name>,<teacher name>,<int>,<activity n
 - `rails runner` output is preceded by initializer warnings on stderr; parse
   results out with an explicit marker rather than assuming the first line.
 - The ECS security group allows port 22 from `0.0.0.0/0`. Noted, not acted on.
+
+#### Making this researcher-accessible
+
+Everything above needs AWS IAM, SSH to a production box, and `sudo docker`. A
+researcher has none of that. Options for closing the gap, from a read of
+`report-service/server` and `rigse`:
+
+The gap is narrower than it looks, because **both halves nearly exist already**:
+
+- The report server's *assignment* filter already does LIKE-based search over
+  `external_activities`, already scoped to the researcher's projects via
+  `allowed_project_ids` — `reports/report_filter_query.ex`, the
+  `get_filter_query(:assignment, ...)` clause.
+- The standard report column set already carries `runnable_url`, `class_id`,
+  `class`, `school`, `offering_id`, and `last_run` (`reports/report_query.ex`),
+  read from the same `report_learners` table this recipe queries directly
+  (`reports/athena/learner_data.ex`).
+
+**Discovery — finding resources by URL pattern**
+
+1. *Add `url` to the report server's assignment filter.* The where clause is
+   `["external_activities.name LIKE ?"]`; making it also match
+   `external_activities.url` is that line plus a `num_params` bump. Inherits the
+   project scoping for free, and leaves the researcher inside the tool that
+   produces the who/when data. Searching `unit=brain` returns all 14
+   problem-activities and the researcher multi-selects the ones they want, which
+   surfaces the per-problem structure instead of requiring prior knowledge of it.
+   **Recommended** — smallest change, best placed.
+2. *Index `url` in the portal's Solr search.* `url` is absent from
+   `ExternalActivity`'s `searchable do` block. Reaches the portal UI and other
+   search consumers, but substring matching a URL fits Solr's tokenizer poorly
+   (needs ngram or wildcard configuration) and requires a reindex — more work,
+   worse matching, further from where the answer is needed.
+3. *A dedicated Pundit-scoped portal endpoint* taking a URL pattern, alongside
+   `API::V1::ResearchClassesController`. Cleaner API story than 1, but a new
+   endpoint plus a new client where 1 is two lines on an existing path.
+
+**Visibility — telling the researcher what they cannot see**
+
+Scoping is project-based, so the useful signal is the count of out-of-scope
+matches *plus the project names they sit in*: "8 more assignments match, in
+projects X and Y." That is enough for an AI agent to tell the researcher whom to
+ask for access, and project names are not student data. A bare count is safer but
+close to useless — it gives an agent nothing to act on. Going further, to project
+admin names or emails, is the first version that discloses people, and should be
+a deliberate decision rather than a default.
+
+Note honestly: revealing that matching resources *exist* is itself a small
+disclosure. For named research projects that is acceptable, but it is a choice,
+not free.
+
+**Dependency**
+
+None of this reaches `cc-data` until `cc-data` can *create* report runs; today it
+only downloads runs that already exist. So the near-term shape is: the researcher
+does discovery and run creation in the report server web UI, then `cc-data` pulls
+the result. Option 1 makes that workflow possible; it does not make it
+automatable.
