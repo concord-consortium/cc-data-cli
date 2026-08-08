@@ -7,3 +7,9 @@
 
 # goreleaser build output
 /dist/
+
+# Working data pulled from the portal, CLUE, and the report server while
+# researching (see docs/clue-data-inventory.md). This is real student-adjacent
+# data — class, school, and teacher names — and must never be committed. Kept
+# in-repo only so it is convenient to refer to alongside the recipes.
+/local-data/
