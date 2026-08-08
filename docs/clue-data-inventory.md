@@ -31,9 +31,59 @@ for why this exists and how it is maintained.
 | Student document metadata (find documents, incl. by tile type) | Firestore `authed/learn_concord_org/documents` in `collaborative-learning-ec215` | Firebase service account for that project | [CLUE documents: finding them](#recipe-clue-documents-finding-them) | **absent** — no Firestore or RTDB client exists anywhere in the CLI; every fetch path goes through the report server's HTTP API. |
 | Student document *content* | Firebase RTDB, `/authed/portals/learn_concord_org/classes/{classHash}/users/{uid}/documents/{docKey}` | same service account | — not yet fetched; only metadata has been | **absent** — same reason |
 | Document history entries | not yet established | not yet established | — | **absent** — see the terminology note above; `cc-data get history` is a different corpus entirely. |
+| History of the code, deployments, and databases that produced the data | nowhere yet — see [below](#a-missing-data-source-the-history-of-the-system-itself) | institutional memory | — | **absent**, and not obviously `cc-data`'s job |
 
 Rows are added as research demands them. The list above is not a claim of
 completeness.
+
+## A missing data source: the history of the system itself
+
+Research data spans years. The system that produced it is not the system whose
+code you are reading today. Applications get renamed, split, and merged;
+curriculum moves between repositories; a feature that is off by default now was
+once a separate build with it always on; a field that is populated now was added
+after half the corpus was written. None of this is visible in the current code,
+the current schema, or the database — and an agent reasoning confidently from any
+of those will produce answers that are wrong in ways nobody catches, because
+every individual step looks correct.
+
+This is a **data source in its own right**, and today it exists only as
+institutional memory.
+
+Everything in this file that took a second pass to get right came from this gap:
+
+- The Dataflow tile appeared in documents whose curriculum could not have
+  allowed it, because a standalone Dataflow application wrote into the same
+  database. Nothing in CLUE's code or Firestore says that application ever
+  existed.
+- CLUE curriculum used to live inside `collaborative-learning` before moving to
+  `clue-curriculum`, so old units may not be in the repo that now holds units.
+- The `unit` URL param is usually a code but is sometimes a full URL into a
+  `clue-curriculum` branch, a convention with no marker in the data.
+- `tools` metadata is populated by a sync hook added at some point, so documents
+  older than it are invisible to tile-type queries and nothing distinguishes
+  "no Dataflow tile" from "written before we recorded tiles".
+
+The same class of knowledge exists for the other systems a researcher is likely
+to look at — **Activity Player** and **CODAP** — and for the standalone
+interactives, which are the most likely to have been renamed, retired, or
+quietly re-pointed at a different backend.
+
+**Open question: where should this live?** Two defensible homes, not resolved:
+
+- *In each application's repository.* Closest to the code it describes,
+  maintained by the team that made the changes, and versioned alongside them. The
+  people who know are the people already committing there. But a researcher then
+  has to know which repositories to consult, and each team has to keep writing it
+  down for an audience it never sees.
+- *In a central research-facing inventory* like this file. One place for a
+  researcher or their agent to look, written in terms of research questions
+  rather than commits. But it duplicates knowledge that belongs to another team,
+  and drifts as soon as they change something without knowing this file exists.
+
+A plausible resolution is per-application history in each repo with this file
+pointing at it, but that is a decision to make deliberately, not a default to
+fall into. Recording it here so the choice is not lost.
 
 ## Recipes
 
