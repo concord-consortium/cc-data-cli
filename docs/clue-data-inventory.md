@@ -28,7 +28,8 @@ for why this exists and how it is maintained.
 | Which units/problems use a given tile type | `clue-curriculum` repo + CLUE's `curriculum-config.json` | public GitHub read | [Curriculum: tile usage](#recipe-curriculum-tile-usage) | **absent** — out of scope; `cc-data` knows nothing about CLUE curriculum |
 | Portal classes that ran a given CLUE assignment | Portal MySQL (`portal` db) via the Rails app on the production ECS cluster | AWS IAM + SSH to an ECS instance + `sudo docker` | [Portal: classes that ran an assignment](#recipe-portal-classes-that-ran-an-assignment) | **absent** — no portal DB access; `reports list` only shows report runs you authored |
 | CLUE log events (clickstream) | not yet established | not yet established | — | **partial**, unverified — the report server's `student-actions` / `student-actions-with-metadata` / `teacher-actions` runs are Athena queries over the log database CLUE writes to, so CLUE events are expected to appear there, but this has not been confirmed against a real run. Even if it holds, `cc-data` can only download a run someone already created in the report-server web UI; it cannot start one. |
-| Current student documents | not yet established | not yet established | — | **absent** — no Firestore or RTDB client exists anywhere in the CLI; every fetch path goes through the report server's HTTP API. |
+| Student document metadata (find documents, incl. by tile type) | Firestore `authed/learn_concord_org/documents` in `collaborative-learning-ec215` | Firebase service account for that project | [CLUE documents: finding them](#recipe-clue-documents-finding-them) | **absent** — no Firestore or RTDB client exists anywhere in the CLI; every fetch path goes through the report server's HTTP API. |
+| Student document *content* | Firebase RTDB, `/authed/portals/learn_concord_org/classes/{classHash}/users/{uid}/documents/{docKey}` | same service account | — not yet fetched; only metadata has been | **absent** — same reason |
 | Document history entries | not yet established | not yet established | — | **absent** — see the terminology note above; `cc-data get history` is a different corpus entirely. |
 
 Rows are added as research demands them. The list above is not a claim of
@@ -173,6 +174,94 @@ brain,1.4,true,<int>,<class name>,<school name>,<teacher name>,<int>,<activity n
 - `rails runner` output is preceded by initializer warnings on stderr; parse
   results out with an explicit marker rather than assuming the first line.
 - The ECS security group allows port 22 from `0.0.0.0/0`. Noted, not acted on.
+
+### Recipe: CLUE documents, finding them
+
+**Question it answers:** which student documents exist for a given unit/problem,
+which contain a given tile type, and which class each belongs to. This covers
+*finding* documents — their metadata. Document **content** lives in the realtime
+database and has not been fetched yet.
+
+**Access.** Firestore metadata lives in the `collaborative-learning-ec215`
+project. The established path is a service account key in the CLUE repo's
+`scripts/` folder, per `scripts/README.md`: generate a private key from the
+Firebase console's service accounts page, save it as
+`scripts/serviceAccountKey.json`, and run scripts with `npx tsx <script>.ts`.
+`scripts/lib/script-utils.ts` has the path helpers — `getFirestoreBasePath`,
+`getFirestoreClassesPath`, `getFirebaseBasePath` — so paths never need to be
+hand-built.
+
+**Where things are** (production, portal-authenticated):
+
+| What | Path |
+|---|---|
+| Document metadata | Firestore `authed/learn_concord_org/documents/{docId}` |
+| Class records | Firestore `authed/learn_concord_org/classes/{...}` |
+| Document content | RTDB `/authed/portals/learn_concord_org/classes/{classHash}/users/{uid}/documents/{docKey}` |
+
+**The shortcut that matters.** Document metadata carries a `tools` array listing
+the tile types present in the content, maintained by the client's content-sync
+hook. So "every document containing a Dataflow tile" is one query:
+
+```ts
+docs.where("tools", "array-contains", "Dataflow")
+```
+
+This beats going unit → problem → document, because it also catches *personal*
+and *learning log* documents, which carry no unit at all. Read the tile-type
+string from the CLUE source rather than guessing it.
+
+**Identity:** a document is `documents/{docId}`. `key` is its id in the realtime
+database, `uid` the owner, `context_id` the class. Problem-family documents carry
+`unit` / `investigation` / `problem`; personal and learning-log documents carry
+`unit: null` and are located by class instead.
+
+**Mapping a CLUE class to a portal class:** a document's `context_id` *is* the
+portal's `portal_clazzes.class_hash`, so the portal maps them directly and
+completely:
+
+```ruby
+Portal::Clazz.where(class_hash: context_ids)
+```
+
+Do **not** map via Firestore's `classes` collection, whose `uri` field holds the
+portal class URL. That route looks reasonable and quietly loses classes — see the
+notes.
+
+**Notes**
+
+- **`tools` is not universally populated, and the gap is invisible to the
+  query.** Documents whose metadata was written incompletely have no `tools`
+  field, and an `array-contains` query silently skips them: 311 of 7289 `brain`
+  documents, 23 of 85 `clueful`, 14 of 404 `seeit`, 11 of 71 `vibe`. Those same
+  documents also have no `createdAt`, which is the tell — they are the population
+  the repo's own `scripts/find-documents-missing-metadata.ts` exists to repair.
+  Any count from a `tools` query is a floor, not a total.
+- **Class records are stored under two ids** — `classes/{contextid}` and
+  `classes/{network}_{contextid}` — so the collection has more records than
+  classes. Deduplicate on the `context_id` field rather than trusting the
+  document id.
+- **Firestore's `classes` collection is incomplete; do not map through it.**
+  7 of the 70 classes holding Dataflow documents have no record there at all,
+  and those 7 held 828 of the 889 personal-family documents — so mapping via
+  `classes/{ctx}.uri` dropped 18% of the corpus while looking like it had
+  succeeded. Every one of those 70 `context_id`s resolves through
+  `Portal::Clazz.class_hash`. The failure mode is the dangerous kind: a partial
+  answer with no error.
+- **Personal work concentrates in classes that never ran a problem.** Of 889
+  personal-family Dataflow documents, only 23 are in classes that ran a Dataflow
+  *problem assignment*; 825 are in four early pilot classes with personal
+  documents and no problem documents at all. A cohort built from portal
+  assignment records will miss almost all personal-document work. The two
+  populations answer different questions and should not be conflated.
+- `firebase-admin` in the CLUE repo is 11.0.1, which predates `count()`
+  aggregations. Count with projected fetches (`.select(...)` plus paging on
+  `startAfter`) instead; `q.count is not a function` is what the old version
+  looks like.
+- Personal documents are the bulk of the non-problem work and carry `unit: null`.
+  Do not filter them out by requiring a unit.
+- A unit with curriculum but no portal assignments has no documents either —
+  `tinker` returned zero.
 
 #### Making this researcher-accessible
 
