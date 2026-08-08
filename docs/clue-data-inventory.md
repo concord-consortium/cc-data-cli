@@ -158,6 +158,26 @@ brain,1.4,true,<int>,<class name>,<school name>,<teacher name>,<int>,<activity n
   that was 324 class-activity pairs and 60 classes, versus 220 and 58 once
   restricted to the problems that actually involve Dataflow. Always intersect
   with the per-problem curriculum result.
+- **CLUE is not one host, and filtering on `collaborative-learning` loses
+  classes.** Narrowing with `url LIKE '%collaborative-learning%'` looks safe and
+  silently excluded an entire application: `dataflow-app.concord.org`
+  ("Dataflow 3.0"), plus a dedicated Dataflow build at
+  `collaborative-learning.concord.org/branch/dataflow/` that carries no `unit`
+  param at all. Together those are 4 activities run by 10 classes and 71
+  students between 2019-12 and 2025-03 — none of which appear in a
+  curriculum-unit search, because they have no curriculum unit. Search on the
+  feature (`url LIKE '%dataflow%'`) as well as the host, and check the host
+  distribution before trusting a count.
+- **CLUE runs from branch builds.** Beyond the bare host, assignments use
+  `/branch/master/` (32), `/branch/dataflow/` (3), and one-off authoring
+  branches. The `unit`/`problem` query params parse the same way, so path
+  variation is harmless as long as the host filter does not exclude them.
+- **The `unit` param is sometimes a full URL, not a code.** 10 activities pass
+  `unit=https://models-resources.concord.org/clue-curriculum/branch/<branch>/<unit>/content.json`
+  to run a unit from a `clue-curriculum` branch. Matching unit codes against the
+  repo's directory names misses these; parse the URL and take the second-to-last
+  path segment as the unit. None of the current examples are Dataflow units
+  (`mods`, `sas`, `qa`), but the pattern will bite any tile-type search.
 - The model is `Report::Learner`, not `ReportLearner`. `ReportLearner.count`
   raises.
 - `last_run` distinguishes ran from assigned. A `Portal::Offering` existing only
@@ -248,12 +268,15 @@ notes.
   succeeded. Every one of those 70 `context_id`s resolves through
   `Portal::Clazz.class_hash`. The failure mode is the dangerous kind: a partial
   answer with no error.
-- **Personal work concentrates in classes that never ran a problem.** Of 889
-  personal-family Dataflow documents, only 23 are in classes that ran a Dataflow
-  *problem assignment*; 825 are in four early pilot classes with personal
-  documents and no problem documents at all. A cohort built from portal
-  assignment records will miss almost all personal-document work. The two
-  populations answer different questions and should not be conflated.
+- **Personal Dataflow work came from a different application.** Of 889
+  personal-family Dataflow documents, only 23 are in classes that ran a CLUE
+  curriculum problem; 825 are in classes whose only assignment was the
+  standalone Dataflow app (see the portal recipe's note on hosts). That app
+  produces personal documents and no problem documents, and enables the Dataflow
+  tile regardless of curriculum. So "personal documents containing Dataflow" and
+  "students assigned Dataflow curriculum" are largely disjoint populations, and
+  a cohort built from CLUE curriculum assignments misses nearly all of the
+  former.
 - `firebase-admin` in the CLUE repo is 11.0.1, which predates `count()`
   aggregations. Count with projected fetches (`.select(...)` plus paging on
   `startAfter`) instead; `q.count is not a function` is what the old version
@@ -262,6 +285,13 @@ notes.
   Do not filter them out by requiring a unit.
 - A unit with curriculum but no portal assignments has no documents either —
   `tinker` returned zero.
+- **A tile can appear in documents belonging to no unit at all.** The toolbar
+  config is what lets students add a given tile, so a document's tile set is
+  normally bounded by its unit's curriculum. Standalone applications that write
+  into the same Firestore ignore that: the Dataflow app enables its tile
+  unconditionally and produces unit-less personal documents. When a tile turns
+  up where the curriculum says it cannot, look for a different application
+  writing to the same database before doubting the curriculum analysis.
 
 #### Making this researcher-accessible
 
