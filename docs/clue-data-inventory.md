@@ -30,7 +30,7 @@ for why this exists and how it is maintained.
 | CLUE log events (clickstream) | not yet established | not yet established | — | **partial**, unverified — the report server's `student-actions` / `student-actions-with-metadata` / `teacher-actions` runs are Athena queries over the log database CLUE writes to, so CLUE events are expected to appear there, but this has not been confirmed against a real run. Even if it holds, `cc-data` can only download a run someone already created in the report-server web UI; it cannot start one. |
 | Student document metadata (find documents, incl. by tile type) | Firestore `authed/learn_concord_org/documents` in `collaborative-learning-ec215` | Firebase service account for that project | [CLUE documents: finding them](#recipe-clue-documents-finding-them) | **absent** — no Firestore or RTDB client exists anywhere in the CLI; every fetch path goes through the report server's HTTP API. |
 | Student document *content* | Firebase RTDB, `/authed/portals/learn_concord_org/classes/{classHash}/users/{uid}/documents/{docKey}` | same service account | — not yet fetched; only metadata has been | **absent** — same reason |
-| Document history entries | not yet established | not yet established | — | **absent** — see the terminology note above; `cc-data get history` is a different corpus entirely. |
+| Document history entries | Firestore `authed/learn_concord_org/documents/{docId}/history` | same Firebase service account | [CLUE document history](#recipe-clue-document-history) | **absent** — see the terminology note above; `cc-data get history` is a different corpus entirely. |
 | History of the code, deployments, and databases that produced the data | nowhere yet — see [below](#a-missing-data-source-the-history-of-the-system-itself) | institutional memory | — | **absent**, and not obviously `cc-data`'s job |
 
 Rows are added as research demands them. The list above is not a claim of
@@ -342,6 +342,54 @@ notes.
   unconditionally and produces unit-less personal documents. When a tile turns
   up where the curriculum says it cannot, look for a different application
   writing to the same database before doubting the curriculum analysis.
+
+### Recipe: CLUE document history
+
+**Question it answers:** which documents have a replayable edit history, and how
+much of it. This is CLUE *document* history — not `cc-data`'s `get history`.
+
+History entries are one Firestore document each, in a `history` subcollection
+under the document they belong to, with a monotonic `index` field. So existence
+and size come from a single read per document:
+
+```ts
+firestore.collection(`${docsPath}/${docId}/history`)
+  .orderBy("index", "desc").limit(1).get()
+```
+
+An empty result means no history; otherwise the top entry's `index` is the entry
+count. Run it concurrently — 40 at a time checked 4,602 documents in a few
+minutes. The metadata field `lastHistoryEntry` looks like a cheaper proxy but
+applies only to concurrent-history documents, so it was not relied on.
+
+**What the Dataflow corpus looks like** (of 4,602 documents containing a
+Dataflow tile):
+
+| Population | Docs | With history |
+|---|---|---|
+| CLUE documents | 3,741 | 2,782 (74.4%) |
+| Dataflow-app / `/branch/dataflow/` classes | 861 | 0 (0.0%) |
+
+Among CLUE documents, by type: `problem` 2,761/2,819, `personal` 16/21,
+`learningLog` 4/6, `planning` 1/1, **`publication` 0/893**,
+`personalPublication` 0/1.
+
+**Notes**
+
+- **Publications never have history.** All 893 are copies made at publish time,
+  so they carry none. Any "documents containing tile X" count includes them and
+  overstates the population usable for history research by that much.
+- **History postdates the standalone Dataflow application.** All 861 documents
+  from those classes have zero entries — not a sampling artifact, the whole
+  population. Personal Dataflow work from the standalone app cannot be studied
+  historically at all.
+- **Histories are large.** Median 941 entries per document, max 93,399, 6.25
+  million entries across the corpus. Any plan to fetch history *content* rather
+  than counts should size itself against that before starting; the CLUE code has
+  a known FIXME about loading histories without paging.
+- Entry counts are long-tailed: 1,345 documents have 1,000+ entries while 37 have
+  fewer than 10. A minimum-entries floor is worth setting explicitly rather than
+  treating "has history" as a usable population.
 
 #### Making this researcher-accessible
 
