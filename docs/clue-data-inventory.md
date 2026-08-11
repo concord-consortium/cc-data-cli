@@ -31,7 +31,7 @@ write-up gets its own document rather than a paragraph here:
 |---|---|---|---|---|
 | Which units/problems use a given tile type | `clue-curriculum` repo + CLUE's `curriculum-config.json` | public GitHub read | [Curriculum: tile usage](#recipe-curriculum-tile-usage) | **absent** — out of scope; `cc-data` knows nothing about CLUE curriculum |
 | Portal classes that ran a given CLUE assignment | Portal MySQL (`portal` db) via the Rails app on the production ECS cluster | AWS IAM + SSH to an ECS instance + `sudo docker` | [Portal: classes that ran an assignment](#recipe-portal-classes-that-ran-an-assignment) | **absent** — no portal DB access; `reports list` only shows report runs you authored |
-| CLUE log events (clickstream) | Athena log database, via a `student-actions-with-metadata` run on the report server | report-server login to create the run; API token to download | [CLUE log events](#recipe-clue-log-events) | **partial**, now confirmed — CLUE events do appear (verified: every row of a real run had `application: CLUE`). `cc-data` can download such a run but cannot create one; creation is a LiveView form, not an API. Runs over a few hundred learners spanning several school years cannot be completed at all — see [report-service issues](report-service-log-query-issues.md). |
+| CLUE log events (clickstream) | Athena log database, directly (`logs_by_app_and_secure_key`), or via a `student-actions-with-metadata` run on the report server | direct: AWS IAM + portal DB for secure keys. Via report server: login to create the run; API token to download | [CLUE log events](#recipe-clue-log-events) | **partial**, now confirmed — CLUE events do appear (verified: every row of a real run had `application: CLUE`). `cc-data` can download such a run but cannot create one; creation is a LiveView form, not an API. Runs over a few hundred learners spanning several school years cannot be completed at all — see [report-service issues](report-service-log-query-issues.md). |
 | Student document metadata (find documents, incl. by tile type) | Firestore `authed/learn_concord_org/documents` in `collaborative-learning-ec215` | Firebase service account for that project | [CLUE documents: finding them](#recipe-clue-documents-finding-them) | **absent** — no Firestore or RTDB client exists anywhere in the CLI; every fetch path goes through the report server's HTTP API. |
 | Student document *content* | Firebase RTDB, `/authed/portals/learn_concord_org/classes/{classHash}/users/{uid}/documents/{docKey}` | same service account | — not yet fetched; only metadata has been | **absent** — same reason |
 | Document history entries | Firestore `authed/learn_concord_org/documents/{docId}/history` | same Firebase service account | [CLUE document history](#recipe-clue-document-history) | **absent** — see the terminology note above; `cc-data get history` is a different corpus entirely. |
@@ -585,6 +585,53 @@ A super-admin gets `:all` from `get_allowed_project_ids`, which applies no
 project scoping (`report_utils.ex:112`), so the reproduced query matches what
 the report server would run. A researcher scoped to specific projects would see
 fewer learners — which is itself worth surfacing to them.
+
+#### The route that worked: query Athena directly
+
+Once the learner census exists, the report server is not needed. Each learner's
+`portal_learners.secure_key` is the only thing the Athena query requires, and
+`local-data/log-events/learner_keys.rb` exports it alongside the learner
+metadata. `local-data/log-events/athena_logs.py` then runs the query itself:
+
+- **adds `app = 'CLUE'` and a year bound**, which the form cannot express and
+  which is what makes the query cheap;
+- **selects only the log columns** and skips the `"report-service"."learners"`
+  join entirely, so it does not depend on the learner JSON the report server
+  uploads to S3. The metadata is joined locally in DuckDB instead;
+- **chunks the secure keys** (150 per query) and caches each chunk to its own
+  file, so a re-run resumes rather than refetching.
+
+**Validated before being trusted.** Re-running the one query that had already
+succeeded through the report server (run 2285, 78 learners) returned **10,319
+rows — the same count, the same 10,319 ids, and identical values across all
+eleven log columns.** It took **7 seconds against the report server's 20
+minutes**.
+
+Then the whole corpus, all 15 activities, 3,669 learners:
+
+| | Report server | Direct |
+|---|---|---|
+| Result | 6 of 8 runs failed; brain never completed | 258,916 rows |
+| Time | 30-minute timeouts | **9m40s**, 25 chunks at ~13 s each |
+| Scanned | 32–72 MB per failed run | 292 MB total |
+
+Coverage against the history corpus went from **336 of 2,782 documents (12%) to
+2,681 (96%)**; `brain` went from 8 log rows to 240,819 across 747 users. Every
+one of the 258,916 rows matched a learner — no orphans.
+
+Two things worth knowing if you repeat this:
+
+- **Raise the CSV field limit.** Dataflow rows carry serialised program state in
+  `parameters`/`extras` and exceed Python's default 128 KB field limit.
+- **`app = 'CLUE'` was checked, not assumed.** A 20-key sample of the largest
+  brain lesson, queried with no `app` predicate, returned rows under `CLUE` and
+  nothing else — on both the partition and the `application` column. That is a
+  sample, not a proof for the whole corpus, but it is the same assumption the
+  proposed report-service fix would rest on.
+
+This route needs AWS credentials and portal database access, so it closes the
+gap for a maintainer and not for a researcher. That is the point of
+[the report-service write-up](report-service-log-query-issues.md).
 
 #### `hide_names` hides students, not everyone
 

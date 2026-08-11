@@ -216,14 +216,36 @@ Recording this because it is a tempting explanation and it is wrong: the largest
 SQL any of these runs generated was 141.5 KB, and every failure came back from
 Athena itself. The check never fired.
 
-## Workaround
+## Workaround, and what it measures
 
-Query Athena directly, adding `app = 'CLUE'` and chunking the secure keys, then
-join the learner metadata locally rather than joining the `learners` table in
-Athena. This needs AWS credentials and portal database access, so it is a
+Query Athena directly, adding `app = 'CLUE'` and a year bound, chunking the
+secure keys, and joining the learner metadata locally rather than joining the
+`learners` table in Athena. Scripts are in the cc-data-cli repository under
+`local-data/log-events/`: `learner_keys.rb` exports one row per learner
+including `portal_learners.secure_key`, and `athena_logs.py` runs the query.
+
+This was validated against a run the report server had already completed
+successfully — run 2285, 78 learners — and returned **the same 10,319 rows, the
+same ids, and identical values across all eleven log columns**.
+
+The comparison is the strongest argument for fixing issue 1:
+
+| | Report server | Same query, with `app` constrained |
+|---|---|---|
+| Run 2285 (78 learners) | succeeded in **20 min** | succeeded in **7 s** |
+| All 15 activities (3,669 learners) | never completed | **9m40s**, 258,916 rows |
+
+Nothing about the second column is clever. It is the same SQL over the same
+table with one extra predicate that the report server already has the
+information to add.
+
+Before relying on `app = 'CLUE'`, we checked the assumption flagged in issue 1: a
+20-key sample of the largest assignment, queried with no `app` predicate,
+returned rows under `CLUE` and nothing else, on both the partition and the
+`application` column. That is a sample rather than a proof, and a real
+implementation should still fall back to no predicate rather than risk dropping
+rows.
+
+This route needs AWS credentials and portal database access, so it is a
 workaround for maintainers, not for researchers — which is precisely why the
 first two issues matter.
-
-The learner population can be counted ahead of time by reproducing
-`LearnerData.fetch/3` against the portal; `local-data/log-events/learner_census.rb`
-in the cc-data-cli repository does this.
