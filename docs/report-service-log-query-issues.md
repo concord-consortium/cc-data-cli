@@ -22,8 +22,9 @@ the query spends its life listing S3 prefixes.
 
 Three separate defects compound:
 
-1. **`app` is never constrained** — a free 15× reduction the report already has
-   the information to make. This is the fix worth doing.
+1. **`app` is never constrained** — a 15× reduction nobody can ask for, because
+   the form has no way to express it. Exposing it as an optional filter is the
+   fix worth doing.
 2. **Athena's failure reason is discarded** — the server is told exactly what
    went wrong and shows the user the word "Failed".
 3. **A date range is effectively required but presented as optional** — without
@@ -134,23 +135,62 @@ current behaviour, and it turns the failing queries into ones that should finish
 in minutes.
 
 The obstacle is that a report run does not currently carry an application. The
-`app` value is a property of the log rows, not of the filter. Options, roughly in
-order of effort:
+`app` value is a property of the log rows, not of the filter.
 
-- Derive it from the learner data already fetched. `LearnerData.fetch/3` returns
-  `runnable_url` per learner, which identifies the application. A run whose
-  learners are all CLUE could constrain `app = 'CLUE'`; a mixed run could emit
-  `app IN (...)` over just the applications present. This needs no UI change and
-  no new user input.
-- Add an explicit application filter to the form.
-- Failing both, at least constrain `app` when every selected assignment resolves
-  to one application.
+### Recommended: an optional `app` filter for advanced users
 
-There is a correctness caveat worth checking before implementing: the `app`
-value written by the log ingester must match what the runnable URL implies, and
-`none` is one of the projected enum values, so some rows may not carry the app
-you expect. Deriving the predicate should fall back to no predicate rather than
-silently dropping rows.
+**Add `app` as an optional filter on the form.** Leave it blank and behaviour is
+exactly as it is today; set it and the query gets the predicate that makes it
+finish. This is the smallest change, it needs no mapping to maintain, and it
+puts the decision with the person who knows which application they are asking
+about.
+
+It is not automatic, and that is the trade: someone who does not know to set it
+still gets the slow path. But it is deliverable now, and the two automatic
+options below both carry maintenance burdens that are worse than the problem.
+
+### Rejected: derive the app from the resource URL
+
+`LearnerData.fetch/3` already returns `runnable_url` per learner, so the
+application could be inferred by pattern-matching the URL. This needs a mapping
+from URL patterns to log `app` values, living somewhere, kept in sync as
+applications are deployed, renamed, or moved to new domains. The CLUE work in
+this repository ran into exactly that class of problem from the other direction —
+a `url LIKE '%collaborative-learning%'` filter silently missed an entire
+standalone Dataflow deployment on its own domain. A mapping like this is wrong
+quietly, and being wrong here means silently dropping log rows.
+
+### Rejected for now: use the portal's tool field
+
+The principled version is to match on a field the portal already stores against
+each resource, rather than inferring from a URL. That field exists —
+`external_activities.tool_id`, joining to `tools` — but it does not currently
+support this:
+
+- **The vocabulary does not match.** The `tools` table has two rows,
+  `ActivityPlayer` and `LARA`. The log `app` enum has fifteen values including
+  `CLUE`, `CODAP` and `CEASAR`. These are not the same taxonomy, so a mapping
+  layer is needed anyway.
+- **It is unpopulated where it would be needed.** 805 of 3,515
+  `external_activities` have a null `tool_id` — including **every one of the 15
+  Dataflow activities in this write-up**. All four spot-checked (2460, 2735,
+  2841, 3255) came back null.
+- **It is already used for other things,** so repurposing it means auditing
+  those uses and then keeping the values correct forever, across teams that have
+  no reason to know a log query depends on them.
+
+Getting this right means deciding the correct app for every resource, populating
+it, and keeping it in sync — a much larger project than the query fix it would
+enable. Worth doing if the portal wants a reliable application field for its own
+sake; not worth blocking this on.
+
+### Correctness caveat, whichever route
+
+`none` is one of the projected `app` values, so some rows may not carry the app
+you expect. Any `app` predicate should be additive — when in doubt, emit no
+predicate rather than silently dropping rows. We checked this for CLUE against a
+20-key sample and found `CLUE` only, but that is a sample, not a guarantee for
+other applications.
 
 ## Issue 2 — Athena's failure reason is discarded
 
@@ -236,8 +276,7 @@ The comparison is the strongest argument for fixing issue 1:
 | All 15 activities (3,669 learners) | never completed | **9m40s**, 258,916 rows |
 
 Nothing about the second column is clever. It is the same SQL over the same
-table with one extra predicate that the report server already has the
-information to add.
+table with one extra predicate — one the form gives nobody a way to set.
 
 Before relying on `app = 'CLUE'`, we checked the assumption flagged in issue 1: a
 20-key sample of the largest assignment, queried with no `app` predicate,
