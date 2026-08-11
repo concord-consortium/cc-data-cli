@@ -538,19 +538,45 @@ How well they actually join, for this corpus:
 The 15% of rows with no `documentKey` are events with no document context —
 logins, navigation, tab switches. That is expected, not loss.
 
-**The logs reveal 72 Dataflow documents the document corpus does not have.**
-Of the 1,361 log documents missing from `content.parquet`, 1,289 have no
-Dataflow events at all — they are ordinary documents in the same classes, and
-correctly out of scope for a Dataflow corpus. But 72 *do* have
-`DATAFLOW_TOOL_CHANGE` events while having no Firestore metadata record.
+**The logs reveal 72 documents where a Dataflow tile was created and then
+deleted.** Of the 1,361 log documents missing from `content.parquet`, 1,289 have
+no Dataflow events at all — ordinary documents in the same classes, correctly
+out of scope. But 72 *do* have `DATAFLOW_TOOL_CHANGE` events.
 
-They are not explained by age: they span 2022-11 to 2026-06, essentially the
-same range as the 2,347 documents that are in the corpus, across all four units.
-So this is not the `tools`-sync-hook gap — most likely deleted documents whose
-metadata went with them. It is a ~3% completeness gap in document discovery,
-and the only reason we can see it is that the logs were collected independently.
-Worth remembering as a general technique: **the three datasets are built by
-different code paths, so each one bounds the others' completeness.**
+Probing each one in both stores settled what they are, and it is not what it
+first looked like:
+
+- **All 72 exist**, in the RTDB *and* in Firestore. Nothing was deleted at the
+  document level.
+- **None of them contains a Dataflow tile now.** Their tiles are `Text`,
+  `Placeholder`, `Image`, `Table`.
+- **66 have an explicit `DELETE_TILE` event with `objectType: "Dataflow"`.**
+
+So a student added a Dataflow tile, worked in it — a median of 7 Dataflow events,
+up to 357 — and then deleted it. Firestore's `tools` array is correct: the
+document does not currently contain a Dataflow tile. The corpus query was also
+correct. The documents are missing because **`tools` describes the current state,
+and the corpus was defined by a current-state property.**
+
+This is not a bug to fix in the discovery step; it is a limit on what that step
+can mean. A corpus built from "documents that contain a Dataflow tile" silently
+excludes every document where a student tried Dataflow and abandoned it — which,
+for research into **trial and error**, is close to excluding the phenomenon
+under study.
+
+**The abandoned work is fully recoverable.** All 72 retain their history:
+109,740 entries, median 906 per document, up to 15,846. The deleted tile's
+entire life is still in the history subcollection, because history records
+mutations rather than state.
+
+Two lessons worth generalising:
+
+- **The three datasets are built by different code paths, so each bounds the
+  others' completeness.** Only the logs could reveal this, because only the logs
+  record what happened rather than what remains.
+- **Prefer defining a corpus by events over current state** when the research
+  question is about process. Current state answers "what did they end up with";
+  it cannot answer "what did they try".
 
 #### Why runs fail — partition projection, not query size
 
