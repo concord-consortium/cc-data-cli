@@ -27,7 +27,7 @@ for why this exists and how it is maintained.
 |---|---|---|---|---|
 | Which units/problems use a given tile type | `clue-curriculum` repo + CLUE's `curriculum-config.json` | public GitHub read | [Curriculum: tile usage](#recipe-curriculum-tile-usage) | **absent** — out of scope; `cc-data` knows nothing about CLUE curriculum |
 | Portal classes that ran a given CLUE assignment | Portal MySQL (`portal` db) via the Rails app on the production ECS cluster | AWS IAM + SSH to an ECS instance + `sudo docker` | [Portal: classes that ran an assignment](#recipe-portal-classes-that-ran-an-assignment) | **absent** — no portal DB access; `reports list` only shows report runs you authored |
-| CLUE log events (clickstream) | not yet established | not yet established | — | **partial**, unverified — the report server's `student-actions` / `student-actions-with-metadata` / `teacher-actions` runs are Athena queries over the log database CLUE writes to, so CLUE events are expected to appear there, but this has not been confirmed against a real run. Even if it holds, `cc-data` can only download a run someone already created in the report-server web UI; it cannot start one. |
+| CLUE log events (clickstream) | Athena log database, via a `student-actions-with-metadata` run on the report server | report-server login to create the run; API token to download | [CLUE log events](#recipe-clue-log-events) | **partial**, now confirmed — CLUE events do appear (verified: every row of a real run had `application: CLUE`). `cc-data` can download such a run but cannot create one; creation is a LiveView form, not an API. |
 | Student document metadata (find documents, incl. by tile type) | Firestore `authed/learn_concord_org/documents` in `collaborative-learning-ec215` | Firebase service account for that project | [CLUE documents: finding them](#recipe-clue-documents-finding-them) | **absent** — no Firestore or RTDB client exists anywhere in the CLI; every fetch path goes through the report server's HTTP API. |
 | Student document *content* | Firebase RTDB, `/authed/portals/learn_concord_org/classes/{classHash}/users/{uid}/documents/{docKey}` | same service account | — not yet fetched; only metadata has been | **absent** — same reason |
 | Document history entries | Firestore `authed/learn_concord_org/documents/{docId}/history` | same Firebase service account | [CLUE document history](#recipe-clue-document-history) | **absent** — see the terminology note above; `cc-data get history` is a different corpus entirely. |
@@ -421,6 +421,87 @@ failures.
   they are split into a `tile_id` column and the action normalised to
   `{tile}`. Without that, actions cannot be grouped and per-tile work cannot be
   isolated.
+
+### Recipe: CLUE log events
+
+**Question it answers:** what students clicked, typed, and ran, as a timestamped
+event stream — including `DATAFLOW_TOOL_CHANGE`, which is the Dataflow tile's own
+event.
+
+**Confirmed:** every row of a real run came back with `application: CLUE`, so
+CLUE events genuinely land in the report server's log database. The earlier
+"expected but unverified" note is resolved.
+
+**Creating a run needs a browser.** `/api/v1` is read-only for runs — index,
+show, download, answers, history, jobs, attachment presign, and nothing else.
+Creation is a Phoenix LiveView at `/reports/new/:slug`, so it is a websocket
+form, not a REST call. Everything *after* creation is plain API.
+
+**Token.** Generate one in the browser at `/reports/cli-token` (it is shown
+once), then use `Authorization: Bearer <token>`. Check it with
+`GET /api/v1/tokens/current`. No PKCE or loopback needed for read access.
+
+**Downloading.** `GET /api/v1/reports/:id/download` returns
+`{download_url, filename, expires_in_seconds}`. Fetch the `download_url`
+**without** the bearer token — it is already a standalone presigned capability.
+
+**Joining to the other datasets.** The output carries `class_id`, `user_id`,
+`student_id`, `offering_id`, and `runnable_url` (which holds `?unit=…&problem=…`).
+`class_id` matches the portal class ids; `user_id` matches CLUE's document
+`uid`. So logs, documents, and history all join on ids without needing names.
+
+#### The 256 KB query limit — the thing that will bite you
+
+Runs fail with no explanation: the API reports only `athena_query_state:
+"failed"`, the run page says only "Failed", and nothing appears in CloudWatch
+beyond the per-assignment `Uploading learners to learners/<uuid>/<uuid>.json`
+lines. The cause:
+
+- `AthenaDB.query` calls `check_query_size(sql)` **before** contacting Athena
+  (`athena_db.ex:172`), rejecting SQL over 262,144 characters with "The
+  resulting query is too large for Athena to process. The max is 256KB."
+- The generated SQL inlines **every learner's secure key** as a quoted literal in
+  `log.secure_key IN (...)` (`report_query.ex:102-122`).
+
+So query size scales with the **total number of learners across the selected
+assignments, across every class that ever ran them** — not with the number of
+assignments, and not with the classes you care about. At roughly 50 bytes per
+key the ceiling is somewhere near 5,000 learners.
+
+Consequences worth knowing before debugging:
+
+- **There is no Athena query execution to go find.** The query never reached
+  Athena, so searching workgroups for the failure is wasted effort.
+- **The error message exists and is then discarded.** `report_runs` has no error
+  column, so the server knows exactly why and tells nobody. Worth a ticket
+  against report-service.
+- **A single assignment can exceed the limit.** One Neural Engineering lesson
+  failed on its own, so "one assignment per run" is not a safe rule.
+- **Narrowing needs a second filter.** The form's "Add Filter" allows combining
+  `assignment` with `class`, which bounds the learner set to the classes you
+  actually want.
+- **Do not size batches from a Dataflow-only class list.** Counts drawn from
+  classes that ran Dataflow undercount badly, because the report spans every
+  class that ever ran the assignment.
+
+#### `hide_names` hides students, not everyone
+
+With `hide_names: true`, `student_name` becomes a numeric id and `username`
+becomes a hash. But `teachers` still carries full teacher names **and email
+addresses**, and `school` and `class` remain plain names. The output is still
+personal data and belongs in `local-data/`, not anywhere shareable.
+
+#### Driving the LiveView form
+
+Worth writing down because two things silently do nothing:
+
+- The filter picker is a LiveSelect. Its options exist in the DOM only while the
+  dropdown is open; the search box updates its own placeholder with the match
+  count (`*term*: N options available`) even when no list is rendered.
+- `element.click()` on an option does nothing. Dispatching
+  `mouseover`/`mousedown`/`mouseup`/`click` works, and so does a real CDP click.
+  Either way the selection lands **asynchronously** via a server round trip, so
+  poll `input[name="filter_form[filter1][]"]` rather than checking immediately.
 
 #### Making this researcher-accessible
 
