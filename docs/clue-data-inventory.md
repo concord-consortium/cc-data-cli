@@ -33,7 +33,7 @@ write-up gets its own document rather than a paragraph here:
 | Portal classes that ran a given CLUE assignment | Portal MySQL (`portal` db) via the Rails app on the production ECS cluster | AWS IAM + SSH to an ECS instance + `sudo docker` | [Portal: classes that ran an assignment](#recipe-portal-classes-that-ran-an-assignment) | **absent** — no portal DB access; `reports list` only shows report runs you authored |
 | CLUE log events (clickstream) | Athena log database, directly (`logs_by_app_and_secure_key`), or via a `student-actions-with-metadata` run on the report server | direct: AWS IAM + portal DB for secure keys. Via report server: login to create the run; API token to download | [CLUE log events](#recipe-clue-log-events) | **partial**, now confirmed — CLUE events do appear (verified: every row of a real run had `application: CLUE`). `cc-data` can download such a run but cannot create one; creation is a LiveView form, not an API. Runs over a few hundred learners spanning several school years cannot be completed at all — see [report-service issues](report-service-log-query-issues.md). |
 | Student document metadata (find documents, incl. by tile type) | Firestore `authed/learn_concord_org/documents` in `collaborative-learning-ec215` | Firebase service account for that project | [CLUE documents: finding them](#recipe-clue-documents-finding-them) | **absent** — no Firestore or RTDB client exists anywhere in the CLI; every fetch path goes through the report server's HTTP API. |
-| Student document *content* | Firebase RTDB, `/authed/portals/learn_concord_org/classes/{classHash}/users/{uid}/documents/{docKey}` | same service account | — not yet fetched; only metadata has been | **absent** — same reason |
+| Student document *content* | Firebase RTDB, `/authed/portals/learn_concord_org/classes/{classHash}/users/{uid}/documents/{docKey}` | same service account | [CLUE document content](#recipe-clue-document-content) | **absent** — same reason |
 | Document history entries | Firestore `authed/learn_concord_org/documents/{docId}/history` | same Firebase service account | [CLUE document history](#recipe-clue-document-history) | **absent** — see the terminology note above; `cc-data get history` is a different corpus entirely. |
 | History of the code, deployments, and databases that produced the data | nowhere yet — see [below](#a-missing-data-source-the-history-of-the-system-itself) | institutional memory | — | **absent**, and not obviously `cc-data`'s job |
 
@@ -425,6 +425,67 @@ failures.
   they are split into a `tile_id` column and the action normalised to
   `{tile}`. Without that, actions cannot be grouped and per-tile work cannot be
   isolated.
+
+### Recipe: CLUE document content
+
+**Question it answers:** what a document actually contains — which tiles, how
+many, arranged how — as the final saved state rather than as a stream of edits.
+
+Content lives in the **RTDB**, not Firestore, at
+`/authed/portals/learn_concord_org/classes/{classHash}/users/{uid}/documents/{key}`.
+
+**One path covers every document type.** `publications` and
+`personalPublications` under the class path hold only *metadata* pointing back
+at the owning user's document, so the user-document path above is the whole
+corpus (`src/lib/firebase.ts`, `getUserDocumentPath` / `getDocumentPath`).
+Publications do not need a second fetch, and looking for their content under the
+publication path finds nothing.
+
+`context_id` from the Firestore document metadata is the `classHash` in this
+path — the same equivalence that maps CLUE documents to portal classes.
+
+`local-data/clue-documents/download-content.ts` does the fetch and
+`build-content-parquet.sh` converts it. Results for the Dataflow corpus:
+
+- **4,600 of 4,602 documents fetched**, 0 parse failures, at ~378 docs/s with
+  concurrency 20 — the whole corpus in under a minute, 6.7 MB as Parquet. This
+  is by far the cheapest of the CLUE datasets; there is no reason to sample it.
+- **The 2 missing are not student data** — both personal documents belonging to
+  one Concord staff account in one class. Firestore metadata outlived the RTDB
+  content.
+- **`content` is a JSON *string*,** not a nested object. Parse it, then read
+  `tileMap`, `rowMap`, `rowOrder`, `sharedModelMap`, `annotations`.
+- **The raw string is kept alongside the derived columns.** Deriving tile counts
+  is lossy and nothing can re-derive what was not stored.
+
+**Metadata and content agree, which is worth knowing given they are written by
+different code paths.** Firestore's `tools` array and the actual `tileMap`
+disagreed on Dataflow presence for **0 of 4,600** documents. That does not
+retire the caveat that `tools` is populated by a sync hook added later — a
+document written before it would be absent from the query that built this list
+in the first place, so this corpus cannot reveal that gap.
+
+What the content shows about the corpus:
+
+| type | docs | mean tiles | mean Dataflow tiles | mean changeCount |
+|---|---|---|---|---|
+| problem | 2,819 | 11.0 | 1.33 | 667 |
+| publication | 893 | 10.6 | 1.24 | — |
+| personal | 862 | 1.1 | 1.00 | 71 |
+| personalPublication | 19 | 2.3 | 1.00 | — |
+| learningLog | 6 | 4.3 | 1.33 | 72 |
+| planning | 1 | 6.0 | 1.00 | 22 |
+
+Personal documents average **1.1 tiles** — essentially a bare Dataflow tile —
+against 11 for problem documents. Whatever multi-document strategies students
+used, personal documents are not scaled-down copies of problem documents.
+
+`Placeholder` appears in 3,717 documents, so tile counts include empty slots;
+subtract it when counting authored tiles. After Dataflow, the tiles that co-occur
+are `Text` (3,132), `Table` (1,208), `Image` (664) and `Simulator` (590).
+
+`changeCount` is null on both publication types — they are snapshots, so there
+is no edit counter. Use it as an activity measure only on live documents.
 
 ### Recipe: CLUE log events
 
