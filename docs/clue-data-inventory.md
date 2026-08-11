@@ -391,6 +391,37 @@ Among CLUE documents, by type: `problem` 2,761/2,819, `personal` 16/21,
   fewer than 10. A minimum-entries floor is worth setting explicitly rather than
   treating "has history" as a usable population.
 
+#### Downloading them
+
+Done for the Dataflow corpus; see the
+[dataset design](superpowers/specs/2026-08-10-clue-history-dataset-design.md).
+Result: **2,782 documents, 6,271,181 entries**, ~40 minutes at 20 concurrent.
+15 GB of JSONL compresses to **865 MB of Parquet** (ZSTD), which is the query
+surface. 818 students, 57 portal classes, 15,588 distinct tiles, zero parse
+failures.
+
+- **Build the file incrementally.** Assembling a document's entries into one
+  string and calling `writeFileSync` fails with `Invalid string length` on
+  documents whose history exceeds V8's maximum string size. One real document
+  (90,662 entries) hit this. Write in chunks through a file descriptor instead.
+- **Declare column types; do not let DuckDB infer them.** `read_json_auto`
+  samples rows, and `problem`/`investigation` are numeric-looking strings
+  (`"0"`, `"1"`), while `model` is null on older entries — inference types those
+  wrongly or drops them.
+- **Index anomalies are real and worth keeping.** 73 of 2,782 documents disagree
+  with a simple count: 69 have duplicate indices, 4 have gaps, none start at a
+  non-zero index. Duplicates are genuinely distinct entries (distinct
+  `entry_id`s) sharing an index, matching the concurrent-write flakiness CLUE's
+  own `history-framework.md` describes. Storing them preserves that signal;
+  de-duplicating on index would destroy it.
+- **Ticks dominate, as expected.** `content/step` (41.2%) plus
+  `program/tickAndProcess` (13.3%) are 54% of all entries. Real editing is
+  `setSlate` (22.8%), `setProgramZoom` (10.4%), and `setProgram` (5.4%).
+- The action path carries ids (`/content/tileMap/<tileId>/content/setSlate`), so
+  they are split into a `tile_id` column and the action normalised to
+  `{tile}`. Without that, actions cannot be grouped and per-tile work cannot be
+  isolated.
+
 #### Making this researcher-accessible
 
 Everything above needs AWS IAM, SSH to a production box, and `sudo docker`. A
