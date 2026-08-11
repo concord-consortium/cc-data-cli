@@ -515,6 +515,43 @@ once), then use `Authorization: Bearer <token>`. Check it with
 `class_id` matches the portal class ids; `user_id` matches CLUE's document
 `uid`. So logs, documents, and history all join on ids without needing names.
 
+**They also join at the document and tile level, which is the useful part.**
+CLUE writes `documentKey`, `documentType`, `documentUid` and `tileId` into the
+log row's `parameters` JSON. `documentKey` is the same identifier as
+`content.parquet`'s `doc_key` and `history.parquet`'s `doc_id`, and `tileId` is
+`history.parquet`'s `tile_id` — so a single tile's edit history and the events
+logged against it line up directly. `build-parquet.sh` lifts all four out of the
+JSON into columns, since otherwise every downstream query re-parses it.
+
+How well they actually join, for this corpus:
+
+| | |
+|---|---|
+| Log rows carrying a `documentKey` | 218,966 of 258,916 (84.6%) |
+| Distinct documents named in logs | 3,899 |
+| …also in `content.parquet` | 2,538 |
+| …also in `history.parquet` | 2,418 |
+| `content.parquet` documents having logs | 2,538 of 4,602 (55%) |
+| `history.parquet` documents having logs | 2,418 of 2,782 (87%) |
+| Distinct `tileId`s in logs | 22,168, of which 14,125 appear in history |
+
+The 15% of rows with no `documentKey` are events with no document context —
+logins, navigation, tab switches. That is expected, not loss.
+
+**The logs reveal 72 Dataflow documents the document corpus does not have.**
+Of the 1,361 log documents missing from `content.parquet`, 1,289 have no
+Dataflow events at all — they are ordinary documents in the same classes, and
+correctly out of scope for a Dataflow corpus. But 72 *do* have
+`DATAFLOW_TOOL_CHANGE` events while having no Firestore metadata record.
+
+They are not explained by age: they span 2022-11 to 2026-06, essentially the
+same range as the 2,347 documents that are in the corpus, across all four units.
+So this is not the `tools`-sync-hook gap — most likely deleted documents whose
+metadata went with them. It is a ~3% completeness gap in document discovery,
+and the only reason we can see it is that the logs were collected independently.
+Worth remembering as a general technique: **the three datasets are built by
+different code paths, so each one bounds the others' completeness.**
+
 #### Why runs fail — partition projection, not query size
 
 Runs fail with no explanation: the API reports only `athena_query_state:
