@@ -10,6 +10,10 @@ not a solved problem.
 See the [design doc](superpowers/specs/2026-08-07-clue-data-inventory-design.md)
 for why this exists and how it is maintained.
 
+Where a recipe runs into a defect in one of the systems it touches, the
+write-up gets its own document rather than a paragraph here:
+[report-service: log reports fail on large, long-running assignments](report-service-log-query-issues.md).
+
 > **This repo is public.** No credentials, tokens, or presigned URLs here, and no
 > real student records — sample shapes carry redacted values. Fetched data lives
 > in `local-data/`, which is gitignored, and is never committed. That folder
@@ -27,7 +31,7 @@ for why this exists and how it is maintained.
 |---|---|---|---|---|
 | Which units/problems use a given tile type | `clue-curriculum` repo + CLUE's `curriculum-config.json` | public GitHub read | [Curriculum: tile usage](#recipe-curriculum-tile-usage) | **absent** — out of scope; `cc-data` knows nothing about CLUE curriculum |
 | Portal classes that ran a given CLUE assignment | Portal MySQL (`portal` db) via the Rails app on the production ECS cluster | AWS IAM + SSH to an ECS instance + `sudo docker` | [Portal: classes that ran an assignment](#recipe-portal-classes-that-ran-an-assignment) | **absent** — no portal DB access; `reports list` only shows report runs you authored |
-| CLUE log events (clickstream) | Athena log database, via a `student-actions-with-metadata` run on the report server | report-server login to create the run; API token to download | [CLUE log events](#recipe-clue-log-events) | **partial**, now confirmed — CLUE events do appear (verified: every row of a real run had `application: CLUE`). `cc-data` can download such a run but cannot create one; creation is a LiveView form, not an API. |
+| CLUE log events (clickstream) | Athena log database, via a `student-actions-with-metadata` run on the report server | report-server login to create the run; API token to download | [CLUE log events](#recipe-clue-log-events) | **partial**, now confirmed — CLUE events do appear (verified: every row of a real run had `application: CLUE`). `cc-data` can download such a run but cannot create one; creation is a LiveView form, not an API. Runs over a few hundred learners spanning several school years cannot be completed at all — see [report-service issues](report-service-log-query-issues.md). |
 | Student document metadata (find documents, incl. by tile type) | Firestore `authed/learn_concord_org/documents` in `collaborative-learning-ec215` | Firebase service account for that project | [CLUE documents: finding them](#recipe-clue-documents-finding-them) | **absent** — no Firestore or RTDB client exists anywhere in the CLI; every fetch path goes through the report server's HTTP API. |
 | Student document *content* | Firebase RTDB, `/authed/portals/learn_concord_org/classes/{classHash}/users/{uid}/documents/{docKey}` | same service account | — not yet fetched; only metadata has been | **absent** — same reason |
 | Document history entries | Firestore `authed/learn_concord_org/documents/{docId}/history` | same Firebase service account | [CLUE document history](#recipe-clue-document-history) | **absent** — see the terminology note above; `cc-data get history` is a different corpus entirely. |
@@ -500,31 +504,63 @@ overflows the injected-partition expansion outright and is rejected in a second.
 largest SQL we generated was 141.5 KB. Query size is a red herring at this
 scale.
 
-**Date bounds are the fix.** `apply_date_range` (`report_query.ex:156`) emits
-`log.year`/`log.month` predicates alongside the timestamp comparison, so setting
-a start and end date on the form prunes the projection directly. Bounding to the
-actual span of Dataflow usage — 2022-08 through 2026-08, 49 months — cuts
-6,660 combinations per key to 15 × 49 = 735, lifting the ceiling from ~150
-learners to roughly **1,360**. Every individual Dataflow assignment (largest:
-670 learners) then fits.
+**Date bounds help, but are not sufficient.** `apply_date_range`
+(`report_query.ex:156`) emits `log.year`/`log.month` predicates alongside the
+timestamp comparison, so setting a start and end date on the form prunes the
+projection directly. Bounding to the actual span of Dataflow usage — 2022-08
+through 2026-08, 49 months — cuts 6,660 combinations per key to 15 × 49 = 735,
+lifting the partition ceiling from ~150 learners to roughly 1,360.
+
+We tested this: six re-runs of the failed assignments, each with that date range,
+one assignment per run (plus one run grouping the four small ones).
+`HIVE_EXCEEDED_PARTITION_LIMIT` never appeared again — but **all six still
+failed**, five with `Query timeout` at 30 minutes and one with
+`HIVE_S3_THROTTLING` (an S3 503, "please reduce your request rate").
+
+The revealing number is what they scanned: **32–72 MB each, in half an hour.**
+These queries are not data-bound. Every `secure_key × app × year × month` is a
+separate S3 prefix, so ~520 learners × 15 apps × 49 months is ~382,000 prefixes
+listed to read 40 MB. The time is object-store round trips, not scanning.
+
+Two corollaries that cost us a cycle each:
+
+- **Narrower dates will not rescue the big lessons.** Their real spans, from the
+  portal, are 2022-08 through 2025-12–2026-08 — they genuinely cover the whole
+  range. The units that succeeded are the ones that are naturally narrow
+  (2735/2739 ran 2023-05 to 2024-04).
+- **Do not run several at once.** The two successful runs had two queries in
+  flight; running six produced an outright S3 503. Concurrency is part of the
+  budget.
+
+**The untapped lever is `app`.** It is an enum of 15 values and the generated SQL
+never constrains it, even though the report knows perfectly well it is querying
+CLUE. Adding `app = 'CLUE'` would cut prefix probing 15×, from ~382,000 to
+~25,000. The form cannot express it — see
+[report-service-log-query-issues.md](report-service-log-query-issues.md).
 
 Consequences worth knowing before debugging:
 
-- **Always set a date range.** It is optional in the form and looks like a
-  convenience filter. It is actually the difference between a run that works and
-  one that fails after half an hour.
+- **Always set a date range,** even though it is optional and looks like a
+  convenience filter. It is necessary, just not sufficient.
 - **The error message exists and is then discarded.** `report_runs` has no error
-  column, so the server knows exactly why and tells nobody — and the reason
-  Athena gives is specific and actionable. Worth a ticket against
-  report-service, along with adding `app` to the generated WHERE clause (the
-  report already knows which application it is querying, and it would cut
-  partitions another 15×).
+  column, so the server knows exactly why and tells nobody — while Athena's own
+  reason is specific and actionable.
 - **A single assignment can fail on its own.** One Neural Engineering lesson
-  failed alone, so "one assignment per run" is not a safe rule without dates.
+  failed alone, so "one assignment per run" is not a safe rule.
 - **A class filter does not help here** — see below.
 - **Do not size batches from a Dataflow-only class list.** Counts drawn from
   classes that ran Dataflow can undercount, because the report spans every class
   that ever ran the assignment. Count the learner population directly instead.
+
+**Where this leaves a researcher.** For assignments in the low hundreds of
+learners and a narrow date span, the report system works. For a multi-year
+assignment with several hundred learners — which is exactly what a longitudinal
+research question looks like — it does not, and there is no combination of form
+filters that makes it work. The remaining routes are to chunk into runs of ~150
+learners (roughly 25 runs for this corpus), or to bypass the report server and
+query Athena directly with `app` constrained. Only the second is available to
+someone who does not have AWS credentials, which is to say: neither is available
+to a researcher.
 
 #### Counting the learner population before you submit a run
 
