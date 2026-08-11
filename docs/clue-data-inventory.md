@@ -450,39 +450,105 @@ once), then use `Authorization: Bearer <token>`. Check it with
 `class_id` matches the portal class ids; `user_id` matches CLUE's document
 `uid`. So logs, documents, and history all join on ids without needing names.
 
-#### The 256 KB query limit — the thing that will bite you
+#### Why runs fail — partition projection, not query size
 
 Runs fail with no explanation: the API reports only `athena_query_state:
 "failed"`, the run page says only "Failed", and nothing appears in CloudWatch
 beyond the per-assignment `Uploading learners to learners/<uuid>/<uuid>.json`
-lines. The cause:
+lines.
 
-- `AthenaDB.query` calls `check_query_size(sql)` **before** contacting Athena
-  (`athena_db.ex:172`), rejecting SQL over 262,144 characters with "The
-  resulting query is too large for Athena to process. The max is 256KB."
-- The generated SQL inlines **every learner's secure key** as a quoted literal in
-  `log.secure_key IN (...)` (`report_query.ex:102-122`).
+**The error is recoverable, but only from Athena.** `athena_query_state` is set
+solely from Athena's own `get_query_info` (`athena_run_ops.ex:39`), so a
+"failed" run *did* reach Athena and Athena has a `StateChangeReason` for it. The
+run's `athena_query_id` is not exposed by the API, but the executions sit in the
+user's own workgroup, named `<portal_server> <user_id> <email>` with every
+non-`[a-z0-9]` character replaced by `-` (`athena_db.ex:103`) — for example
+`learn-concord-org-28-scytacki-concord-org`:
 
-So query size scales with the **total number of learners across the selected
-assignments, across every class that ever ran them** — not with the number of
-assignments, and not with the classes you care about. At roughly 50 bytes per
-key the ceiling is somewhere near 5,000 learners.
+```
+aws athena list-query-executions --work-group <name> --max-results 15
+aws athena batch-get-query-execution --query-execution-ids <ids...>
+```
+
+Match executions to runs by submission time. Twelve executions covering our runs
+gave three distinct reasons:
+
+| Secure keys in run | SQL size | Outcome |
+|---|---|---|
+| 78, 97 | 4–5 KB | **succeeded** (20 and 26 min) |
+| 176, 670, 694 | 8–28 KB | `HIVE_EXCEEDED_PARTITION_LIMIT` after 21–28 min |
+| 519–561 | 21–23 KB | `Query timeout` at 30 min |
+| 2130, 3493, 3669 | 82–142 KB | `CONSTRAINT_VIOLATION`, instantly |
+
+**The root cause is partition projection.** The Glue table
+`log_ingester_production.logs_by_app_and_secure_key` is partitioned on
+`app`/`year`/`month`/`secure_key` with projection enabled: `app` is an enum of
+15 values, `year` ranges 2014–2050 (37), `month` 1–12, and `secure_key` is
+`injected` — meaning its values come from the `IN (...)` list in the WHERE
+clause. The generated SQL constrains **only** `secure_key`, so every key
+multiplies out across all 15 × 37 × 12 = **6,660** app/year/month combinations.
+Athena refuses a query that could read more than 1,000,000 partitions, which
+puts the ceiling at roughly **150 learners per run**. That matches what we saw:
+97 keys succeeded, 176 keys failed.
+
+The other two reasons are the same problem at different scales — a few hundred
+keys spends 30 minutes enumerating partitions and times out; a few thousand
+overflows the injected-partition expansion outright and is rejected in a second.
+
+**The 256 KB check never fired.** `AthenaDB.query` does call
+`check_query_size(sql)` before contacting Athena (`athena_db.ex:172`), but the
+largest SQL we generated was 141.5 KB. Query size is a red herring at this
+scale.
+
+**Date bounds are the fix.** `apply_date_range` (`report_query.ex:156`) emits
+`log.year`/`log.month` predicates alongside the timestamp comparison, so setting
+a start and end date on the form prunes the projection directly. Bounding to the
+actual span of Dataflow usage — 2022-08 through 2026-08, 49 months — cuts
+6,660 combinations per key to 15 × 49 = 735, lifting the ceiling from ~150
+learners to roughly **1,360**. Every individual Dataflow assignment (largest:
+670 learners) then fits.
 
 Consequences worth knowing before debugging:
 
-- **There is no Athena query execution to go find.** The query never reached
-  Athena, so searching workgroups for the failure is wasted effort.
+- **Always set a date range.** It is optional in the form and looks like a
+  convenience filter. It is actually the difference between a run that works and
+  one that fails after half an hour.
 - **The error message exists and is then discarded.** `report_runs` has no error
-  column, so the server knows exactly why and tells nobody. Worth a ticket
-  against report-service.
-- **A single assignment can exceed the limit.** One Neural Engineering lesson
-  failed on its own, so "one assignment per run" is not a safe rule.
-- **Narrowing needs a second filter.** The form's "Add Filter" allows combining
-  `assignment` with `class`, which bounds the learner set to the classes you
-  actually want.
+  column, so the server knows exactly why and tells nobody — and the reason
+  Athena gives is specific and actionable. Worth a ticket against
+  report-service, along with adding `app` to the generated WHERE clause (the
+  report already knows which application it is querying, and it would cut
+  partitions another 15×).
+- **A single assignment can fail on its own.** One Neural Engineering lesson
+  failed alone, so "one assignment per run" is not a safe rule without dates.
+- **A class filter does not help here** — see below.
 - **Do not size batches from a Dataflow-only class list.** Counts drawn from
-  classes that ran Dataflow undercount badly, because the report spans every
-  class that ever ran the assignment.
+  classes that ran Dataflow can undercount, because the report spans every class
+  that ever ran the assignment. Count the learner population directly instead.
+
+#### Counting the learner population before you submit a run
+
+The portal query the report server runs is reproducible on its own
+(`LearnerData.fetch/3` in `learner_data.ex`), which lets you see exactly how
+many learners — and therefore how many injected partitions — a run will involve
+*before* spending 30 minutes finding out. `local-data/log-events/learner_census.rb`
+is that query reduced to a per-assignment, per-class census.
+
+Two things it settled for the Dataflow set:
+
+- **3,669 learners across all 15 activities**, and the per-activity counts sum to
+  exactly that — `report_learners` rows are per offering, so no learner is
+  double-counted across assignments.
+- **Every class that ever ran one of the 15 activities is already in our list.**
+  57 distinct classes appear, all 57 in the 60 we identified from the curriculum
+  and portal (the other 3 have offerings but no learner runs). There is no
+  outside population. That is why a `class` filter cannot shrink these runs:
+  there is nothing to exclude.
+
+A super-admin gets `:all` from `get_allowed_project_ids`, which applies no
+project scoping (`report_utils.ex:112`), so the reproduced query matches what
+the report server would run. A researcher scoped to specific projects would see
+fewer learners — which is itself worth surfacing to them.
 
 #### `hide_names` hides students, not everyone
 
