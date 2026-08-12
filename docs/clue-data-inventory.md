@@ -10,8 +10,16 @@ not a solved problem.
 See the [design doc](superpowers/specs/2026-08-07-clue-data-inventory-design.md)
 for why this exists and how it is maintained.
 
-Where a recipe runs into a defect in one of the systems it touches, the
-write-up gets its own document rather than a paragraph here:
+This file has two jobs. One is to record what it takes to pull each dataset and
+get it ready for research. The other is to show what a researcher *wants* to do
+and currently cannot — the direct-Athena query below is a good example: it is
+the obvious thing to want, it works, and it is out of reach for anyone without
+AWS credentials.
+
+The scripts behind every recipe are in [`recipes/`](recipes/), tracked, so they
+outlive the laptop that ran them. Where a recipe runs into a defect in one of
+the systems it touches, the write-up gets its own document rather than a
+paragraph here:
 [report-service: log reports fail on large, long-running assignments](report-service-log-query-issues.md).
 
 > **This repo is public.** No credentials, tokens, or presigned URLs here, and no
@@ -368,6 +376,31 @@ brain,1.4,true,<int>,<class name>,<school name>,<teacher name>,<int>,<activity n
   results out with an explicit marker rather than assuming the first line.
 - The ECS security group allows port 22 from `0.0.0.0/0`. Noted, not acted on.
 
+**The 15 Dataflow activities**, since every later recipe takes these as input.
+Learner counts are from the census; they are what determines whether a report
+run will complete.
+
+| id | Activity | Learners |
+|---|---|---|
+| 2460 | Lesson 0 — Using CLUE and Dataflow Programming | 670 |
+| 2462 | Lesson 1.2 — How does electricity help us move? | 561 |
+| 2464 | Lesson 1.4 — How do muscles work? | 528 |
+| 2465 | Lesson 1.5 — Can you control a robot with your muscles? | 522 |
+| 2463 | Lesson 1.3 — How does the brain control movement? | 519 |
+| 2467 | Lesson 2.2 — How do we perceive touch? | 401 |
+| 2468 | Lesson 2.3 — Can robots sense objects? | 277 |
+| 2735 | See-It Sensors | 39 |
+| 2739 | See-It Activity 2 | 39 |
+| 3530 | Intro to CLUE and Dataflow: First Look | 34 |
+| 3255 | CLUEs to Collaboration: Computational Thinking | 31 |
+| 3529 | Intro to CLUE and Dataflow: MiniClass Activity | 31 |
+| 3052 | Lesson 3.3 — Turn Analog Changes into Program State | 15 |
+| 2841 | Test dfe CLUE Activity | 1 |
+| 3053 | Lesson 3.4 — Create Mechanical Output | 1 |
+
+3,669 learners in total across 57 classes. The per-activity counts sum to
+exactly that, because `report_learners` rows are per offering.
+
 ### Recipe: CLUE documents, finding them
 
 **Question it answers:** which student documents exist for a given unit/problem,
@@ -576,8 +609,10 @@ publication path finds nothing.
 `context_id` from the Firestore document metadata is the `classHash` in this
 path — the same equivalence that maps CLUE documents to portal classes.
 
-`local-data/clue-documents/download-content.ts` does the fetch and
-`build-content-parquet.sh` converts it. Results for the Dataflow corpus:
+[`docs/recipes/clue-documents/download-content.ts`](recipes/clue-documents/download-content.ts)
+does the fetch and
+[`build-content-parquet.sh`](recipes/clue-documents/build-content-parquet.sh)
+converts it. Results for the Dataflow corpus:
 
 - **4,600 of 4,602 documents fetched**, 0 parse failures, at ~378 docs/s with
   concurrency 20 — the whole corpus in under a minute, 6.7 MB as Parquet. This
@@ -823,7 +858,7 @@ to a researcher.
 The portal query the report server runs is reproducible on its own
 (`LearnerData.fetch/3` in `learner_data.ex`), which lets you see exactly how
 many learners — and therefore how many injected partitions — a run will involve
-*before* spending 30 minutes finding out. `local-data/log-events/learner_census.rb`
+*before* spending 30 minutes finding out. [`docs/recipes/log-events/learner_census.rb`](recipes/log-events/learner_census.rb)
 is that query reduced to a per-assignment, per-class census.
 
 Two things it settled for the Dataflow set:
@@ -846,8 +881,9 @@ fewer learners — which is itself worth surfacing to them.
 
 Once the learner census exists, the report server is not needed. Each learner's
 `portal_learners.secure_key` is the only thing the Athena query requires, and
-`local-data/log-events/learner_keys.rb` exports it alongside the learner
-metadata. `local-data/log-events/athena_logs.py` then runs the query itself:
+[`learner_keys.rb`](recipes/log-events/learner_keys.rb) exports it alongside the
+learner metadata. [`athena_logs.py`](recipes/log-events/athena_logs.py) then runs
+the query itself:
 
 - **adds `app = 'CLUE'` and a year bound**, which the form cannot express and
   which is what makes the query cheap;
@@ -856,6 +892,47 @@ metadata. `local-data/log-events/athena_logs.py` then runs the query itself:
   uploads to S3. The metadata is joined locally in DuckDB instead;
 - **chunks the secure keys** (150 per query) and caches each chunk to its own
   file, so a re-run resumes rather than refetching.
+
+The whole query is this — worth reading, because the difference between it and
+the one that times out is a single line:
+
+```sql
+SELECT log.id, log.session, log.application, log.activity, log.event,
+       log.event_value, log.time, log.parameters, log.extras,
+       log.run_remote_endpoint, log.timestamp
+FROM "log_ingester_production"."logs_by_app_and_secure_key" log
+WHERE log.app = 'CLUE'                     -- the line the report server omits
+  AND log.year BETWEEN 2022 AND 2026
+  AND log.secure_key IN ('<key>', '<key>', ...)   -- 150 at a time
+```
+
+Run it in your own workgroup, which report-service names
+`<portal_server> <user_id> <email>` with every non-`[a-z0-9]` character replaced
+by `-` (`athena_db.ex:103`):
+
+```
+aws athena list-work-groups --query 'WorkGroups[].Name' --output text \
+  | tr '\t' '\n' | grep <your-username>
+export CC_ATHENA_WORKGROUP=learn-concord-org-<id>-<email-with-dashes>
+```
+
+The secure keys come from the portal — one row per learner, the same rows
+report-service uploads to S3 before building its query:
+
+```sql
+SELECT DISTINCT po.runnable_id AS activity_id, rl.learner_id, rl.class_id,
+       rl.user_id, ea.url AS runnable_url, pl.secure_key
+FROM report_learners rl
+JOIN portal_learners pl ON (rl.learner_id = pl.id)
+JOIN users u ON (u.id = rl.user_id)
+JOIN portal_offerings po ON (po.id = rl.offering_id)
+JOIN external_activities ea ON (po.runnable_type = 'ExternalActivity'
+                                AND po.runnable_id = ea.id)
+JOIN portal_student_clazzes psc ON (psc.student_id = rl.student_id)
+JOIN portal_teacher_clazzes ptc ON (ptc.clazz_id = psc.clazz_id
+                                    AND rl.class_id = ptc.clazz_id)
+WHERE po.runnable_id IN (<activity ids>)
+```
 
 **Validated before being trusted.** Re-running the one query that had already
 succeeded through the report server (run 2285, 78 learners) returned **10,319
