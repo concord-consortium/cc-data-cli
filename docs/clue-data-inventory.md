@@ -40,6 +40,125 @@ write-up gets its own document rather than a paragraph here:
 Rows are added as research demands them. The list above is not a claim of
 completeness.
 
+## Using the local datasets
+
+The recipes below describe how each dataset was *fetched*. This section is about
+querying what has already been fetched, which is what a new analysis session
+actually needs.
+
+**These files are on one laptop.** They live in `local-data/`, which is
+gitignored and holds real student-adjacent data. Nothing here is reproducible
+from the repository alone — if the files are missing, re-run the recipes.
+
+### The research question they were built for
+
+Identify four student behaviours in Dataflow tile use: **trial and error**,
+**systematicity**, **decomposition**, and **reusing**. Mostly by replaying
+individual documents, but systematicity in particular may span several documents
+by the same student, since a student can create multiple documents to try
+different approaches.
+
+### The three files
+
+| File | Grain | Size |
+|---|---|---|
+| `local-data/clue-documents/content.parquet` | one row per document | 4,674 docs, 6.8 MB |
+| `local-data/clue-documents/history.parquet` | one row per history entry | 6,381,134 entries / 2,854 docs, 881 MB |
+| `local-data/log-events/logs.parquet` | one row per log event | 258,916 rows, 22 MB |
+
+Query them directly with DuckDB; no import step, no database:
+
+```
+duckdb -c "SELECT count(*) FROM 'local-data/clue-documents/content.parquet';"
+```
+
+**`content.parquet`** — `doc_id`, `doc_key` (identical), `uid`, `context_id`,
+`portal_class_id`, `type`, `unit`, `problem`, `meta_tools[]`, `discovery`,
+`dataflow_tile_deleted`, `found`, `change_count`, `version`, `self_uid`,
+`self_doc_key`, `self_class_hash`, `parse_ok`, `n_tiles`, `tile_types[]`,
+`tile_type_counts` (JSON), `n_dataflow_tiles`, `n_rows`, `n_shared_models`,
+`n_annotations`, `content_json`.
+
+**`history.parquet`** — `doc_id`, `doc_uid`, `portal_class_id`, `unit`,
+`investigation`, `problem`, `entry_id`, `idx`, `prev_entry_id`, `created`,
+`server_created`, `model`, `action_raw`, `action`, `tile_id`, `shared_model_id`,
+`n_records`, `undoable`, `is_revert`, `entry_uid`, `state`, `parse_ok`,
+`entry_json`.
+
+**`logs.parquet`** — `id`, `session`, `application`, `activity`, `event`,
+`event_value`, `time`, `parameters`, `extras`, `run_remote_endpoint`,
+`timestamp`, `activity_id`, `learner_id`, `student_id`, `class_id`,
+`class_name`, `school_name`, `user_id`, `primary_user_id`, `offering_id`,
+`runnable_url`, `unit`, `problem`, `doc_key`, `doc_type`, `doc_uid`, `tile_id`,
+`event_time`.
+
+### How they join
+
+| | content | history | logs |
+|---|---|---|---|
+| document | `doc_key` / `doc_id` | `doc_id` | `doc_key` |
+| student | `uid` | `doc_uid` | `user_id` |
+| class | `portal_class_id` | `portal_class_id` | `class_id` |
+| tile | — (inside `content_json`) | `tile_id` | `tile_id` |
+
+All are VARCHAR, deliberately — the numeric-looking ids must not be typed as
+integers or the joins break. A worked three-way join:
+
+```sql
+WITH d AS (
+  SELECT doc_id, doc_key, unit, type, discovery
+  FROM 'local-data/clue-documents/content.parquet'
+  WHERE discovery = 'log-events' LIMIT 1
+)
+SELECT d.doc_id, d.type, d.unit,
+  (SELECT count(*) FROM 'local-data/clue-documents/history.parquet' h
+     WHERE h.doc_id = d.doc_id) AS history_entries,
+  (SELECT count(*) FROM 'local-data/log-events/logs.parquet' l
+     WHERE l.doc_key = d.doc_key AND l.event = 'DATAFLOW_TOOL_CHANGE') AS df_events
+FROM d;
+-- -NqhUrR6RhCacbK-Up4y | problem | brain | 2197 | 7
+```
+
+### Things that will mislead you if you do not know them
+
+- **Coverage is uneven, and not randomly.** History exists for 2,854 of 4,674
+  documents; logs name 2,610 of them. History was skipped for ten classes whose
+  only assignment was the standalone Dataflow app, which predates history
+  support. "No history" therefore does not mean "no work".
+- **`discovery` is not decoration.** 72 documents have `discovery = 'log-events'`
+  and `dataflow_tile_deleted = true`: their Dataflow tile was created and later
+  deleted, so they are invisible to any query over current tile state. For trial
+  and error they may be the *most* relevant documents. Decide explicitly whether
+  a given analysis includes them.
+- **Ticks dominate history.** `content/step` (41%) and `program/tickAndProcess`
+  (13%) are over half of all entries and record the Dataflow program running,
+  not the student doing anything. Filter them out for authoring behaviour; keep
+  them to study program execution.
+- **Index anomalies are real.** 73 documents have duplicate or gapped `idx`
+  values, from concurrent writes. Order by `idx` then `entry_id`, and do not
+  de-duplicate on `idx` — the duplicates are distinct entries.
+- **`Placeholder` tiles inflate `n_tiles`,** appearing in 3,788 documents.
+  Subtract them when counting authored tiles.
+- **`change_count` is null on `publication` and `personalPublication`.** They are
+  snapshots with no edit counter; use it only on live documents.
+- **Use `event_time`, not `time`.** The raw `time` column is UNIX *seconds*.
+  Dividing by 1000 out of habit yields January 1970 rather than an error.
+- **Publications duplicate work.** `publication` and `personalPublication` rows
+  are copies of another document's content at a moment in time. Counting all
+  document types together double-counts student work.
+- **Unit codes are aliased.** `brain` is Neural Engineering — the bulk of the
+  corpus, 3,329 of 4,674 documents (2,474 of those with history) — and `dfe` is
+  the Dataflow example unit. The raw values `neural-engineering` and
+  `dataflow-example` also appear in URLs.
+- **`unit` and `problem` are null on 890 documents.** Personal documents are not
+  tied to a curriculum problem, so any per-unit grouping silently drops them —
+  and personal documents are exactly where a student's own multi-document
+  experiments would live. Group by `type` first, or join through
+  `portal_class_id` instead.
+- **Raw payloads are kept.** `entry_json` and `content_json` hold the original
+  JSON. Every derived column is a convenience; when one looks wrong, the source
+  is right there.
+
 ## A missing data source: the history of the system itself
 
 Research data spans years. The system that produced it is not the system whose
@@ -542,8 +661,8 @@ How well they actually join, for this corpus:
 |---|---|
 | Log rows carrying a `documentKey` | 218,966 of 258,916 (84.6%) |
 | Distinct documents named in logs | 3,899 |
-| …also in `content.parquet` | 2,538 |
-| …also in `history.parquet` | 2,418 |
+| …also in `content.parquet` | 2,610 |
+| …also in `history.parquet` | 2,490 |
 | `content.parquet` documents having logs | 2,610 of 4,674 (56%) |
 | `history.parquet` documents having logs | 2,490 of 2,854 (87%) |
 | Distinct `tileId`s in logs | 22,168, of which 14,125 appear in history |
