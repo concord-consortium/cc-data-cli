@@ -21,8 +21,9 @@ CONTENT_COLUMNS = {
 }
 
 LOG_COLUMNS = {
-    "doc_key": "VARCHAR", "user_id": "VARCHAR", "event": "VARCHAR",
-    "event_time": "TIMESTAMP", "parameters": "VARCHAR", "extras": "VARCHAR",
+    "doc_key": "VARCHAR", "user_id": "VARCHAR", "session": "VARCHAR",
+    "event": "VARCHAR", "event_time": "TIMESTAMP WITH TIME ZONE",
+    "parameters": "VARCHAR", "extras": "VARCHAR",
 }
 
 
