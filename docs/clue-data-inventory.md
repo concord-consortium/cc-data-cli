@@ -399,10 +399,23 @@ Among CLUE documents, by type: `problem` 2,761/2,819, `personal` 16/21,
 
 Done for the Dataflow corpus; see the
 [dataset design](superpowers/specs/2026-08-10-clue-history-dataset-design.md).
-Result: **2,782 documents, 6,271,181 entries**, ~40 minutes at 20 concurrent.
-15 GB of JSONL compresses to **865 MB of Parquet** (ZSTD), which is the query
-surface. 818 students, 57 portal classes, 15,588 distinct tiles, zero parse
-failures.
+Result: **2,854 documents, 6,381,134 entries** — 2,782 documents found by the
+`tools` query plus 72 found only through log events (below). 15 GB of JSONL
+compresses to **881 MB of Parquet** (ZSTD), which is the query surface. Zero
+parse failures.
+
+**Delete the JSONL at your peril.** It is tempting to clear the 15 GB once the
+Parquet exists, and we did. A later rebuild then read `history/*.jsonl`, matched
+only the handful of documents downloaded since, and overwrote 6.27M entries with
+110k — silently, because a glob that matches fewer files is not an error.
+Recovery was a full re-download. `build-parquet.sh` now refuses to build unless
+every document the source list says has history has its JSONL present; comparing
+`.jsonl` against `.meta.json` counts is *not* sufficient, because during a
+download those two counts pass through equality.
+
+A re-download is a decent integrity check, incidentally: the second pull matched
+the first except for 213 entries in one document, all created that day, because
+the corpus is live.
 
 - **Build the file incrementally.** Assembling a document's entries into one
   string and calling `writeFileSync` fails with `Invalid string length` on
@@ -412,7 +425,7 @@ failures.
   samples rows, and `problem`/`investigation` are numeric-looking strings
   (`"0"`, `"1"`), while `model` is null on older entries — inference types those
   wrongly or drops them.
-- **Index anomalies are real and worth keeping.** 73 of 2,782 documents disagree
+- **Index anomalies are real and worth keeping.** 73 of 2,854 documents disagree
   with a simple count: 69 have duplicate indices, 4 have gaps, none start at a
   non-zero index. Duplicates are genuinely distinct entries (distinct
   `entry_id`s) sharing an index, matching the concurrent-write flakiness CLUE's
@@ -531,8 +544,8 @@ How well they actually join, for this corpus:
 | Distinct documents named in logs | 3,899 |
 | …also in `content.parquet` | 2,538 |
 | …also in `history.parquet` | 2,418 |
-| `content.parquet` documents having logs | 2,538 of 4,602 (55%) |
-| `history.parquet` documents having logs | 2,418 of 2,782 (87%) |
+| `content.parquet` documents having logs | 2,610 of 4,674 (56%) |
+| `history.parquet` documents having logs | 2,490 of 2,854 (87%) |
 | Distinct `tileId`s in logs | 22,168, of which 14,125 appear in history |
 
 The 15% of rows with no `documentKey` are events with no document context —
