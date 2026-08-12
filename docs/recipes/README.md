@@ -16,6 +16,7 @@ Firestore path holds document content or why an Athena query times out.
 | `portal/` | Portal MySQL, via `rails runner` on a production ECS box |
 | `clue-documents/` | Firestore metadata and history, RTDB content |
 | `log-events/` | Report server, and the direct-Athena route that replaced it |
+| `behavior/` | derived datasets for behaviour detection, built from the three Parquet files |
 
 ## Environment
 
@@ -47,6 +48,9 @@ Later steps consume earlier outputs:
    `build-parquet.sh`.
 4. `clue-documents/build-augmented-lists.ts` — adds documents that only the log
    events reveal, then re-run the content and history downloads.
+5. `behavior/` — derived analysis over the Parquet files above, in the order
+   its own [README](behavior/README.md) gives. Reads `local-data/` only; fetches
+   nothing.
 
 `fetch-log-reports.sh` drives the report server instead of Athena. It is kept
 because it documents a route that mostly does not work; see

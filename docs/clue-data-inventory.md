@@ -44,6 +44,7 @@ paragraph here:
 | Student document *content* | Firebase RTDB, `/authed/portals/learn_concord_org/classes/{classHash}/users/{uid}/documents/{docKey}` | same service account | [CLUE document content](#recipe-clue-document-content) | **absent** — same reason |
 | Document history entries | Firestore `authed/learn_concord_org/documents/{docId}/history` | same Firebase service account | [CLUE document history](#recipe-clue-document-history) | **absent** — see the terminology note above; `cc-data get history` is a different corpus entirely. |
 | History of the code, deployments, and databases that produced the data | nowhere yet — see [below](#a-missing-data-source-the-history-of-the-system-itself) | institutional memory | — | **absent**, and not obviously `cc-data`'s job |
+| Derived behaviour datasets (edits, presence, cycles, candidates) | `local-data/derived/`, built from the three Parquet files | none beyond the local data | [Behaviour detection](recipes/behavior/README.md) | **absent** — a research pipeline, not a CLI concern |
 
 Rows are added as research demands them. The list above is not a claim of
 completeness.
@@ -166,6 +167,29 @@ FROM d;
 - **Raw payloads are kept.** `entry_json` and `content_json` hold the original
   JSON. Every derived column is a convenience; when one looks wrong, the source
   is right there.
+- **`action` is not the unit of student activity.** Only 279 documents record
+  granular program actions; 2,604 record edits as `setProgram`, which is a
+  catch-all — one sampled `setProgram` entry was five node renames. The uniform
+  primitive is `records[].patches[]` inside `entry_json`.
+- **Some patches are the program writing, not the student.**
+  `program/values/*` is computed output, `sharedModel/variables/*/setValue`
+  (263,536 entries) is the Simulation updating itself, and
+  `sharedModel/dataSet/addCanonicalCasesWithIDs` (82,316) is Dataflow recording
+  sensor readings into a table. All three read as student data entry. The
+  discriminator is the action's root: `tileMap/{tile}/content/…` is
+  student-initiated, `sharedModelMap/…` is not.
+- **`created` is a client clock, `server_created` is the server's.** The
+  1st/99th percentiles of their difference are −55s/+53s — the negative tail
+  proves skew, since an entry cannot be created after it is stored. Use
+  `created` only for durations within one document. 52 documents have backsteps
+  over 60s and are unusable for timing.
+- **`entry_uid` is null on all 6,381,134 entries,** and correctly so: only the
+  concurrent history manager stamps it, real students only used the
+  non-concurrent one, and those documents have exactly one author anyway.
+- **Log `extras` carries UI state on 100% of rows** — `navTabsOpen`,
+  `selectedNavTab`, `workspaceMode`, `problemPath`, `group`, `tzOffset`. But
+  `navTabsOpen` conflates two of three divider states (split view and
+  curriculum-fullscreen both log `true`), so only `false` is unambiguous.
 
 ## A missing data source: the history of the system itself
 
