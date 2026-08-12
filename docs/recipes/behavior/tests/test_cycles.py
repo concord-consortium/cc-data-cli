@@ -42,12 +42,33 @@ def edit(started, target, cls="parameter", op="replace", doc="d1", entry="e"):
 
 class TestCycles(unittest.TestCase):
     def setUp(self):
+        # Force a fixed, DST-free, non-UTC session timezone for every test in
+        # this class. `lib.run_sql`/`lib.query` shell out to the duckdb CLI
+        # via subprocess.run, which inherits os.environ, and DuckDB's implicit
+        # TIMESTAMPTZ -> TIMESTAMP cast resolves through that session zone.
+        # Leaving this to the ambient environment means
+        # test_log_times_are_compared_in_utc only catches a dropped
+        # `AT TIME ZONE 'UTC'` normalisation on machines whose local zone
+        # happens to differ from UTC -- on a TZ=UTC runner the same bug
+        # produces the numerically-correct answer by coincidence, and the
+        # regression guard silently loses its coverage (verified: see
+        # task-6-report.md's fix-round-1 appendix). Pacific/Honolulu has no
+        # DST transitions, so the offset is deterministic for every date the
+        # fixtures use.
+        self._prev_tz = os.environ.get("TZ")
+        os.environ["TZ"] = "Pacific/Honolulu"
         self.dir = tempfile.mkdtemp()
         self.edits = os.path.join(self.dir, "edits.parquet")
         self.presence = os.path.join(self.dir, "presence.parquet")
         self.trials = os.path.join(self.dir, "trials.parquet")
         self.logs = os.path.join(self.dir, "logs.parquet")
         self.out = os.path.join(self.dir, "cycles.parquet")
+
+    def tearDown(self):
+        if self._prev_tz is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = self._prev_tz
 
     def _run(self, edits, presence=(), logs=(), trials=()):
         write_parquet(edits, self.edits, EDIT_COLUMNS)
