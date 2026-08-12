@@ -273,15 +273,41 @@ reported separately after the fact. It contributes no per-event data.
 One row per semantic student operation, produced by exploding
 `entry_json → records[] → patches[]` and classifying each path.
 
-| class | patch paths | counts as a change |
+Classification needs **both** the patch path and the entry's action. Path alone
+is insufficient because the Dataflow tile and the Simulation tile write to the
+same shared-model paths a student uses when filling in a table by hand. The
+discriminating rule is the action's root: an action rooted at
+`tileMap/{tile}/content/…` was initiated by the student on that tile, while one
+rooted at `sharedModelMap/…` is written by a running program.
+
+| class | matched by | counts as a change |
 |---|---|---|
-| `structure` | `program/nodes/{id}` add/remove; `program/nodes/{id}/inputs/*` add/remove | yes |
-| `parameter` | `program/nodes/{id}/data/*` | yes |
-| `layout` | `program/nodes/{id}/x\|y`, `programZoom/*` | no |
-| `runtime` | `program/values/*`, `content/step`, `tickAndProcess` | **never** — presence only |
-| `documentation` | `setSlate`, table `*CanonicalCase*`, drawing `addObject` | yes, separate channel |
-| `tile` | `addTile`, `deleteTile`, `userAddTile`, `handleDragCopyTiles` | yes; the last also flags curriculum provenance |
-| `undo` | `undo`, `is_revert` | yes, separate channel |
+| `structure` | path `program/nodes/{id}` add/remove; path `program/nodes/{id}/inputs/*` add/remove | yes |
+| `parameter` | path `program/nodes/{id}/data/*`, **excluding** `orderedDisplayName` | yes |
+| `layout` | path `program/nodes/{id}/x\|y`; path `programZoom/*` | no |
+| `runtime` | path `program/values/*`; actions `content/step`, `tickAndProcess`, `sharedModel/dataSet/addCanonicalCasesWithIDs`, `sharedModel/variables/*/setValue` | **never** — presence only |
+| `documentation` | actions on a `tileMap` root: `setSlate` (path `content/text`), `setCanonicalCaseValues`, `addCanonicalCases`, `addObject`; plus `sharedModel/dataSet/setAttributeName\|removeAttribute\|addAttributeWithID` | yes, separate channel |
+| `tile` | actions `/addTile`, `/deleteTile`, `/content/userAddTile`, `/content/handleDragCopyTiles` | yes; the last also flags curriculum provenance |
+| `undo` | action `undo`, or `is_revert` | yes, separate channel |
+| `ambiguous` | action `sharedModel/variables/*/commitTemporaryValue` | no — excluded, but recorded |
+| `other` | anything unmatched | no — recorded so the unclassified tail stays visible |
+
+**Three traps this table exists to avoid**, each measured:
+
+- `sharedModel/variables/*/setValue` is **263,536** entries of the Simulation
+  updating itself, and `sharedModel/dataSet/addCanonicalCasesWithIDs` is
+  **82,316** entries of Dataflow recording sensor readings into a table. Together
+  that is ~345k entries that read as student data-entry and are not.
+- `setSlate` is an *action* name; the patch path it produces is
+  `tileMap/{t}/content/text`. Matching the string `setSlate` against paths finds
+  nothing.
+- `orderedDisplayName` is a derived rename that cascades across every node when
+  one is added — 100 of 2,918 sampled `data/*` patches. Counting it inflates the
+  parameter class on exactly the events that already count as `structure`.
+
+`ambiguous` and `other` exist so that misclassification shows up as a growing
+bucket rather than as silently wrong counts. Their sizes are reported by the
+build.
 
 Columns: `doc_id, uid, portal_class_id, unit, problem, tile_id, entry_id, idx,
 created, server_created, class, op, target_kind, target_id, node_type,
