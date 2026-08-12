@@ -54,20 +54,28 @@ def main():
     p = lib.paths()
     lib.ensure_derived()
     out = os.path.join(p["derived"], "population.parquet")
-    build(p["content"], p["history"], out)
+    # Write to a temp path and only replace the previous artifact after the
+    # sanity check below passes -- see docs/recipes/README.md's "two things
+    # that will bite". `COPY ... TO out` directly would destroy a good
+    # population.parquet the moment the check fails.
+    tmp = out + ".tmp"
+    build(p["content"], p["history"], tmp)
 
-    total = lib.scalar("SELECT count(*) FROM read_parquet('%s')" % out)
+    total = lib.scalar("SELECT count(*) FROM read_parquet('%s')" % tmp)
     suspect = lib.scalar(
-        "SELECT count(*) FROM read_parquet('%s') WHERE clock_suspect" % out)
-    print("population: %d documents, %d clock-suspect, %d usable"
-          % (total, suspect, total - suspect))
+        "SELECT count(*) FROM read_parquet('%s') WHERE clock_suspect" % tmp)
 
     # Refuse to hand a surprising corpus to later stages. These are the counts
     # the design was written against; a large drift means the source data
     # changed and the thresholds need re-deriving.
     if total < 2500:
+        os.remove(tmp)
         sys.exit("population of %d is far below the expected 2,832 -- "
                  "check that history.parquet is complete" % total)
+
+    os.replace(tmp, out)
+    print("population: %d documents, %d clock-suspect, %d usable"
+          % (total, suspect, total - suspect))
 
 
 if __name__ == "__main__":

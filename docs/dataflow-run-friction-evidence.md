@@ -21,20 +21,20 @@ edits, the distribution of gaps between consecutive program-edit operations
 would show two humps — a fast cluster of mid-edit pauses and a slower cluster
 of run-and-look pauses — with a valley between them. It does not.
 
-119,057 operation gaps, binned on a log scale (`calibrate.py`,
+118,054 operation gaps, binned on a log scale (`calibrate.py`,
 `local-data/derived/calibration.md`):
 
 | gap (s) | count | share |
 |---|---|---|
-| 0–1 | 33,981 | 28.5% |
-| 1–2 | 6,549 | 5.5% |
-| 2–3 | 12,392 | 10.4% |
-| 3–5 | 16,560 | 13.9% |
-| 5–8 | 13,641 | 11.5% |
-| 8–13 | 11,004 | 9.2% |
-| 13–21 | 8,014 | 6.7% |
-| 21–34 | 5,396 | 4.5% |
-| 34–60 | 4,424 | 3.7% |
+| 0–1 | 32,942 | 27.9% |
+| 1–2 | 6,551 | 5.5% |
+| 2–3 | 12,405 | 10.5% |
+| 3–5 | 16,567 | 14.0% |
+| 5–8 | 13,650 | 11.6% |
+| 8–13 | 11,005 | 9.3% |
+| 13–21 | 8,016 | 6.8% |
+| 21–34 | 5,397 | 4.6% |
+| 34–60 | 4,425 | 3.7% |
 | 60–120 | 3,330 | 2.8% |
 | 120–300 | 2,449 | 2.1% |
 | 300–900 | 1,317 | 1.1% |
@@ -51,8 +51,8 @@ telemetry, not by an inferred threshold) barely moves the distribution:
 
 | | inside a session | outside a session |
 |---|---|---|
-| median gap | 3.52s | 3.71s |
-| p90 gap | 31.09s | 32.84s |
+| median gap | 3.77s | 3.55s |
+| p90 gap | 33.22s | 31.39s |
 
 If long gaps were mostly "student closed the tab," restricting to inside-session
 gaps should shorten the tail noticeably. It does not — p50 and p90 move by a few
@@ -88,15 +88,15 @@ a real, recoverable signal, independent of pause length. This is what
 `build_trials.py` finds.
 
 Of the 506 documents in the analysis population that contain a Simulator tile,
-406 (80.2%) show at least one such trial. Across those 406 documents there are
-3,598 trials in total. 1,702 of them (47.3%) begin within 120 seconds of a
+405 (80.0%) show at least one such trial. Across those 405 documents there are
+3,821 trials in total. 1,799 of them (47.1%) begin within 120 seconds of a
 program-structure edit — the pattern of "change the program, then work the
 input to see what happens," which is close to the observable proxy for
 "finished editing, now checking."
 
 **Stated against the whole population this pipeline works over, not just the
 Simulator subset:** 2,727 documents contain a program edit at all
-(`report_documentation.py`, live run). The 406 documents with a detected trial
+(`report_documentation.py`, live run). The 405 documents with a detected trial
 are 14.9% of that population — call it roughly one document in seven. For the
 other 85%, this pipeline has no boundary-detecting signal at all, because there
 is no varying input to watch.
@@ -141,9 +141,9 @@ free instrumentation win, and it changes the learning experience for every
 student, not just the ones being studied.
 
 It is also worth being honest that the current pipeline is not blind without
-it. The Simulator subpopulation — the 406 documents discussed in §3 — already
+it. The Simulator subpopulation — the 405 documents discussed in §3 — already
 yields a usable trial signal from existing data, with no interface change and
-no added friction for those students. Nearly half of its trials (47.3%) line up
+no added friction for those students. Nearly half of its trials (47.1%) line up
 with a preceding program edit inside a two-minute window, which is a real,
 actionable proxy for "student finished editing, then checked the result." Any
 argument for friction has to weigh its cost against extending coverage from

@@ -1,3 +1,4 @@
+import json
 import os
 import tempfile
 import unittest
@@ -241,6 +242,76 @@ class TestCycles(unittest.TestCase):
         types = {r["column_name"]: r["column_type"] for r in lib.query(
             "DESCRIBE SELECT * FROM read_parquet('%s')" % self.out)}
         self.assertEqual(types["cycle_id"], "BIGINT")
+
+
+class TestWatchMinCoupling(unittest.TestCase):
+    """Regression test for finding 2: build_cycles.main() overrides
+    burst_gap_s to 5.0 (see the module docstring) but must couple
+    watch_min_s to the same override. This exercises main() itself, not
+    build(), because the coupling bug lives in main()'s threshold handling --
+    build() tests that pass an explicit THRESHOLDS dict never see it."""
+
+    def setUp(self):
+        self._prev_tz = os.environ.get("TZ")
+        os.environ["TZ"] = "Pacific/Honolulu"
+        self._prev_local = os.environ.get("CC_DATA_LOCAL")
+        self.root = tempfile.mkdtemp()
+        os.environ["CC_DATA_LOCAL"] = self.root
+        self.derived = os.path.join(self.root, "derived")
+        os.makedirs(self.derived, exist_ok=True)
+        os.makedirs(os.path.join(self.root, "log-events"), exist_ok=True)
+
+    def tearDown(self):
+        if self._prev_tz is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = self._prev_tz
+        if self._prev_local is None:
+            os.environ.pop("CC_DATA_LOCAL", None)
+        else:
+            os.environ["CC_DATA_LOCAL"] = self._prev_local
+
+    def test_a_pause_between_the_new_burst_gap_and_the_old_watch_min_is_watching(self):
+        # A calibrate.py run before this fix would have written watch_min_s
+        # equal to the calibrated burst_gap_s (~32.57s in the real corpus).
+        with open(os.path.join(self.derived, "thresholds.json"), "w") as handle:
+            json.dump({"burst_gap_s": 32.57, "watch_min_s": 32.57,
+                       "watch_max_s": 300.0, "ui_staleness_s": 120.0}, handle)
+
+        write_parquet([
+            edit("2025-01-01 10:00:00", "n1", entry="e1"),
+            # 10s pause: longer than the burst-gap override (5.0s) so this
+            # starts a new cycle, but shorter than the OLD watch_min_s
+            # (32.57s). Uncoupled, this pause can never be `watching`.
+            edit("2025-01-01 10:00:10", "n2", entry="e2"),
+        ], os.path.join(self.derived, "edits.parquet"), EDIT_COLUMNS)
+        write_parquet(
+            self._covering_presence(),
+            os.path.join(self.derived, "presence.parquet"), PRESENCE_COLUMNS)
+        write_parquet([], os.path.join(self.derived, "trials.parquet"), TRIAL_COLUMNS)
+        write_parquet([
+            self._log("2025-01-01 09:59:00"),
+            self._log("2025-01-01 10:00:00"),
+            self._log("2025-01-01 10:01:00"),
+        ], os.path.join(self.root, "log-events", "logs.parquet"), LOG_COLUMNS)
+
+        build_cycles.main()
+
+        rows = lib.query(
+            "SELECT pause_type FROM read_parquet('%s') ORDER BY cycle_id"
+            % os.path.join(self.derived, "cycles.parquet"))
+        self.assertEqual(rows[0]["pause_type"], "watching")
+
+    def _covering_presence(self):
+        return [{"doc_id": "d1", "tile_id": "tileA", "interval_id": 0,
+                 "started": "2025-01-01 09:00:00", "ended": "2025-01-01 11:00:00",
+                 "n_ticks": 5000, "median_tick_ms": 100.0, "rate_coarse": False}]
+
+    def _log(self, event_time, event="DATAFLOW_TOOL_CHANGE", session="s1",
+             nav_open="false"):
+        return {"doc_key": "d1", "user_id": "u1", "session": session,
+                "event": event, "event_time": event_time, "parameters": "{}",
+                "extras": '{"navTabsOpen":%s}' % nav_open}
 
 
 if __name__ == "__main__":

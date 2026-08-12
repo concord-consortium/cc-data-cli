@@ -69,21 +69,37 @@ COPY (
     WHERE h.action NOT LIKE '%/content/step'
       AND h.action NOT LIKE '%tickAndProcess'
   ),
+  -- `entry_id` alone does not disambiguate patches: one entry commonly
+  -- carries many patches (measured: ~48% of patches share a (created,
+  -- entry_id) pair with at least one sibling, some entries over 1,000-way),
+  -- and DuckDB's ROWS-framed window functions must still impose SOME
+  -- physical order across those ties -- a different one, independently,
+  -- for every window computed below. Two windows that disagree on a tied
+  -- cluster's internal order can split what should be one coalesced
+  -- operation into two, nondeterministically, between runs. `rec_idx` and
+  -- `patch_idx` -- each patch's position in the JSON array it came from,
+  -- which is fixed by the source data, not by DuckDB's execution plan --
+  -- close that gap completely (verified against the real corpus: zero
+  -- remaining ties on (created, entry_id, rec_idx, patch_idx)).
   rec AS (
     SELECT doc_id, entry_id, idx, created, server_created, action, is_revert,
            entry_tile_id,
-           unnest(json_extract(entry_json, '$.records[*]')) AS rec
+           unnest(json_extract(entry_json, '$.records[*]')) AS rec,
+           unnest(range(CAST(json_array_length(entry_json, '$.records')
+                             AS BIGINT))) AS rec_idx
     FROM src
   ),
   pat AS (
     SELECT doc_id, entry_id, idx, created, server_created, action, is_revert,
-           entry_tile_id,
-           unnest(json_extract(rec, '$.patches[*]')) AS patch
+           entry_tile_id, rec_idx,
+           unnest(json_extract(rec, '$.patches[*]')) AS patch,
+           unnest(range(CAST(json_array_length(rec, '$.patches')
+                             AS BIGINT))) AS patch_idx
     FROM rec
   ),
   flat AS (
     SELECT doc_id, entry_id, idx, created, server_created, action, is_revert,
-           entry_tile_id,
+           entry_tile_id, rec_idx, patch_idx,
            json_extract_string(patch, '$.op') AS op,
            json_extract_string(patch, '$.path') AS path
     FROM pat
@@ -109,30 +125,49 @@ COPY (
   ),
   marked AS (
     SELECT *,
+      -- (entry_id, rec_idx, patch_idx) breaks ties among rows sharing
+      -- `created` -- including rows from the SAME entry -- so `is_new` (and
+      -- everything downstream of it) is fully determined by the data, not
+      -- by DuckDB's tie-breaking for a given run.
       CASE WHEN date_diff('millisecond',
              lag(created) OVER (PARTITION BY doc_id, class, target_id, op
-                                ORDER BY created, entry_id),
+                                ORDER BY created, entry_id, rec_idx, patch_idx),
              created) <= {window} THEN 0 ELSE 1 END AS is_new
     FROM targeted
   ),
   grouped AS (
     SELECT *,
       sum(is_new) OVER (PARTITION BY doc_id, class, target_id, op
-                        ORDER BY created, entry_id
+                        ORDER BY created, entry_id, rec_idx, patch_idx
                         ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS grp
     FROM marked
+  ),
+  seqed AS (
+    SELECT *,
+      -- Deterministic ordinal within the group, so arg_min(entry_id, ...)
+      -- below has a real tiebreaker instead of an ambiguous `created`.
+      row_number() OVER (PARTITION BY doc_id, class, target_id, op, grp
+                         ORDER BY created, entry_id, rec_idx, patch_idx) AS seq
+    FROM grouped
   )
   SELECT
     g.doc_id, p.uid, p.portal_class_id, p.unit, p.problem, p.clock_suspect,
     any_value(g.tile_id) AS tile_id,
-    any_value(g.node_id) AS node_id,
-    any_value(g.subtype) AS subtype,
+    -- min(), not any_value(): adding a node with inputs emits `/nodes/X` and
+    -- `/nodes/X/inputs/y` patches sharing doc/class/target/op/created, which
+    -- coalesce into one group with different subtypes (node vs connection),
+    -- and any_value() picked among them arbitrarily.
+    min(g.node_id) AS node_id,
+    min(g.subtype) AS subtype,
     g.target_id, g.class, g.op,
     min(g.created) AS started,
     max(g.created) AS ended,
     count(*) AS n_patches,
-    arg_min(g.entry_id, g.created) AS first_entry_id
-  FROM grouped g
+    -- arg_min keyed by `seq`, not `created`: two patches from different
+    -- entries can share a millisecond timestamp, which would otherwise make
+    -- the replay-link entry_id ambiguous between runs.
+    arg_min(g.entry_id, g.seq) AS first_entry_id
+  FROM seqed g
   JOIN pop p ON p.doc_id = g.doc_id
   GROUP BY g.doc_id, p.uid, p.portal_class_id, p.unit, p.problem,
            p.clock_suspect, g.target_id, g.class, g.op, g.grp
@@ -152,24 +187,31 @@ def main():
     derived = lib.ensure_derived()
     pop = os.path.join(derived, "population.parquet")
     out = os.path.join(derived, "edits.parquet")
-    build(p["history"], pop, out)
+    # Write to a temp path and only replace the previous good edits.parquet
+    # after the sanity check below passes -- see docs/recipes/README.md's
+    # "two things that will bite".
+    tmp = out + ".tmp"
+    build(p["history"], pop, tmp)
 
     rows = lib.query(
         "SELECT class, count(*) AS n FROM read_parquet('%s') "
-        "GROUP BY class ORDER BY n DESC" % out)
+        "GROUP BY class ORDER BY n DESC" % tmp)
     total = sum(r["n"] for r in rows)
-    print("edits: %d operations" % total)
-    for r in rows:
-        print("  %-14s %8d  %5.1f%%" % (r["class"], r["n"], 100.0 * r["n"] / total))
 
     # `other` is the escape hatch for paths the taxonomy does not recognise.
     # A large bucket means the taxonomy has drifted from the data, which is a
     # correctness problem, not a cosmetic one.
     other = next((r["n"] for r in rows if r["class"] == "other"), 0)
     if total and other / total > 0.25:
+        os.remove(tmp)
         sys.exit("'other' is %.1f%% of operations -- the taxonomy no longer "
                  "matches the data; review build_edits.CLASSIFY before "
                  "trusting anything downstream" % (100.0 * other / total))
+
+    os.replace(tmp, out)
+    print("edits: %d operations" % total)
+    for r in rows:
+        print("  %-14s %8d  %5.1f%%" % (r["class"], r["n"], 100.0 * r["n"] / total))
 
 
 if __name__ == "__main__":

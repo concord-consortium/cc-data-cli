@@ -93,13 +93,19 @@ def main():
     p = lib.paths()
     derived = lib.ensure_derived()
     out = os.path.join(derived, "presence.parquet")
-    build(p["history"], os.path.join(derived, "population.parquet"), out)
+    # Write to a temp path first -- see docs/recipes/README.md's "two things
+    # that will bite" -- so a crash mid-COPY (or a future check added here)
+    # cannot leave presence.parquet truncated or clobber a good one.
+    tmp = out + ".tmp"
+    build(p["history"], os.path.join(derived, "population.parquet"), tmp)
 
     row = lib.query(
         "SELECT count(*) AS intervals, count(DISTINCT doc_id) AS docs, "
         "count(*) FILTER (WHERE rate_coarse) AS coarse, "
         "median(date_diff('second', started, ended)) AS median_len_s "
-        "FROM read_parquet('%s')" % out)[0]
+        "FROM read_parquet('%s')" % tmp)[0]
+
+    os.replace(tmp, out)
     print("presence: %d intervals across %d documents, %d coarse-rate, "
           "median length %ss" % (row["intervals"], row["docs"], row["coarse"],
                                  row["median_len_s"]))

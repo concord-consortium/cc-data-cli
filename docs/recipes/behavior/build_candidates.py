@@ -44,7 +44,7 @@ def classify_cycle(row):
     """Label one cycle, or decline to. Most cycles decline.
 
     Composition carries the axis, because Task 4 established that pause length
-    does not separate: 119,057 gaps decay smoothly with no second peak. This is
+    does not separate: 118,054 gaps decay smoothly with no second peak. This is
     also closer to CLUE-575, which defines trial and error as changing blocks
     rapidly "without systematicity (one change at a time)".
     """

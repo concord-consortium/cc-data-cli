@@ -5,7 +5,7 @@
 
 A cycle is one edit burst plus what followed it. The axis rests on burst
 COMPOSITION -- how many distinct things changed before the student stopped --
-because Task 4 established that pause length carries no signal: 119,057
+because Task 4 established that pause length carries no signal: 118,054
 operation gaps decay smoothly with no second peak, so there is nothing to
 threshold. That is closer to CLUE-575's own wording anyway, which defines
 trial and error as changing blocks rapidly "without systematicity (one change
@@ -20,11 +20,17 @@ Documents with neither sessions nor ticks get `no_presence_data`, never
 `absent`: 1,939 of 2,677 documents have no ticks, and reading that as "the
 student left" would be inventing a finding from missing data.
 
-The burst gap is 5s, not thresholds.json's calibrated 32.56s p90. A 32.56s gap
-merges most of a session into single bursts (17,503 bursts corpus-wide, mean
-2.63 distinct targets) and destroys the composition signal; 5s keeps bursts at
-gesture scale (54,406 bursts, 67.1% single-target). Task 4 established there is
+The burst gap is 5s, not thresholds.json's calibrated 32.91s p90. A 32.91s gap
+merges most of a session into single bursts (16,636 bursts corpus-wide, mean
+2.70 distinct targets) and destroys the composition signal; 5s keeps bursts at
+gesture scale (54,412 bursts, 67.1% single-target). Task 4 established there is
 no data-driven way to choose, so this is a judgement call and Task 8 says so.
+
+`watch_min_s` moves with the burst-gap override, in main(). A pause must
+outlast `watch_min_s` before it can be classified `watching`; leaving it at
+the calibrated ~32s while the burst gap drops to 5s would force every pause
+shorter than ~32s to `present_unknown`, silently suppressing the `watching`
+evidence a single-target cycle needs to be called `systematic`.
 """
 import json
 import os
@@ -49,26 +55,45 @@ COPY (
   ),
   marked AS (
     SELECT *,
+      -- `(class, target_id, op)` breaks ties among rows sharing `started`:
+      -- DuckDB gives no ordering guarantee among tied rows, so without a
+      -- tiebreaker `is_new` (and everything downstream) can differ between
+      -- runs. `first_entry_id` alone is NOT enough here -- it can repeat
+      -- across different (class, target_id, op) rows that were coalesced
+      -- from the same originating history entry (measured: 47,732 of
+      -- 141,184 `changes` rows share a `started` value with at least one
+      -- other row in the same (doc_id, tile_id) partition) -- but
+      -- (doc_id, class, target_id, op, started) is edits.parquet's actual
+      -- grouping key and is verified unique.
       CASE WHEN date_diff('millisecond',
-             lag(ended) OVER (PARTITION BY doc_id, tile_id ORDER BY started),
+             lag(ended) OVER (PARTITION BY doc_id, tile_id
+                              ORDER BY started, class, target_id, op),
              started) <= {burst_gap_ms} THEN 0 ELSE 1 END AS is_new
     FROM changes
   ),
   grouped AS (
     SELECT *,
-      CAST(sum(is_new) OVER (PARTITION BY doc_id, tile_id ORDER BY started
+      CAST(sum(is_new) OVER (PARTITION BY doc_id, tile_id
+                             ORDER BY started, class, target_id, op
                              ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
            AS BIGINT) AS cycle_id,
       sum(CASE WHEN subtype = 'node' AND op = 'add' THEN 1
                WHEN subtype = 'node' AND op = 'remove' THEN -1
                ELSE 0 END)
-        OVER (PARTITION BY doc_id, tile_id ORDER BY started
+        OVER (PARTITION BY doc_id, tile_id ORDER BY started, class, target_id, op
               ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS n_nodes_running,
       sum(CASE WHEN subtype = 'connection' AND op = 'add' THEN 1
                WHEN subtype = 'connection' AND op = 'remove' THEN -1
                ELSE 0 END)
-        OVER (PARTITION BY doc_id, tile_id ORDER BY started
-              ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS n_conns_running
+        OVER (PARTITION BY doc_id, tile_id ORDER BY started, class, target_id, op
+              ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS n_conns_running,
+      -- Deterministic ordinal within (doc_id, tile_id), used below instead of
+      -- `started` as the arg_min/arg_max sort key: two rows can share
+      -- `started`, and arg_min/arg_max break ties among equal keys
+      -- arbitrarily, which would let a burst's `first_entry_id` -- the
+      -- replay URL a researcher opens -- change between runs.
+      row_number() OVER (PARTITION BY doc_id, tile_id
+                         ORDER BY started, class, target_id, op) AS seq
     FROM marked
   ),
   bursts AS (
@@ -78,7 +103,13 @@ COPY (
            max(ended) AS burst_ended,
            count(*) AS n_changes,
            count(DISTINCT target_id) AS n_distinct_targets,
-           list_distinct(list(class)) AS classes,
+           -- list_sort, not just list_distinct: list()/list_distinct() give
+           -- no guarantee about the ORDER elements land in within one
+           -- group, which is a second, independent source of nondeterminism
+           -- from the row-ordering ties fixed above -- an aggregate, not a
+           -- window function, so the (started, class, target_id, op)
+           -- tiebreaker doesn't reach it.
+           list_sort(list_distinct(list(class))) AS classes,
            -- True iff some ONE target was both added and removed in this burst.
            -- |A| + |R| > |A union R| exactly when A and R intersect. Testing
            -- bool_or(add) AND bool_or(remove) instead would fire when one target
@@ -87,9 +118,9 @@ COPY (
             + count(DISTINCT CASE WHEN op = 'remove' THEN target_id END)
             > count(DISTINCT CASE WHEN op IN ('add', 'remove') THEN target_id END)
            ) AS oscillation,
-           arg_max(n_nodes_running, started) AS n_nodes_after,
-           arg_max(n_conns_running, started) AS n_connections_after,
-           arg_min(first_entry_id, started) AS first_entry_id
+           arg_max(n_nodes_running, seq) AS n_nodes_after,
+           arg_max(n_conns_running, seq) AS n_connections_after,
+           arg_min(first_entry_id, seq) AS first_entry_id
     FROM grouped
     GROUP BY doc_id, tile_id, cycle_id
   ),
@@ -104,7 +135,8 @@ COPY (
   ),
   paced AS (
     SELECT *,
-      lead(burst_started) OVER (PARTITION BY doc_id, tile_id ORDER BY burst_started)
+      lead(burst_started) OVER (PARTITION BY doc_id, tile_id
+                                ORDER BY burst_started, cycle_id)
         AS next_burst_started
     FROM with_undo
   ),
@@ -216,27 +248,41 @@ def main():
         thresholds = json.load(handle)
     # Deliberately override the calibrated p90: see the module docstring.
     thresholds["burst_gap_s"] = BURST_GAP_S
+    # watch_min_s must move with burst_gap_s: the CASE below requires a pause
+    # to outlast watch_min_s before it can be called `watching`, and if
+    # watch_min_s is left at the calibrated ~32s while burst_gap_s drops to
+    # 5s, every pause between 5s and ~32s is forced to `present_unknown`,
+    # silently suppressing the `watching` signal that single-target cycles
+    # need to be called `systematic`. The two thresholds are not independent
+    # and must be set together.
+    thresholds["watch_min_s"] = BURST_GAP_S
     out = os.path.join(derived, "cycles.parquet")
+    # Write to a temp path first -- see docs/recipes/README.md's "two things
+    # that will bite" -- so a crash mid-COPY cannot leave cycles.parquet
+    # truncated or clobber a good one.
+    tmp = out + ".tmp"
     build(os.path.join(derived, "edits.parquet"),
           os.path.join(derived, "presence.parquet"),
           os.path.join(derived, "trials.parquet"),
-          p["logs"], thresholds, out)
+          p["logs"], thresholds, tmp)
 
     rows = lib.query(
         "SELECT pause_type, count(*) AS n FROM read_parquet('%s') "
-        "GROUP BY pause_type ORDER BY n DESC" % out)
+        "GROUP BY pause_type ORDER BY n DESC" % tmp)
     total = sum(r["n"] for r in rows)
-    print("cycles: %d (burst gap %.1fs)" % (total, BURST_GAP_S))
-    for r in rows:
-        print("  %-18s %8d  %5.1f%%" % (r["pause_type"], r["n"],
-                                        100.0 * r["n"] / total))
 
     comp = lib.query(
         "SELECT count(*) FILTER (WHERE n_distinct_targets = 1) AS single, "
         "count(*) FILTER (WHERE n_distinct_targets >= 3) AS many, "
         "count(*) FILTER (WHERE oscillation) AS osc, "
         "count(*) FILTER (WHERE trial_after) AS trialed, "
-        "count(*) AS n FROM read_parquet('%s')" % out)[0]
+        "count(*) AS n FROM read_parquet('%s')" % tmp)[0]
+
+    os.replace(tmp, out)
+    print("cycles: %d (burst gap %.1fs)" % (total, BURST_GAP_S))
+    for r in rows:
+        print("  %-18s %8d  %5.1f%%" % (r["pause_type"], r["n"],
+                                        100.0 * r["n"] / total))
     print("composition: %.1f%% single-target, %.1f%% 3+ targets, "
           "%.1f%% oscillating, %.1f%% followed by a trial"
           % (100.0 * comp["single"] / comp["n"], 100.0 * comp["many"] / comp["n"],

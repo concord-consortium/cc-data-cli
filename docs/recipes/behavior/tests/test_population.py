@@ -7,6 +7,61 @@ import lib
 from fixtures import CONTENT_COLUMNS, HISTORY_COLUMNS, history_entry, write_parquet
 
 
+class TestMainRefusesToDestroyAGoodArtifact(unittest.TestCase):
+    """Finding 4 regression: docs/recipes/README.md documents an incident
+    where a rebuild silently overwrote 6.27M rows with 110k. build_population
+    must write to a temp path, run its population-size gate, and only then
+    replace the previous population.parquet -- never destroy a good one
+    before the gate has had a chance to refuse."""
+
+    def setUp(self):
+        self._prev_local = os.environ.get("CC_DATA_LOCAL")
+        self.root = tempfile.mkdtemp()
+        os.environ["CC_DATA_LOCAL"] = self.root
+        os.makedirs(os.path.join(self.root, "clue-documents"), exist_ok=True)
+        self.content = os.path.join(self.root, "clue-documents", "content.parquet")
+        self.history = os.path.join(self.root, "clue-documents", "history.parquet")
+        self.out = os.path.join(self.root, "derived", "population.parquet")
+
+    def tearDown(self):
+        if self._prev_local is None:
+            os.environ.pop("CC_DATA_LOCAL", None)
+        else:
+            os.environ["CC_DATA_LOCAL"] = self._prev_local
+
+    def test_a_failed_population_gate_leaves_the_previous_parquet_intact(self):
+        # A previous good run: enough documents to pass the gate.
+        content_rows = [
+            {"doc_id": "d%d" % i, "doc_key": "d%d" % i, "uid": "u1",
+             "portal_class_id": "7", "type": "problem", "unit": "brain",
+             "problem": "1.4", "dataflow_tile_deleted": False}
+            for i in range(2600)
+        ]
+        history_rows = [
+            history_entry("d%d" % i, "e%d" % i, 0, "2025-01-01 10:00:00",
+                          "/addTile", [])
+            for i in range(2600)
+        ]
+        write_parquet(content_rows, self.content, CONTENT_COLUMNS)
+        write_parquet(history_rows, self.history, HISTORY_COLUMNS)
+        build_population.main()
+        good_size = os.path.getsize(self.out)
+        self.assertGreater(good_size, 0)
+
+        # A bad rebuild: history.parquet truncated to almost nothing, the
+        # exact shape of the incident docs/recipes/README.md describes.
+        write_parquet(history_rows[:5], self.history, HISTORY_COLUMNS)
+        with self.assertRaises(SystemExit):
+            build_population.main()
+
+        # The previous good artifact must still be there, unchanged.
+        self.assertTrue(os.path.exists(self.out))
+        self.assertEqual(os.path.getsize(self.out), good_size)
+        rows = lib.query(
+            "SELECT count(*) AS n FROM read_parquet('%s')" % self.out)
+        self.assertEqual(rows[0]["n"], 2600)
+
+
 class TestPopulation(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp()

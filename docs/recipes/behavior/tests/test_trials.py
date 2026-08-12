@@ -9,6 +9,9 @@ from fixtures import CONTENT_COLUMNS, HISTORY_COLUMNS, history_entry, write_parq
 
 SET_VALUE = "/content/sharedModelMap/sm1/sharedModel/variables/2/setValue"
 VALUE_PATH = "/content/sharedModelMap/sm1/sharedModel/variables/2/value"
+# A second, distinct Simulator variable -- e.g. a document with two sliders.
+SET_VALUE_B = "/content/sharedModelMap/sm1/sharedModel/variables/9/setValue"
+VALUE_PATH_B = "/content/sharedModelMap/sm1/sharedModel/variables/9/value"
 
 
 class TestTrials(unittest.TestCase):
@@ -85,6 +88,51 @@ class TestTrials(unittest.TestCase):
         ])
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["n_changes"], 3)
+
+    def test_two_interleaved_constant_variables_produce_no_phantom_trial(self):
+        """Finding 3 regression. Without partitioning by variable, `seq`
+        lags across BOTH variables ordered only by time: alternating rows
+        from two constant variables (0, 100, 0, 100, ...) look like constant
+        change even though neither variable ever actually moved."""
+        entries = []
+        for i in range(6):
+            created = "2025-01-01 10:00:%02d" % i
+            if i % 2 == 0:
+                entries.append(history_entry(
+                    "d1", "eA%d" % i, i, created, SET_VALUE,
+                    [{"op": "replace", "path": VALUE_PATH, "value": 0}]))
+            else:
+                entries.append(history_entry(
+                    "d1", "eB%d" % i, i, created, SET_VALUE_B,
+                    [{"op": "replace", "path": VALUE_PATH_B, "value": 100}]))
+        write_parquet(entries, self.history, HISTORY_COLUMNS)
+        build_population.build(self.content, self.history, self.pop)
+        build_trials.build(self.history, self.pop, self.out)
+        rows = lib.query(
+            "SELECT trial_id, n_changes FROM read_parquet('%s')" % self.out)
+        self.assertEqual(rows, [])
+
+    def test_two_interleaved_variables_are_detected_as_separate_trials(self):
+        """One variable actually changes while a second, unrelated variable
+        is interleaved and constant. Partitioning by variable must credit
+        the change to its own trial rather than smearing it across both."""
+        entries = []
+        for i, v in enumerate([0, 10, 20]):
+            entries.append(history_entry(
+                "d1", "eA%d" % i, 2 * i,
+                "2025-01-01 10:00:%02d" % (2 * i), SET_VALUE,
+                [{"op": "replace", "path": VALUE_PATH, "value": v}]))
+        for i in range(3):
+            entries.append(history_entry(
+                "d1", "eB%d" % i, 2 * i + 1,
+                "2025-01-01 10:00:%02d" % (2 * i + 1), SET_VALUE_B,
+                [{"op": "replace", "path": VALUE_PATH_B, "value": 100}]))
+        write_parquet(entries, self.history, HISTORY_COLUMNS)
+        build_population.build(self.content, self.history, self.pop)
+        build_trials.build(self.history, self.pop, self.out)
+        rows = lib.query(
+            "SELECT n_changes FROM read_parquet('%s') ORDER BY started" % self.out)
+        self.assertEqual(rows, [{"n_changes": 2}])
 
     def test_trial_id_is_written_as_bigint(self):
         """sum() over an INTEGER yields HUGEINT, which Parquet cannot store, so
