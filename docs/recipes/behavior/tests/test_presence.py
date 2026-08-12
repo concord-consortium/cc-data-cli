@@ -60,6 +60,38 @@ class TestPresence(unittest.TestCase):
         ]))
         self.assertFalse(rows[0]["rate_coarse"])
 
+    def test_interval_id_is_written_as_bigint(self):
+        """sum(is_new) OVER (...) over an INTEGER is HUGEINT, which parquet
+        has no type for -- COPY silently downcasts it to DOUBLE unless the
+        window function's result is cast back to BIGINT before writing."""
+        self._run(self._ticks([
+            "2025-01-01 10:00:00", "2025-01-01 10:00:01", "2025-01-01 10:00:02",
+        ]))
+        cols = lib.query("DESCRIBE SELECT * FROM read_parquet('%s')" % self.out)
+        by_name = {c["column_name"]: c["column_type"] for c in cols}
+        self.assertEqual(by_name["interval_id"], "BIGINT")
+
+    def test_a_sparse_absence_still_splits_even_though_it_inflates_the_median(self):
+        """Reviewer-found bug: with only two gaps, one of them the absence
+        itself, `median(gap_ms)` is dominated by the absence -- a naive
+        threshold of 6x that median then exceeds the absence and never
+        splits. Measuring the rate only over gaps that could plausibly be
+        real ticks (<= 90s) fixes this."""
+        rows = self._run(self._ticks([
+            "2025-01-01 10:00:00", "2025-01-01 10:00:01",
+            # 10-minute silence: the document was closed
+            "2025-01-01 10:10:02",
+        ]))
+        self.assertEqual(len(rows), 2)
+
+    def test_a_single_tick_interval_is_not_marked_coarse(self):
+        """With no positive gap to measure, median_tick_ms is NULL and a
+        naive `median_tick_ms > coarse` comparison yields NULL, not FALSE."""
+        rows = self._run(self._ticks(["2025-01-01 10:00:00"]))
+        self.assertEqual(len(rows), 1)
+        self.assertFalse(rows[0]["rate_coarse"])
+        self.assertIsNotNone(rows[0]["rate_coarse"])
+
 
 if __name__ == "__main__":
     unittest.main()

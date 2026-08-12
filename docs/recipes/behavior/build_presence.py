@@ -23,9 +23,13 @@ import os
 
 import lib
 
-FLOOR_MS = 60000    # never split on a gap shorter than this
-MULTIPLIER = 6      # ... or shorter than this many expected ticks
-COARSE_MS = 15000   # above this median rate, presence resolution is poor
+FLOOR_MS = 60000        # never split on a gap shorter than this
+MULTIPLIER = 6          # ... or shorter than this many expected ticks
+COARSE_MS = 15000       # above this median rate, presence resolution is poor
+RATE_CEILING_MS = 90000 # gaps above this (60s max rate + jitter) cannot be
+                        # real ticks -- excluding them from the rate keeps an
+                        # absence from inflating the threshold that is
+                        # supposed to detect it
 
 SQL = """
 COPY (
@@ -46,7 +50,7 @@ COPY (
   ),
   rate AS (
     SELECT doc_id, tile_id, median(gap_ms) AS median_tick_ms
-    FROM gapped WHERE gap_ms > 0
+    FROM gapped WHERE gap_ms > 0 AND gap_ms <= {rate_ceiling}
     GROUP BY doc_id, tile_id
   ),
   marked AS (
@@ -60,8 +64,9 @@ COPY (
   ),
   grouped AS (
     SELECT *,
-      sum(is_new) OVER (PARTITION BY doc_id, tile_id ORDER BY created
-                        ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS interval_id
+      CAST(sum(is_new) OVER (PARTITION BY doc_id, tile_id ORDER BY created
+                        ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+           AS BIGINT) AS interval_id
     FROM marked
   )
   SELECT doc_id, tile_id, interval_id,
@@ -69,7 +74,7 @@ COPY (
          max(created) AS ended,
          count(*) AS n_ticks,
          any_value(median_tick_ms) AS median_tick_ms,
-         (any_value(median_tick_ms) > {coarse}) AS rate_coarse
+         coalesce(any_value(median_tick_ms) > {coarse}, FALSE) AS rate_coarse
   FROM grouped
   GROUP BY doc_id, tile_id, interval_id
 ) TO '{out}' (FORMAT parquet, COMPRESSION zstd);
@@ -80,7 +85,8 @@ def build(history, population, out):
     lib.require_file(history)
     lib.require_file(population)
     lib.run_sql(SQL.format(history=history, population=population, out=out,
-                           floor=FLOOR_MS, mult=MULTIPLIER, coarse=COARSE_MS))
+                           floor=FLOOR_MS, mult=MULTIPLIER, coarse=COARSE_MS,
+                           rate_ceiling=RATE_CEILING_MS))
 
 
 def main():
