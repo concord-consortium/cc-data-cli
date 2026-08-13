@@ -13,14 +13,21 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 IN="content.jsonl"
+META="metadata.jsonl"
 OUT="content.parquet"
 
 [ -f "$IN" ] || { echo "no $IN" >&2; exit 1; }
+# The Firestore metadata is optional so this script still works before
+# download-metadata.ts has been run; the offering columns come out NULL.
+[ -f "$META" ] || echo "note: no $META -- offering_id will be null (run download-metadata.ts)" >&2
 
 echo "== building $OUT =="
 duckdb -c "
 COPY (
-  SELECT * FROM read_json('${IN}',
+  SELECT c.*,
+         m.offering_id, m.rtdb_offering_id, m.fs_investigation, m.fs_problem,
+         m.fs_unit, m.visibility, m.doc_kind, m.network
+  FROM read_json('${IN}',
     format = 'newline_delimited',
     columns = {
       doc_id: 'VARCHAR', doc_key: 'VARCHAR', uid: 'VARCHAR',
@@ -33,9 +40,36 @@ COPY (
       tile_type_counts: 'JSON', n_dataflow_tiles: 'BIGINT', n_rows: 'BIGINT',
       n_shared_models: 'BIGINT', n_annotations: 'BIGINT',
       content_json: 'VARCHAR'
-    })
+    }) c
+  -- LEFT JOIN, and metadata.jsonl is one row per doc_key (asserted below), so
+  -- the row count cannot change. \`kind\` is renamed \`doc_kind\` to keep it
+  -- clear of the episode 'kind' used in the behaviour recipes.
+  LEFT JOIN (
+    SELECT doc_key, offering_id, rtdb_offering_id, fs_investigation, fs_problem,
+           fs_unit, visibility, kind AS doc_kind, network
+    FROM read_json('${META}',
+      format = 'newline_delimited',
+      columns = {
+        doc_key: 'VARCHAR', fs_doc_id: 'VARCHAR', offering_id: 'VARCHAR',
+        fs_unit: 'VARCHAR', fs_investigation: 'VARCHAR', fs_problem: 'VARCHAR',
+        fs_context_id: 'VARCHAR', fs_uid: 'VARCHAR', fs_type: 'VARCHAR',
+        network: 'VARCHAR', visibility: 'VARCHAR', kind: 'VARCHAR',
+        strategies: 'VARCHAR[]', n_matches: 'BIGINT',
+        rtdb_offering_id: 'VARCHAR', rtdb_metadata_found: 'BOOLEAN',
+        found: 'BOOLEAN'
+      })
+  ) m USING (doc_key)
 ) TO '${OUT}' (FORMAT parquet, COMPRESSION zstd);
 "
+
+if [ -f "$META" ]; then
+  meta_rows=$(wc -l < "$META" | tr -d ' ')
+  meta_keys=$(duckdb -noheader -list -c "SELECT count(DISTINCT doc_key) FROM read_json('${META}', format='newline_delimited', columns={doc_key: 'VARCHAR'});")
+  if [ "$meta_rows" != "$meta_keys" ]; then
+    echo "MISMATCH: $META has $meta_rows rows but $meta_keys distinct keys -- the join would fan out" >&2
+    exit 1
+  fi
+fi
 
 echo
 echo "== verifying =="

@@ -40,7 +40,7 @@ paragraph here:
 | Which units/problems use a given tile type | `clue-curriculum` repo + CLUE's `curriculum-config.json` | public GitHub read | [Curriculum: tile usage](#recipe-curriculum-tile-usage) | **absent** — out of scope; `cc-data` knows nothing about CLUE curriculum |
 | Portal classes that ran a given CLUE assignment | Portal MySQL (`portal` db) via the Rails app on the production ECS cluster | AWS IAM + SSH to an ECS instance + `sudo docker` | [Portal: classes that ran an assignment](#recipe-portal-classes-that-ran-an-assignment) | **absent** — no portal DB access; `reports list` only shows report runs you authored |
 | CLUE log events (clickstream) | Athena log database, directly (`logs_by_app_and_secure_key`), or via a `student-actions-with-metadata` run on the report server | direct: AWS IAM + portal DB for secure keys. Via report server: login to create the run; API token to download | [CLUE log events](#recipe-clue-log-events) | **partial**, now confirmed — CLUE events do appear (verified: every row of a real run had `application: CLUE`). `cc-data` can download such a run but cannot create one; creation is a LiveView form, not an API. Runs over a few hundred learners spanning several school years cannot be completed at all — see [report-service issues](report-service-log-query-issues.md). |
-| Student document metadata (find documents, incl. by tile type) | Firestore `authed/learn_concord_org/documents` in `collaborative-learning-ec215` | Firebase service account for that project | [CLUE documents: finding them](#recipe-clue-documents-finding-them) | **absent** — no Firestore or RTDB client exists anywhere in the CLI; every fetch path goes through the report server's HTTP API. |
+| Student document metadata (find documents, incl. by tile type; offering id, visibility, kind) | Firestore `authed/learn_concord_org/documents` in `collaborative-learning-ec215` | Firebase service account for that project | [CLUE documents: finding them](#recipe-clue-documents-finding-them), [metadata](#recipe-clue-documents-metadata) | **absent from the CLI** — every `cc-data` fetch path goes through the report server's HTTP API. Pulled instead by `download-metadata.ts`, run from the CLUE repo's `scripts/` where the service account lives. |
 | Student document *content* | Firebase RTDB, `/authed/portals/learn_concord_org/classes/{classHash}/users/{uid}/documents/{docKey}` | same service account | [CLUE document content](#recipe-clue-document-content) | **absent** — same reason |
 | Document history entries | Firestore `authed/learn_concord_org/documents/{docId}/history` | same Firebase service account | [CLUE document history](#recipe-clue-document-history) | **absent** — see the terminology note above; `cc-data get history` is a different corpus entirely. |
 | History of the code, deployments, and databases that produced the data | nowhere yet — see [below](#a-missing-data-source-the-history-of-the-system-itself) | institutional memory | — | **absent**, and not obviously `cc-data`'s job |
@@ -86,7 +86,11 @@ duckdb -c "SELECT count(*) FROM 'local-data/clue-documents/content.parquet';"
 `dataflow_tile_deleted`, `found`, `change_count`, `version`, `self_uid`,
 `self_doc_key`, `self_class_hash`, `parse_ok`, `n_tiles`, `tile_types[]`,
 `tile_type_counts` (JSON), `n_dataflow_tiles`, `n_rows`, `n_shared_models`,
-`n_annotations`, `content_json`.
+`n_annotations`, `content_json`, plus the Firestore metadata columns
+`offering_id`, `fs_unit`, `fs_investigation`, `fs_problem`, `visibility`,
+`doc_kind`, `network` (see [document metadata](#recipe-clue-documents-metadata);
+`fs_*` are the Firestore values, kept distinct from the columns of the same
+name derived elsewhere).
 
 **`history.parquet`** — `doc_id`, `doc_uid`, `portal_class_id`, `unit`,
 `investigation`, `problem`, `entry_id`, `idx`, `prev_entry_id`, `created`,
@@ -341,12 +345,22 @@ question without joining through `Portal::Offering`.
 **Identity:** a result row is `(class_id, runnable_id)`. A class appears once per
 activity it ran, so a distinct-class count must dedupe on `class_id`.
 
-**Not yet captured: the offering id.** "Offering" is the portal's name for an
-assignment — a specific runnable assigned to a specific class — and its id is the
-key several other systems use to locate a class's data. `report_learners` already
-carries `offering_id`, so adding it is a one-line change to the row hash in
-`find_dataflow_classes.rb`; it was left out only because nothing needed it yet.
-Add it the moment a downstream lookup asks for an assignment rather than a class.
+**The offering id.** "Offering" is the portal's name for an assignment — a
+specific runnable assigned to a specific class — and its id is the key several
+other systems use to locate a class's data. It is now needed, because a CLUE
+replay URL will not launch without it (see
+[CLUE documents: metadata](#recipe-clue-documents-metadata)), and it is
+captured from two places already:
+
+- The **RTDB** document metadata node carries `offeringId` for 3,784 of 4,674
+  documents — every document that belongs to an offering at all.
+- Firestore document metadata carries the same field, but it was added
+  recently, so only 177 documents have it.
+- The log events carry `offering_id` per document.
+
+All three agree wherever they overlap (RTDB vs logs: 2,591 comparisons, 0
+conflicts). The RTDB alone resolves every document in the behaviour corpus
+except one, which has no `portal_class_id` at all.
 
 **Sample row** (values redacted):
 
@@ -677,6 +691,60 @@ are `Text` (3,132), `Table` (1,208), `Image` (664) and `Simulator` (590).
 
 `changeCount` is null on both publication types — they are snapshots, so there
 is no edit counter. Use it as an activity measure only on live documents.
+
+<a id="recipe-clue-documents-metadata"></a>
+### Recipe: CLUE document metadata
+
+**Question it answers:** what the system knows *about* a document — which
+offering and problem it belongs to, its visibility, its kind — as opposed to
+what it contains.
+
+**Metadata lives in two places, and the RTDB one is the complete one.**
+
+- **RTDB**, at
+  `/authed/portals/learn_concord_org/classes/{contextId}/users/{uid}/documentMetadata/{key}`
+  — a node separate from the content node at the sibling `documents/{key}`.
+  This carries `offeringId` on **3,784 of 4,674** documents.
+- **Firestore**, at `authed/learn_concord_org/documents`, one document per
+  `{network}_{key}`. Its `offeringId` was added late, so only **177**
+  documents have it.
+
+`download-metadata.ts` pulls both into `metadata.jsonl`, and
+`build-content-parquet.sh` joins them into `content.parquet` so every document
+is still one row (`rtdb_offering_id` and `offering_id` respectively).
+
+**Do not trust `DocumentDocument` in `src/lib/firestore-schema.ts`.** That
+interface omits fields the runtime actually writes — `offeringId` among them.
+`DocumentMetadataModel` in `src/models/document/document-metadata-model.ts` is
+the accurate list: `offeringId`, `investigation`, `problem`, `unit`,
+`visibility`, `kind`, `strategies`, `lastHistoryEntry`. Reading the schema
+interface instead will tell you a field does not exist when it does. The
+CLUE repo's own `find-documents-missing-metadata.ts` reads the offering id
+from the RTDB path above, which is the clearest evidence of where it lives.
+
+**The ~890 documents with no offering id are correct to have none.** They are
+`personal`, `publication` and similar types, which belong to no single
+offering.
+
+**Three sources, and they never disagree.** The log events carry `offering_id`
+per document too; across the 2,591 documents where both the RTDB and the logs
+have one, they agree 2,591 times with zero conflicts. Firestore agrees as well
+where present. Prefer the RTDB, then Firestore, then the logs — all three are
+per-document facts.
+
+**Do not infer the offering from sibling documents.** An earlier version of
+the behaviour pipeline resolved missing ids by finding another document in the
+same class working the same problem. It is unambiguous in the logs (all 217
+`(class_id, unit, problem)` triples map to one offering) but it is still a
+guess, and once the RTDB source was found it resolved nothing extra. A missing
+link beats a link to the wrong offering.
+
+**The `offerings` collection is a cross-check, not a source.**
+`authed/learn_concord_org/offerings` maps `(context_id, unit, problem)` to an
+offering id for 4,234 offerings across 323 classes, and confirms the
+log-derived ids exactly (98 overlaps, 0 conflicts). But it covers only 3 of
+the 54 classes in this Dataflow corpus, so it resolves nothing on its own. It
+is pulled to `offerings.jsonl` for that validation and nothing else.
 
 ### Recipe: CLUE log events
 
