@@ -59,10 +59,19 @@ gaps should shorten the tail noticeably. It does not — p50 and p90 move by a f
 percent, not by an order of magnitude. Whatever generates the gap distribution,
 it is the same process whether or not the student is mid-session.
 
-**The conclusion this supports:** pause length is not a usable signal for "the
-student stopped editing to look at the result." Any detector built on pause
-duration alone — including thresholds this pipeline calibrated and used — is
-reading noise where it hopes to read intent.
+**The conclusion this supports is narrower than it first appears, and worth
+stating precisely.** The *unlabelled* distribution cannot separate itself: no
+threshold can be read off the shape above, because the shape has no feature to
+read. That is a real limit, and it is why a detector that picks a pause
+threshold by looking for a valley will pick an arbitrary number.
+
+It does not mean pause length carries no information. Given an external label
+for which gaps fall inside one edit-then-check cycle, the same gaps separate
+sharply — median 4.2s within a cycle against 98.4s across one (§3, and
+`build_cycles.py`, which uses that separation to set its burst threshold). The
+signal is there; what is missing is the boundary that would label it. A
+run/pause control would supply exactly that label, for every document rather
+than for the minority where one can be inferred.
 
 ## 2. The cause is structural, not a measurement gap
 
@@ -81,25 +90,68 @@ evidence was never recorded.
 
 ## 3. A trial is detectable only where an input changes
 
-The one place the pipeline *can* see something boundary-like is where a
-Simulator tile drives program input: if the input value is constant, then
-changes, then goes constant again, that shape ("static → changing → static") is
-a real, recoverable signal, independent of pause length. This is what
-`build_trials.py` finds.
+The one place the pipeline *can* see something boundary-like is where the
+program's input goes constant, then changes, then goes constant again. That
+shape ("static → changing → static") is a real, recoverable signal, independent
+of pause length. Two detectors find it, on two different kinds of input.
 
-Of the 506 documents in the analysis population that contain a Simulator tile,
-405 (80.0%) show at least one such trial. Across those 405 documents there are
-3,821 trials in total. 1,799 of them (47.1%) begin within 120 seconds of a
-program-structure edit — the pattern of "change the program, then work the
-input to see what happens," which is close to the observable proxy for
-"finished editing, now checking."
+**A Simulator variable, driven by the mouse** (`build_trials.py`). Of the 506
+documents in the analysis population that contain a Simulator tile, 405 (80.0%)
+show at least one such trial, 3,821 trials in all. 1,799 of them (47.1%) begin
+within 120 seconds of a program-structure edit — the pattern of "change the
+program, then work the input to see what happens," which is close to the
+observable proxy for "finished editing, now checking."
 
-**Stated against the whole population this pipeline works over, not just the
-Simulator subset:** 2,727 documents contain a program edit at all
-(`report_documentation.py`, live run). The 405 documents with a detected trial
-are 14.9% of that population — call it roughly one document in seven. For the
-other 85%, this pipeline has no boundary-detecting signal at all, because there
-is no varying input to watch.
+**A sensor, driven by the student's body** (`build_sensor_trials.py`). Sensor
+readings arrive as program ticks rather than as document edits, and a sensor is
+noisy where a slider is exact, so this detector compares a rolling range
+against each node's own scale instead of testing values for equality. On
+sensors bound to a real device — an EMG being flexed, a pressure pad pressed —
+it finds 281 trials across 22 documents, median 5.3s and p90 20.4s. 170 of them
+(60.5%) follow a program edit within 120 seconds, a higher coupling rate than
+the Simulator's 47.1%.
+
+One confound applies here that does not apply to the Simulator. A student has
+one mouse and cannot drag a slider while editing, but they can flex one arm and
+work the mouse with the other, so an edit and a reading-change could be
+simultaneous rather than sequential. Measured, this is rare: 26 of the 281
+trials (9.3%) overlap an edit in time. Students do mostly stop editing before
+they flex.
+
+**The ceiling on this is instrumentation, not behaviour.** Per-tick node values
+are only written into document history for documents recent enough to record
+them — 273 of the 2,832 in the analysis population. For everyone else the
+readings were never saved, whatever the student did:
+
+| documents | count |
+|---|---|
+| in the analysis population | 2,832 |
+| …containing a Sensor node | 1,447 |
+| …with that Sensor bound to a device | 1,071 |
+| …and carrying `tickAndProcess` history | 52 |
+| …yielding at least one detected trial | 22 |
+
+The collapse from 1,071 to 52 is the missing recording, not missing students.
+
+**Stated against the whole population this pipeline works over:** 2,727
+documents contain a program edit at all (`report_documentation.py`, live run).
+405 have a Simulator trial and 22 have a physical-sensor trial; 20 of the 22
+are documents the Simulator detector never saw. Together they cover 425
+documents, 15.6% of that population — call it roughly one document in six. For
+the other 84%, this pipeline has no boundary-detecting signal at all, because
+no varying input was recorded to watch.
+
+**These trials are also the only usable anchor in the corpus.** Because a trial
+marks a moment the student stopped editing and exercised the program, edits
+falling between two consecutive trials are one edit-then-check cycle by
+construction. That labels the gaps §1 could not separate: across 1,364 such
+spans in 303 documents, gaps *within* a cycle have a median of 4.2s, while a
+gap that a trial falls *inside* has a median of 98.4s. The pipeline's burst
+threshold is calibrated on that separation rather than guessed
+(`calibrate_burst_gap.py`, `burst_calibration.md`). The limitation is the same
+one as everywhere else in this section — the anchor exists only in documents
+that have a detectable trial, so a threshold set on 303 documents is assumed,
+not shown, to describe the other ~2,500.
 
 ## 4. For output-side work, no boundary exists even in principle
 
@@ -120,7 +172,7 @@ turn every one of the above into a directly recorded fact instead of an
 inference:
 
 - The edit/observe boundary would exist for **every** document with a program,
-  not only the ~15% where a varying input happens to reveal it.
+  not only the ~16% where a varying input happens to be recorded and reveal it.
 - The multi-stage inference chain this pipeline needed to approximate that
   boundary — classifying patches into semantic operations, reconstructing log
   sessions from raw events, inferring presence from tick cadence, detecting
@@ -141,25 +193,88 @@ free instrumentation win, and it changes the learning experience for every
 student, not just the ones being studied.
 
 It is also worth being honest that the current pipeline is not blind without
-it. The Simulator subpopulation — the 405 documents discussed in §3 — already
-yields a usable trial signal from existing data, with no interface change and
-no added friction for those students. Nearly half of its trials (47.1%) line up
-with a preceding program edit inside a two-minute window, which is a real,
+it. The 425 documents discussed in §3 already yield a usable trial signal from
+existing data, with no interface change and no added friction for those
+students — 47.1% of Simulator trials and 60.5% of physical-sensor trials line
+up with a preceding program edit inside a two-minute window, which is a real,
 actionable proxy for "student finished editing, then checked the result." Any
 argument for friction has to weigh its cost against extending coverage from
-that ~15% of documents to the rest — not against having no signal at all.
+that ~16% of documents to the rest — not against having no signal at all.
+
+**And part of that gap is a recording gap, which is cheaper to close than an
+interaction is to change.** 1,071 documents in the population have a sensor
+bound to a device, but only 52 recorded the tick values that make its readings
+visible. Widening that recording would extend the existing detector to
+documents whose students already did the thing worth measuring, without asking
+any student to press anything new. It would not help output-side programs (§4),
+and it would not turn a proxy into a stated intention — but it should be
+priced in before friction is, because it is the same evidence at lower cost.
 
 **The claim this document supports is narrower than "friction will fix
 learning."** It is that the behaviour of interest — systematic edit-then-check
 versus rapid trial-and-error — is largely unobservable today outside a minority
 of documents, for structural reasons a better detector cannot work around, and
 that an explicit run/pause control is the direct way to make it observable
-everywhere rather than the ~15% where an input happens to vary.
+everywhere rather than the ~16% where a varying input happens to be recorded.
+
+## 7. A randomised subset, rather than friction for everyone
+
+The choice is not between friction for all students and friction for none.
+The run/pause rule could apply to a randomly chosen subset — of classes, or of
+students — leaving everyone else on the current continuous-evaluation
+interface. This is worth considering on its own merits and not only as a
+cheaper compromise, because as an experiment it answers questions that
+universal friction cannot.
+
+**It fixes the generalisation problem this whole document has.** Every
+threshold here is calibrated on documents that happen to expose a boundary:
+the 425 with a varying recorded input (§3), and within those, the 268 used to
+anchor the burst threshold. Those documents are not a random sample — they are
+the ones with a Simulator tile or a bound sensor. A randomised arm produces
+exact edit/run transitions on documents chosen at random, which is the only
+way to know whether what has been calibrated on that minority describes
+everyone else.
+
+**It measures friction's own effect, which universal friction cannot.** With
+the control everywhere, you learn what students do under friction and have
+nothing to compare it against; any change in the behaviour is confounded with
+the change in the interface. Randomised, the difference between arms *is* the
+measurement.
+
+**It validates the inferred detector directly.** The treatment arm records the
+edit/observe boundary explicitly. The control arm has only the inference chain
+described in §2. Running the detector on the control arm and asking whether it
+recovers what the treatment arm states outright is the calibration this
+pipeline actually needs, and no amount of additional inference substitutes for
+it.
+
+**Design cautions.** Randomising per session would let a student meet
+different rules on different days, which confounds within-student comparison
+and is likely to be confusing to the student; randomising by class or by
+student is cleaner, at a cost in sample size. The arms have to be comparable
+on the activity being measured, so the treated arm needs enough sessions to
+span the same range of work rather than a token slice. And this is more
+product work than universal friction, not less — two behaviours to build,
+document, and support, rather than one.
+
+**What it does not change.** Treated students still bear the full interaction
+cost described in §6; the saving is that untreated students do not. Output-side
+programs (§4) become observable only within the treated arm. And a smaller
+treated population means less statistical power than universal friction would
+give, which is the price of keeping a control.
 
 ## Instrumentation recommendations
 
-Two logging gaps came up while building this pipeline and share the same
+Three logging gaps came up while building this pipeline and share the same
 evidence base, independent of whether run/pause friction is added:
+
+- **Record per-tick node values for every program, not only recent ones.** A
+  sensor's readings are the only evidence of what the student physically did,
+  and they exist in history only where `tickAndProcess` entries do: 52 of the
+  1,071 population documents whose sensor is bound to a device (§3). This is
+  the single largest recoverable gap in the evidence base, and unlike the other
+  two it needs no new event type — only that the values already computed on
+  every tick are written down.
 
 - **Log `dividerPosition` alongside `navTabsOpen`.** The log `extras` field is
   populated on 100% of rows and already carries `navTabsOpen`, but that flag
