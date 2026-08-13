@@ -1,6 +1,7 @@
 import os
 import tempfile
 import unittest
+from urllib.parse import parse_qs, urlparse
 
 import build_candidates
 import lib
@@ -38,10 +39,69 @@ class TestClassifyCycle(unittest.TestCase):
 
 
 class TestReplayUrl(unittest.TestCase):
+    def _params(self, url):
+        return parse_qs(urlparse(url).query)
+
     def test_builds_a_clue_history_deep_link(self):
-        url = build_candidates.replay_url("dockey1", "entry7")
-        self.assertIn("studentDocument=dockey1", url)
-        self.assertIn("studentDocumentHistoryId=entry7", url)
+        url = build_candidates.replay_url("dockey1", "entry7", "72536", "166319")
+        p = self._params(url)
+        self.assertEqual(p["studentDocument"], ["dockey1"])
+        self.assertEqual(p["studentDocumentHistoryId"], ["entry7"])
+
+    def test_carries_every_parameter_clue_requires_to_launch(self):
+        """CLUE refuses the launch without these: authDomain starts the OAuth
+        redirect that logs the researcher in, and portal.ts throws outright on
+        a missing class or offering, or a reportType other than `offering`."""
+        p = self._params(
+            build_candidates.replay_url("dockey1", "entry7", "72536", "166319"))
+        self.assertEqual(p["authDomain"], [build_candidates.PORTAL])
+        self.assertEqual(p["researcher"], ["true"])
+        self.assertEqual(p["reportType"], ["offering"])
+        self.assertEqual(p["class"],
+                         ["%s/api/v1/classes/72536" % build_candidates.PORTAL])
+        self.assertEqual(p["offering"],
+                         ["%s/api/v1/offerings/166319" % build_candidates.PORTAL])
+
+    def test_omits_unit_and_problem(self):
+        """With `offering` present CLUE reads both from the offering's
+        activity_url and ignores the params, so sending them is misleading."""
+        p = self._params(
+            build_candidates.replay_url("dockey1", "entry7", "72536", "166319"))
+        self.assertNotIn("unit", p)
+        self.assertNotIn("problem", p)
+
+    def test_no_url_without_an_offering_id(self):
+        """Better no link than one that lands on 'Missing offering parameter!'"""
+        self.assertIsNone(
+            build_candidates.replay_url("dockey1", "entry7", "72536", None))
+
+    def test_no_url_without_a_class_id(self):
+        self.assertIsNone(
+            build_candidates.replay_url("dockey1", "entry7", None, "166319"))
+
+    def test_document_keys_are_escaped(self):
+        """Document keys are Firebase push ids and can contain `-` and `_`,
+        but the portal URLs in the same query string carry `:` and `/`."""
+        url = build_candidates.replay_url("dockey1", "entry7", "72536", "166319")
+        self.assertNotIn("https://learn.concord.org/api", url.split("?", 1)[1])
+        self.assertEqual(self._params(url)["class"],
+                         ["%s/api/v1/classes/72536" % build_candidates.PORTAL])
+
+
+class TestEpisodeDate(unittest.TestCase):
+    def test_takes_the_day_the_episode_started(self):
+        self.assertEqual(
+            build_candidates.episode_date({"started": "2025-03-14 09:26:53"}),
+            "2025-03-14")
+
+    def test_handles_an_iso_t_separator(self):
+        self.assertEqual(
+            build_candidates.episode_date({"started": "2025-03-14T09:26:53"}),
+            "2025-03-14")
+
+    def test_a_missing_timestamp_does_not_break_the_row(self):
+        self.assertEqual(build_candidates.episode_date({}), "-")
+        self.assertEqual(build_candidates.episode_date({"started": None}), "-")
 
 
 CYCLE_COLUMNS = {

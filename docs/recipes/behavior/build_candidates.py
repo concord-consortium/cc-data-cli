@@ -14,6 +14,7 @@ unclassified cycles as a check that the phenomenon is not being missed.
 """
 import os
 from datetime import datetime
+from urllib.parse import urlencode
 
 import lib
 # The burst gap these cycles were built at, recorded in the review sheet
@@ -24,6 +25,10 @@ from build_cycles import BURST_GAP_S
 
 CLUE_BASE = os.environ.get(
     "CC_CLUE_BASE", "https://collaborative-learning.concord.org/branch/master/")
+# The portal these documents were authored through. `authed/learn_concord_org`
+# is the Firestore namespace the documents live in, which is derived from this
+# host, so it is not a guess.
+PORTAL = os.environ.get("CC_CLUE_PORTAL", "https://learn.concord.org")
 
 # A trial-and-error burst touches at least this many distinct targets.
 TE_TARGETS = 3
@@ -38,6 +43,7 @@ CANDIDATE_COLUMNS = {
     "kind": "VARCHAR", "n_cycles": "BIGINT", "purity": "DOUBLE",
     "span_s": "DOUBLE", "started": "TIMESTAMP", "ended": "TIMESTAMP",
     "first_entry_id": "VARCHAR", "replay_url": "VARCHAR", "stratum": "VARCHAR",
+    "offering_source": "VARCHAR",
 }
 
 
@@ -72,9 +78,116 @@ def classify_cycle(row):
     return "unclassified"
 
 
-def replay_url(doc_key, entry_id):
-    return "%s?studentDocument=%s&studentDocumentHistoryId=%s" % (
-        CLUE_BASE, doc_key, entry_id)
+def replay_url(doc_key, entry_id, class_id, offering_id):
+    """A CLUE URL that opens someone else's document at a point in its history.
+
+    `studentDocument` alone is not enough. CLUE has to authenticate you against
+    the portal and place you in the class the document belongs to, or
+    `fetchFullDocument` has nothing to look in. Five more parameters do that,
+    and CLUE refuses the launch without them (`src/models/stores/portal.ts`:
+    "Missing class parameter!", "Missing offering parameter!", and "Unable to
+    get classInfoUrl or offeringId"):
+
+      authDomain    kicks off the OAuth2 redirect to the portal, which is what
+                    logs you in. This is the parameter whose absence made every
+                    previously generated link fail.
+      researcher    authenticate as a researcher rather than needing to appear
+                    in the class roster as a teacher or student
+      reportType    must be exactly `offering`; CLUE rejects anything else
+      class         portal class info URL
+      offering      portal offering URL
+
+    `unit` and `problem` are deliberately absent: when `offering` is present
+    CLUE reads both from the offering's activity_url and ignores the params
+    (`getProblemIdForAuthenticatedUser` in src/lib/portal-api.ts).
+
+    Returns None when the offering id is unknown, rather than a URL that will
+    fail on arrival.
+    """
+    if not class_id or not offering_id:
+        return None
+    params = urlencode({
+        "class": "%s/api/v1/classes/%s" % (PORTAL, class_id),
+        "offering": "%s/api/v1/offerings/%s" % (PORTAL, offering_id),
+        "reportType": "offering",
+        "authDomain": PORTAL,
+        "researcher": "true",
+        "studentDocument": doc_key,
+        "studentDocumentHistoryId": entry_id,
+    })
+    return "%s?%s" % (CLUE_BASE.rstrip("/") + "/", params)
+
+
+def episode_date(ep):
+    """The day the episode started, YYYY-MM-DD.
+
+    This is the client clock -- history entries carry the timestamp of the
+    machine the student was working on, not the server's. Documents whose
+    clocks run backwards are already excluded upstream (`clock_suspect`), so
+    these dates are consistent within a document, but a device set to the
+    wrong date will report the wrong day here.
+    """
+    started = ep.get("started")
+    if not started:
+        return "-"
+    return str(started)[:10]
+
+
+PORTAL_IDS_SQL = """
+WITH pop AS (SELECT doc_id FROM read_parquet('{population}')),
+doc AS (
+  SELECT c.doc_id, c.doc_key, c.portal_class_id AS class_id,
+         c.rtdb_offering_id, c.offering_id
+  FROM read_parquet('{content}') c JOIN pop USING (doc_id)
+),
+-- Third source: the log events, which carry offering_id per document.
+by_key AS (
+  SELECT doc_key, min(offering_id) AS offering_id
+  FROM read_parquet('{logs}')
+  WHERE offering_id IS NOT NULL AND offering_id <> ''
+  GROUP BY doc_key
+)
+SELECT d.doc_id, d.doc_key, d.class_id,
+       coalesce(d.rtdb_offering_id, d.offering_id, k.offering_id) AS offering_id,
+       CASE WHEN d.rtdb_offering_id IS NOT NULL THEN 'rtdb'
+            WHEN d.offering_id IS NOT NULL THEN 'firestore'
+            WHEN k.offering_id IS NOT NULL THEN 'log-document'
+            ELSE 'none' END AS offering_source
+FROM doc d
+LEFT JOIN by_key k USING (doc_key)
+"""
+
+
+def _portal_ids(derived, content, logs):
+    """doc_id -> (doc_key, class_id, offering_id, offering_source).
+
+    The class id is on the document. The offering id has three sources, all
+    of them per-document facts rather than inferences, and none of them ever
+    disagree with each other on this corpus:
+
+      rtdb          `offeringId` on the RTDB metadata node, written when the
+                    document was created. The most complete by far: 3,784 of
+                    4,674 documents. The ~890 without it are `personal`,
+                    `publication` and similar documents, which belong to no
+                    single offering and correctly have none.
+      firestore     `offeringId` on the Firestore metadata document. The same
+                    value, but the field was added late, so only 177 documents
+                    carry it. Kept as a cross-check (0 conflicts with the RTDB).
+      log-document  `offering_id` on the document's log events. Also agrees
+                    (0 conflicts), and covers documents whose metadata nodes
+                    are missing.
+
+    An earlier version inferred the offering from other documents in the same
+    class working the same problem. That is dropped: it is a guess rather than
+    a fact, and once the RTDB source was found it resolved nothing extra. A
+    missing link is better than a link to the wrong offering.
+    """
+    rows = lib.query(PORTAL_IDS_SQL.format(
+        population=os.path.join(derived, "population.parquet"),
+        content=content, logs=logs))
+    return {r["doc_id"]: (r["doc_key"], r["class_id"], r["offering_id"],
+                          r["offering_source"])
+            for r in rows}
 
 
 def _episodes(cycles_path):
@@ -149,16 +262,19 @@ def main():
     cycles = os.path.join(derived, "cycles.parquet")
     lib.require_file(cycles)
 
-    keys = {r["doc_id"]: r["doc_key"] for r in lib.query(
-        "SELECT doc_id, doc_key FROM read_parquet('%s')"
-        % os.path.join(derived, "population.parquet"))}
+    p = lib.paths()
+    ids = _portal_ids(derived, p["content"], p["logs"])
 
     episodes = _episodes(cycles)
     for i, ep in enumerate(episodes):
         ep["episode_id"] = "ep%06d" % i
         ep["stratum"] = _stratum(ep)
-        ep["doc_key"] = keys.get(ep["doc_id"], ep["doc_id"])
-        ep["replay_url"] = replay_url(ep["doc_key"], ep["first_entry_id"])
+        doc_key, class_id, offering_id, source = ids.get(
+            ep["doc_id"], (ep["doc_id"], None, None, "none"))
+        ep["doc_key"] = doc_key
+        ep["offering_source"] = source
+        ep["replay_url"] = replay_url(doc_key, ep["first_entry_id"],
+                                      class_id, offering_id)
 
     out = os.path.join(derived, "candidates.parquet")
     lib.write_parquet(
@@ -169,6 +285,14 @@ def main():
           % (len(episodes),
              sum(1 for e in episodes if e["kind"] == "systematic"),
              sum(1 for e in episodes if e["kind"] == "trial_and_error")))
+    linkable = sum(1 for e in episodes if e["replay_url"])
+    by_source = {}
+    for e in episodes:
+        by_source[e["offering_source"]] = by_source.get(e["offering_source"], 0) + 1
+    print("replay links: %d of %d episodes" % (linkable, len(episodes)))
+    for src in ("rtdb", "firestore", "log-document", "none"):
+        if by_source.get(src):
+            print("  offering id from %-18s %5d" % (src, by_source[src]))
     print("wrote candidates.parquet")
 
     lines = ["# Review sheet", "",
@@ -179,6 +303,8 @@ def main():
              "Strata: **strong** = a long run, **boundary** = a short run near "
              "the threshold, **control** = a single cycle. Boundary and control "
              "rows matter most -- they are where the thresholds are wrong.", "",
+             "`date` is when the episode started, on the student's own device "
+             "clock -- history entries carry no server timestamp.", "",
              "Built at a burst gap of %.1fs, calibrated against trial-bounded "
              "cycles (see `build_cycles.py`). Composition rates still move with "
              "that number, and it is calibrated on the documents that have "
@@ -193,12 +319,18 @@ def main():
             if not picked:
                 continue
             lines += ["## %s — %s (%d shown)" % (kind, stratum, len(picked)), "",
-                      "| episode | unit/problem | cycles | replay | verdict | note |",
-                      "|---|---|---|---|---|---|"]
+                      "| episode | date | unit/problem | cycles | replay | "
+                      "verdict | note |",
+                      "|---|---|---|---|---|---|---|"]
             for e in picked:
-                lines.append("| %s | %s %s | %d | [replay](%s) |  |  |" % (
-                    e["episode_id"], e["unit"] or "-", e["problem"] or "-",
-                    e["n_cycles"], e["replay_url"]))
+                # No offering id means no launchable URL. Show the document key
+                # instead of a link that would fail on arrival.
+                replay = ("[replay](%s)" % e["replay_url"] if e["replay_url"]
+                          else "no offering id (`%s`)" % e["doc_key"])
+                lines.append("| %s | %s | %s %s | %d | %s |  |  |" % (
+                    e["episode_id"], episode_date(e),
+                    e["unit"] or "-", e["problem"] or "-",
+                    e["n_cycles"], replay))
             lines.append("")
 
     with open(os.path.join(derived, "review.md"), "w") as handle:
