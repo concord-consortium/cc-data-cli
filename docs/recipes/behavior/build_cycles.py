@@ -11,26 +11,74 @@ threshold. That is closer to CLUE-575's own wording anyway, which defines
 trial and error as changing blocks rapidly "without systematicity (one change
 at a time)".
 
-Two channels sit alongside composition:
-  trials    did the student exercise the program after this burst? (Task 5)
-  pause     what the three presence channels say about the following gap
+Three channels sit alongside the target count:
+  oscillation  did the student put something in and take it back out?
+  trials       did the student exercise the program after this burst? (Task 5)
+  pause        what the three presence channels say about the following gap
+
+`oscillation` is true when one target was both added and removed inside the
+same burst -- the student adding a node, then deleting it again, which is
+trial and error whatever the target count says. It is computed as
+|A| + |R| > |A union R|, which holds exactly when the added and removed sets
+intersect; `bool_or(add) AND bool_or(remove)` would instead fire when one
+target was added and a DIFFERENT one removed, which is ordinary editing.
+
+Two things about it are worth knowing, because build_candidates.py tests it
+FIRST and it therefore decides more trial-and-error labels than the target
+count does.
+
+It only sees structural add/remove. The design document also calls a parameter
+returned to a prior value oscillation -- setting a value to 5, then 9, then 5
+again -- and that half is NOT implemented. Parameter edits are 46,290 `replace`
+operations carrying no before/after value in edits.parquet, so detecting a
+revisit would mean re-reading patch values from history. A student who
+oscillates only on parameters is invisible to this flag.
+
+It is not, however, an artifact of the burst gap, which was the obvious worry
+when the gap moved from 5s to 25s. The raw rate does climb with the gap (22.4%
+of cycles at 5s, 40.4% at 25s), but almost all of that increase is overlap with
+the 3+-targets rule: the share of cycles oscillation labels that nothing else
+would have caught is 18.4%, 19.3% and 19.5% at 5s, 12s and 25s. Its independent
+contribution is stable.
 
 Pause classification joins ticks, log events, and carried-forward UI state.
 Documents with neither sessions nor ticks get `no_presence_data`, never
 `absent`: 1,939 of 2,677 documents have no ticks, and reading that as "the
 student left" would be inventing a finding from missing data.
 
-The burst gap is 5s, not thresholds.json's calibrated 32.91s p90. A 32.91s gap
-merges most of a session into single bursts (16,636 bursts corpus-wide, mean
-2.70 distinct targets) and destroys the composition signal; 5s keeps bursts at
-gesture scale (54,412 bursts, 67.1% single-target). Task 4 established there is
-no data-driven way to choose, so this is a judgement call and Task 8 says so.
+The burst gap is 25s, calibrated against trials as an external anchor rather
+than chosen. Task 4 concluded no data-driven choice was possible, having looked
+for a valley in the pooled gap distribution and found none; the gaps were
+unlabelled, so they were being asked to separate themselves. Trials supply the
+labels. Edits falling between two consecutive trials are one edit-then-check
+cycle by construction -- the student exercised the program, edited, exercised it
+again -- so every gap inside that span is a within-cycle gap, and a gap that a
+trial falls inside is an across-cycle gap. Measured over 1,364 such spans in
+303 documents: within-cycle gaps have a median of 4.2s, across-cycle gaps
+98.4s. Sweeping the threshold against both labelled classes puts the optimum on
+a flat plateau from 15s to 25s.
 
-`watch_min_s` moves with the burst-gap override, in main(). A pause must
-outlast `watch_min_s` before it can be classified `watching`; leaving it at
-the calibrated ~32s while the burst gap drops to 5s would force every pause
-shorter than ~32s to `present_unknown`, silently suppressing the `watching`
-evidence a single-target cycle needs to be called `systematic`.
+The earlier 5s value was a mistake, and the anchor shows it in two ways. A
+trial-bounded cycle was cut into a median of THREE bursts, and the composition
+it produced (67.1% single-target, 9.6% three-or-more) is close to the inverse
+of what the spans themselves show (20.4% single-target, 46.9% three-or-more,
+measured with no threshold involved). The 67.1% was fragmentation, not gesture
+scale. The failure mode feared at the long end -- bursts chaining across a
+boundary the student actually drew -- barely occurs: at 33s only 1.6% of bursts
+contain a trial.
+
+25s sits at the top of the plateau and is the shortest gap that reproduces the
+anchor's fragmentation (median one burst per trial-bounded cycle). It remains
+an override of thresholds.json's 32.91s p90, but a narrower one, and for a
+stated reason rather than a hunch.
+
+Every number above comes from `calibrate_burst_gap.py`, which writes
+`burst_calibration.md`. Re-run it rather than trusting this paragraph.
+
+`watch_min_s` moves with the burst gap, in main(). A pause must outlast
+`watch_min_s` before it can be classified `watching`, and a pause shorter than
+the burst gap cannot exist -- it would have been absorbed into the burst -- so
+the two are one setting, not two.
 """
 import json
 import os
@@ -40,8 +88,8 @@ import lib
 # A trial starting within this long of a burst ending is treated as that
 # burst's trial.
 TRIAL_WINDOW_S = 120
-# Composition needs gesture-scale bursts; see the docstring.
-BURST_GAP_S = 5.0
+# Anchored on trial-bounded cycles; see the docstring.
+BURST_GAP_S = 25.0
 
 SQL = """
 COPY (
@@ -161,7 +209,21 @@ COPY (
   has_sess AS (SELECT DISTINCT doc_id FROM sess),
   pres AS (SELECT doc_id, started, ended FROM read_parquet('{presence}')),
   has_pres AS (SELECT DISTINCT doc_id FROM pres),
-  tr AS (SELECT doc_id, started, n_changes FROM read_parquet('{trials}')),
+  -- Both trial detectors count. build_trials.py sees a Simulator variable
+  -- moving under the mouse; build_sensor_trials.py sees a sensor's readings
+  -- move, which for a physically-bound sensor is a gesture the first detector
+  -- cannot observe at all. Simulated-sensor trials are kept too: where a
+  -- Simulation tile drives a Sensor node, only 12 of those 33 documents also
+  -- appear in trials.parquet, so dropping them would discard 21 documents'
+  -- worth of evidence to avoid double-counting in 12. The double-count is
+  -- real but harmless here -- `trial_after` is a boolean, and `trial_changes`
+  -- takes a max() rather than a sum(), so an echoed gesture cannot inflate it.
+  tr AS (
+    SELECT doc_id, started, n_changes FROM read_parquet('{trials}')
+    UNION ALL
+    SELECT doc_id, started, n_ticks AS n_changes
+    FROM read_parquet('{sensor_trials}')
+  ),
   annotated AS (
     SELECT t.*,
       (t.doc_id IN (SELECT doc_id FROM has_sess)) AS logs_available,
@@ -229,11 +291,12 @@ COPY (
 """
 
 
-def build(edits, presence, trials, logs, thresholds, out):
-    for f in (edits, presence, trials, logs):
+def build(edits, presence, trials, sensor_trials, logs, thresholds, out):
+    for f in (edits, presence, trials, sensor_trials, logs):
         lib.require_file(f)
     lib.run_sql(SQL.format(
-        edits=edits, presence=presence, trials=trials, logs=logs, out=out,
+        edits=edits, presence=presence, trials=trials,
+        sensor_trials=sensor_trials, logs=logs, out=out,
         burst_gap_ms=int(thresholds.get("burst_gap_s", BURST_GAP_S) * 1000),
         watch_min_s=thresholds["watch_min_s"],
         watch_max_s=thresholds["watch_max_s"],
@@ -264,6 +327,7 @@ def main():
     build(os.path.join(derived, "edits.parquet"),
           os.path.join(derived, "presence.parquet"),
           os.path.join(derived, "trials.parquet"),
+          os.path.join(derived, "sensor_trials.parquet"),
           p["logs"], thresholds, tmp)
 
     rows = lib.query(

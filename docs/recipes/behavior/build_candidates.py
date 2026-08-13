@@ -16,16 +16,17 @@ import os
 from datetime import datetime
 
 import lib
+# The burst gap these cycles were built at, recorded in the review sheet
+# because composition rates move with it. Imported rather than restated: two
+# copies of the same constant drift, and the sheet would then report a gap the
+# cycles were not built at.
+from build_cycles import BURST_GAP_S
 
 CLUE_BASE = os.environ.get(
     "CC_CLUE_BASE", "https://collaborative-learning.concord.org/branch/master/")
 
 # A trial-and-error burst touches at least this many distinct targets.
 TE_TARGETS = 3
-# The burst gap these cycles were built at. Recorded in the review sheet
-# because composition rates move with it and Task 4 found no way to calibrate
-# it from the data.
-BURST_GAP_S = 5.0
 STRONG_CYCLES = 4      # episodes at least this long are "strong"
 BOUNDARY_CYCLES = 2    # episodes this short sit on the boundary
 PER_STRATUM = 15
@@ -47,6 +48,13 @@ def classify_cycle(row):
     does not separate: 118,054 gaps decay smoothly with no second peak. This is
     also closer to CLUE-575, which defines trial and error as changing blocks
     rapidly "without systematicity (one change at a time)".
+
+    Oscillation and undo are tested before the target count because they are
+    direct evidence rather than a proxy: putting something in and taking it
+    back out is trial and error even when only one target was touched, which
+    the count alone would read as systematic. That ordering makes oscillation
+    the most common route to a trial-and-error label -- see build_cycles.py on
+    what it does and does not detect.
     """
     targets = row.get("n_distinct_targets") or 0
     if row.get("oscillation") or (row.get("undo_in_burst") or 0) > 0:
@@ -171,10 +179,12 @@ def main():
              "Strata: **strong** = a long run, **boundary** = a short run near "
              "the threshold, **control** = a single cycle. Boundary and control "
              "rows matter most -- they are where the thresholds are wrong.", "",
-             "Built at a burst gap of %.1fs. Composition rates move with that "
-             "number and Task 4 found no way to calibrate it from the data, so "
-             "compare students against each other rather than reading any rate "
-             "as a property of the corpus." % BURST_GAP_S, ""]
+             "Built at a burst gap of %.1fs, calibrated against trial-bounded "
+             "cycles (see `build_cycles.py`). Composition rates still move with "
+             "that number, and it is calibrated on the documents that have "
+             "detectable trials rather than the whole corpus, so treat the "
+             "rates as approximate and compare students against each other."
+             % BURST_GAP_S, ""]
 
     for kind in ("systematic", "trial_and_error"):
         for stratum in ("strong", "boundary", "control"):

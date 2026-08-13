@@ -28,6 +28,21 @@ TRIAL_COLUMNS = {
     "source": "VARCHAR",
 }
 
+SENSOR_TRIAL_COLUMNS = {
+    "doc_id": "VARCHAR", "trial_id": "BIGINT", "node_id": "VARCHAR",
+    "sensor_kind": "VARCHAR", "sensor_type": "VARCHAR",
+    "started": "TIMESTAMP", "ended": "TIMESTAMP", "n_ticks": "BIGINT",
+    "duration_s": "DOUBLE", "source": "VARCHAR",
+}
+
+
+def sensor_trial(started, ended, n_ticks=12, kind="physical", doc="d1",
+                 trial_id=0):
+    return {"doc_id": doc, "trial_id": trial_id, "node_id": "n1",
+            "sensor_kind": kind, "sensor_type": "emg-reading",
+            "started": started, "ended": ended, "n_ticks": n_ticks,
+            "duration_s": 5.0, "source": "sensor"}
+
 THRESHOLDS = {"burst_gap_s": 5.0, "watch_min_s": 4.0, "watch_max_s": 300.0,
               "ui_staleness_s": 120.0}
 
@@ -62,6 +77,7 @@ class TestCycles(unittest.TestCase):
         self.edits = os.path.join(self.dir, "edits.parquet")
         self.presence = os.path.join(self.dir, "presence.parquet")
         self.trials = os.path.join(self.dir, "trials.parquet")
+        self.sensor_trials = os.path.join(self.dir, "sensor_trials.parquet")
         self.logs = os.path.join(self.dir, "logs.parquet")
         self.out = os.path.join(self.dir, "cycles.parquet")
 
@@ -71,13 +87,15 @@ class TestCycles(unittest.TestCase):
         else:
             os.environ["TZ"] = self._prev_tz
 
-    def _run(self, edits, presence=(), logs=(), trials=()):
+    def _run(self, edits, presence=(), logs=(), trials=(), sensor_trials=()):
         write_parquet(edits, self.edits, EDIT_COLUMNS)
         write_parquet(list(presence), self.presence, PRESENCE_COLUMNS)
         write_parquet(list(trials), self.trials, TRIAL_COLUMNS)
+        write_parquet(list(sensor_trials), self.sensor_trials,
+                      SENSOR_TRIAL_COLUMNS)
         write_parquet(list(logs), self.logs, LOG_COLUMNS)
-        build_cycles.build(self.edits, self.presence, self.trials, self.logs,
-                           THRESHOLDS, self.out)
+        build_cycles.build(self.edits, self.presence, self.trials,
+                           self.sensor_trials, self.logs, THRESHOLDS, self.out)
         return lib.query(
             "SELECT cycle_id, n_changes, n_distinct_targets, pause_after_s, "
             "pause_type, oscillation, undo_in_burst, trial_after, trial_changes "
@@ -138,6 +156,49 @@ class TestCycles(unittest.TestCase):
         ])
         self.assertFalse(rows[0]["trial_after"])
         self.assertEqual(rows[0]["trial_changes"], 0)
+
+    def test_a_sensor_trial_links_to_a_burst_like_a_simulator_trial(self):
+        """A student flexing an EMG after an edit is the same evidence as one
+        dragging a slider, and it is the only kind available in documents with
+        no Simulator tile."""
+        rows = self._run([
+            edit("2025-01-01 10:00:00", "n1", entry="e1"),
+            edit("2025-01-01 10:05:00", "n2", entry="e2"),
+        ], self._covering_presence(), sensor_trials=[
+            sensor_trial("2025-01-01 10:00:30", "2025-01-01 10:00:45",
+                         n_ticks=9),
+        ])
+        self.assertTrue(rows[0]["trial_after"])
+        self.assertEqual(rows[0]["trial_changes"], 9)
+
+    def test_a_simulated_sensor_trial_also_counts(self):
+        """Only 12 of the 33 documents with a Simulation-driven Sensor node
+        also appear in trials.parquet, so excluding these would discard the
+        other 21 documents' evidence."""
+        rows = self._run([
+            edit("2025-01-01 10:00:00", "n1", entry="e1"),
+            edit("2025-01-01 10:05:00", "n2", entry="e2"),
+        ], self._covering_presence(), sensor_trials=[
+            sensor_trial("2025-01-01 10:00:30", "2025-01-01 10:00:45",
+                         n_ticks=4, kind="simulated"),
+        ])
+        self.assertTrue(rows[0]["trial_after"])
+
+    def test_an_echoed_gesture_does_not_inflate_trial_changes(self):
+        """A Simulation tile drives a Sensor node, so one slider drag can
+        appear in both detectors. trial_changes takes a max(), not a sum()."""
+        rows = self._run([
+            edit("2025-01-01 10:00:00", "n1", entry="e1"),
+            edit("2025-01-01 10:05:00", "n2", entry="e2"),
+        ], self._covering_presence(), trials=[
+            {"doc_id": "d1", "trial_id": 0, "started": "2025-01-01 10:00:30",
+             "ended": "2025-01-01 10:00:45", "n_changes": 7,
+             "duration_s": 15.0, "source": "simulation"},
+        ], sensor_trials=[
+            sensor_trial("2025-01-01 10:00:30", "2025-01-01 10:00:45",
+                         n_ticks=7, kind="simulated"),
+        ])
+        self.assertEqual(rows[0]["trial_changes"], 7)
 
     def test_adding_then_removing_the_same_target_is_oscillation(self):
         rows = self._run([
@@ -280,15 +341,17 @@ class TestWatchMinCoupling(unittest.TestCase):
 
         write_parquet([
             edit("2025-01-01 10:00:00", "n1", entry="e1"),
-            # 10s pause: longer than the burst-gap override (5.0s) so this
+            # 28s pause: longer than the burst-gap override (25.0s) so this
             # starts a new cycle, but shorter than the OLD watch_min_s
             # (32.57s). Uncoupled, this pause can never be `watching`.
-            edit("2025-01-01 10:00:10", "n2", entry="e2"),
+            edit("2025-01-01 10:00:28", "n2", entry="e2"),
         ], os.path.join(self.derived, "edits.parquet"), EDIT_COLUMNS)
         write_parquet(
             self._covering_presence(),
             os.path.join(self.derived, "presence.parquet"), PRESENCE_COLUMNS)
         write_parquet([], os.path.join(self.derived, "trials.parquet"), TRIAL_COLUMNS)
+        write_parquet([], os.path.join(self.derived, "sensor_trials.parquet"),
+                      SENSOR_TRIAL_COLUMNS)
         write_parquet([
             self._log("2025-01-01 09:59:00"),
             self._log("2025-01-01 10:00:00"),
