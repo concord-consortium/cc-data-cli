@@ -23,20 +23,33 @@ ROW = re.compile(r"^\|\s*(ep\d+)\s*\|")
 
 
 def parse_review(text):
+    """Read the review sheet, locating cells by header name.
+
+    This used to index cells by position, and silently rotted when a column
+    was added: it read the replay link as the verdict, so every review looked
+    unfilled. Reading the header row means a new column costs nothing here.
+    """
     rows = []
     kind = stratum = ""
+    header = None
     for line in text.splitlines():
         heading = HEADING.match(line)
         if heading:
             kind, stratum = heading.group(1), heading.group(2)
             continue
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if line.startswith("|") and cells and cells[0] == "episode":
+            header = cells
+            continue
         if not ROW.match(line):
             continue
-        cells = [c.strip() for c in line.strip().strip("|").split("|")]
-        # episode | unit/problem | cycles | replay | verdict | note
-        rows.append({"episode_id": cells[0], "kind": kind, "stratum": stratum,
-                     "verdict": cells[4] if len(cells) > 4 else "",
-                     "note": cells[5] if len(cells) > 5 else ""})
+        if header is None:
+            raise ValueError("review row found before any header row")
+        row = dict(zip(header, cells))
+        rows.append({"episode_id": row.get("episode", ""),
+                     "kind": kind, "stratum": stratum,
+                     "verdict": row.get("verdict", ""),
+                     "note": row.get("note", "")})
     return rows
 
 
