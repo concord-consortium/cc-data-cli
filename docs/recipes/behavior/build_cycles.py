@@ -61,6 +61,13 @@ the 3+-targets rule: the share of cycles oscillation labels that nothing else
 would have caught is 18.4%, 19.3% and 19.5% at 5s, 12s and 25s. Its independent
 contribution is stable.
 
+Those cross-gap figures were measured BEFORE runtime output was removed from
+the parameter class, and have not been re-derived since; the sweep in
+calibrate_burst_gap.py does not report oscillation, so re-deriving them means
+rebuilding cycles at each gap. The raw rate at 25s afterwards is 41.7%, barely
+moved from 40.4%, so the conclusion is unlikely to have changed -- but it is
+currently an inference, not a measurement.
+
 Pause classification joins ticks, log events, and carried-forward UI state.
 Documents with neither sessions nor ticks get `no_presence_data`, never
 `absent`: 1,939 of 2,677 documents have no ticks, and reading that as "the
@@ -73,24 +80,30 @@ unlabelled, so they were being asked to separate themselves. Trials supply the
 labels. Edits falling between two consecutive trials are one edit-then-check
 cycle by construction -- the student exercised the program, edited, exercised it
 again -- so every gap inside that span is a within-cycle gap, and a gap that a
-trial falls inside is an across-cycle gap. Measured over 1,364 such spans in
-303 documents: within-cycle gaps have a median of 4.2s, across-cycle gaps
-98.4s. Sweeping the threshold against both labelled classes puts the optimum on
-a flat plateau from 15s to 25s.
+trial falls inside is an across-cycle gap. Measured over 1,298 such spans in
+298 documents: within-cycle gaps have a median of 5.2s, across-cycle gaps
+106.5s. Sweeping the threshold against both labelled classes puts the optimum
+at 25s, scoring 83.5% balanced against 83.2% at 20s and 82.2% at 32.9s.
 
 The earlier 5s value was a mistake, and the anchor shows it in two ways. A
 trial-bounded cycle was cut into a median of THREE bursts, and the composition
-it produced (67.1% single-target, 9.6% three-or-more) is close to the inverse
-of what the spans themselves show (20.4% single-target, 46.9% three-or-more,
-measured with no threshold involved). The 67.1% was fragmentation, not gesture
+it produced (72.2% single-target, 7.8% three-or-more) is close to the inverse
+of what the spans themselves show (22.0% single-target, 44.4% three-or-more,
+measured with no threshold involved). The 72.2% was fragmentation, not gesture
 scale. The failure mode feared at the long end -- bursts chaining across a
-boundary the student actually drew -- barely occurs: at 33s only 1.6% of bursts
+boundary the student actually drew -- barely occurs: at 33s only 1.5% of bursts
 contain a trial.
 
-25s sits at the top of the plateau and is the shortest gap that reproduces the
+25s is the sweep optimum outright, and the shortest gap that reproduces the
 anchor's fragmentation (median one burst per trial-bounded cycle). It remains
-an override of thresholds.json's 32.91s p90, but a narrower one, and for a
-stated reason rather than a hunch.
+an override of thresholds.json's p90 -- now 37.85s -- but a narrower one, and
+for a stated reason rather than a hunch.
+
+The value was chosen before runtime output was removed from the parameter
+class, when the sweep showed a flat 15s-to-25s plateau and 25s sat at its top
+by 0.1 of a point. Re-running the calibration on the corrected data moved the
+optimum ONTO 25s rather than away from it, so the choice survived a change
+that could have unseated it.
 
 Every number above comes from `calibrate_burst_gap.py`, which writes
 `burst_calibration.md`. Re-run it rather than trusting this paragraph.

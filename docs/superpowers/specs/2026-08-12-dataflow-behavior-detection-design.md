@@ -590,14 +590,21 @@ each stated with the analysis it would have unblocked:
   Whether cycles from 2022 and 2026 are comparable is unresolved, and the
   inventory's "history of the system itself" gap is exactly why it cannot be
   answered from the data alone.
-- **Do the thresholds still hold after the runtime-output correction?** The
-  correction itself is done and measured (see "Runtime output masquerades as
-  student activity"); the axis survived it. But the pause thresholds in
-  `thresholds.json` and the 25s burst gap were both calibrated on the
-  contaminated edit stream, and neither has been re-derived since. The gap in
-  particular was anchored on trial-bounded cycles, and roughly half the
-  parameter edits that helped define those cycles have now gone. Re-running
-  calibration and comparing is outstanding.
+- ~~**Do the thresholds still hold after the runtime-output correction?**~~
+  Answered: yes. Both calibrations were re-run on the corrected data. The
+  burst-gap sweep optimum moved *onto* 25s (83.5% balanced, against 83.2% at
+  20s) from a flat 15s–25s plateau where 25s had been top by 0.1 of a point,
+  so the chosen value survived a change that could have unseated it. The pause
+  calibration's p90 moved 32.91s → 37.85s, but `build_cycles.py` deliberately
+  overrides both `burst_gap_s` and `watch_min_s` with its own constant, and
+  the two values it does consume — `watch_max_s` and `ui_staleness_s` — did
+  not move. So that shift is inert.
+- **Is oscillation still gap-independent?** The evidence that oscillation's
+  independent contribution is stable across burst gaps (18.4%/19.3%/19.5% at
+  5s/12s/25s) was measured before the correction. The raw rate at 25s barely
+  moved afterwards, 40.4% → 41.7%, so the conclusion probably holds, but
+  `calibrate_burst_gap.py` does not report oscillation and re-deriving it
+  means rebuilding cycles at each gap.
 - **How many verdicts are enough?** Recalibration needs a set large enough to
   move thresholds without overfitting to a handful of replays. Deferred until
   the first sheet exists and the rate of review is known.
