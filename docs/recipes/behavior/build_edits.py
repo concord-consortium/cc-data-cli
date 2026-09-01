@@ -36,27 +36,17 @@ CLASSIFY = """
       WHEN path LIKE '%/programZoom%' THEN 'layout'
       WHEN regexp_matches(path, '/program/nodes/[^/]+/inputs/') THEN 'structure'
       WHEN regexp_matches(path, '/program/nodes/[^/]+$') THEN 'structure'
-      -- KNOWN DEFECT, TWO PARTS. This catches `/data/demoOutput`, which is the
-      -- Demo Output node's live display rather than a student edit -- median
-      -- 0.08s between changes, 87% within 2s, emitted under `setProgram` so
-      -- action-name filtering never reaches it. It is ~17,200 operations
-      -- after coalescing, about a third of the `parameter` class, and it
-      -- inflates the target counts that decide trial-and-error labels.
-      -- Excluding it will move every composition rate, so it wants its own
-      -- change with before/after numbers rather than a quiet fix here.
-      --
-      -- It also catches `/data/tickEntries/{id}/nodeValue`. The action filter
-      -- above removes most tick patches, but 14,648 arrive inside
-      -- `setProgram` entries and survive it -- 6,310 operations after
-      -- coalescing. Together with demoOutput that is ~23,500 of 48,100
-      -- `parameter` edits, about half the class.
-      --
-      -- These do not only inflate counts. A burst made only of such patches
-      -- is a cycle containing no student edit at all: episode ep004287 is
-      -- `systematic` over five cycles, four of which are tick values. Fixing
-      -- this removes cycles and episodes, not just edits.
-      --
-      -- See the design's "Runtime output masquerades as student activity".
+      -- Runtime output stored under a node, not student edits. Both were
+      -- previously classified `parameter`: `demoOutput` is the Demo Output
+      -- node's live display (median 0.08s between rewrites), and
+      -- `tickEntries/{id}/...` is the tick stream. The action filter above
+      -- removes most ticks, but some arrive inside `setProgram` entries and
+      -- survive it -- which is the design's point that classification must
+      -- happen at the patch path, not the action name.
+      WHEN regexp_matches(path, '/program/nodes/[^/]+/data/demoOutput$')
+        THEN 'runtime'
+      WHEN regexp_matches(path, '/program/nodes/[^/]+/data/tickEntries/')
+        THEN 'runtime'
       WHEN regexp_matches(path, '/program/nodes/[^/]+/data/') THEN 'parameter'
       WHEN is_revert THEN 'undo'
       WHEN action = 'undo' THEN 'undo'

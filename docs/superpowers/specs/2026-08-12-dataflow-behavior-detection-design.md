@@ -109,11 +109,21 @@ real edit (a Transform node added, its operator set to Ramp). The reviewer's
 note on that episode, written before any of this was known, was that it was
 "hard to see what they are actually changing in the program."
 
-So the correction removes edits, and will also remove whole cycles and
-therefore some episodes. It changes `n_changes` and `n_distinct_targets`, which
-is what carries a cycle over the three-target trial-and-error threshold. It
-does not affect `oscillation`, which needs a structural add and remove. The
-size of the correction is unmeasured — see Open questions.
+**This has since been corrected**, and the effect measured. Both paths are now
+classified `runtime`. `parameter` edits fell from 48,111 to 24,694, a 48.7%
+cut; cycles from 19,533 to 18,862; episodes from 4,596 to 4,448.
+
+The axis survived. Composition moved a few points in the direction the
+contamination predicts — single-target 41.5% → 44.0%, three-or-more 32.3% →
+30.7% — and the trial-following rate did not move at all, at 10.1%. Both poles
+lost roughly the same share, systematic 619 → 590 and trial-and-error 3,977 →
+3,858, so the ratio between them is essentially unchanged. The contamination
+was inflating counts fairly evenly rather than manufacturing one pole.
+
+ep004287 is the clearest single case. It was `systematic` over five cycles,
+four of them tick values; it is now one cycle — the only one that held a real
+edit, a Transform node added and its operator set to Ramp — and it survives as
+a single-cycle episode instead.
 
 ### One student gesture is many history entries
 
@@ -580,16 +590,14 @@ each stated with the analysis it would have unblocked:
   Whether cycles from 2022 and 2026 are comparable is unresolved, and the
   inventory's "history of the system itself" gap is exactly why it cannot be
   answered from the data alone.
-- **How much does the runtime-output correction move the rates?** Roughly half
-  of `parameter` edits are runtime rather than student action — Demo Output
-  display churn plus tick values arriving under non-tick actions (see "Runtime
-  output masquerades as student activity"). Excluding them lowers `n_changes`
-  and `n_distinct_targets`, so some cycles fall back under the three-target
-  threshold; and because some bursts are made *entirely* of these patches,
-  whole cycles and some episodes disappear. Every rate in the calibration and
-  every count in the review sheet moves. Whether the axis survives it intact,
-  or the systematic pole was partly an artifact, is unknown until it is run
-  both ways.
+- **Do the thresholds still hold after the runtime-output correction?** The
+  correction itself is done and measured (see "Runtime output masquerades as
+  student activity"); the axis survived it. But the pause thresholds in
+  `thresholds.json` and the 25s burst gap were both calibrated on the
+  contaminated edit stream, and neither has been re-derived since. The gap in
+  particular was anchored on trial-bounded cycles, and roughly half the
+  parameter edits that helped define those cycles have now gone. Re-running
+  calibration and comparing is outstanding.
 - **How many verdicts are enough?** Recalibration needs a set large enough to
   move thresholds without overfitting to a handful of replays. Deferred until
   the first sheet exists and the rate of review is known.
