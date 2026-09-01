@@ -298,6 +298,10 @@ def main():
     lines = ["# Review sheet", "",
              "Each row is one episode. Open the replay link, watch what the "
              "student actually did, and fill in the verdict column.", "",
+             "The link opens at the **first** history entry of the episode, "
+             "its beginning. Play forward from there; the episode runs for the "
+             "number of cycles in the `cycles` column. Nothing in the link "
+             "marks where the episode ends -- see CLUE-635.", "",
              "Verdicts: `confirmed`, `rejected`, `ambiguous`. Save this file, "
              "then run `apply_verdicts.py`.", "",
              "Strata: **strong** = a long run, **boundary** = a short run near "
@@ -305,6 +309,40 @@ def main():
              "rows matter most -- they are where the thresholds are wrong.", "",
              "`date` is when the episode started, on the student's own device "
              "clock -- history entries carry no server timestamp.", "",
+
+             "## What these episodes are", "",
+             "An episode is a run of consecutive edit-and-pause cycles on one "
+             "tile in one document, all carrying the same label. A cycle is a "
+             "burst of edits plus the pause that follows it.", "",
+             "**systematic** -- each cycle changed exactly one thing, and "
+             "there is evidence the student then checked it: they ran the "
+             "program, or the pause after the edit shows them present and "
+             "watching, or they wrote something down.", "",
+             "**trial_and_error** -- a cycle changed three or more distinct "
+             "things before any check, or it undid something, or it "
+             "oscillated: a value put in and taken back out within the same "
+             "burst. Oscillation is the most common route to this label, so "
+             "it is the one most worth checking.", "",
+             "Cycles matching neither rule are unclassified, which is most of "
+             "them. An episode tolerates one unclassified cycle in the middle "
+             "without breaking; `purity` in candidates.parquet records what "
+             "fraction of the cycles actually carried the label.", "",
+
+             "## What to look for", "",
+             "The label is inferred from the shape of the edits. You are "
+             "judging whether someone watching the student would agree.", "",
+             "For a **systematic** row, check that the student really changed "
+             "one thing at a time and really checked between changes. Reject "
+             "it if the pause was the student leaving or idling rather than "
+             "attending to the program, or if they changed several things and "
+             "only one was visible to the detector.", "",
+             "For a **trial_and_error** row, check that the student changed "
+             "several things before observing any result. Reject it if a "
+             "repeated change was a deliberate comparison rather than "
+             "flailing, or if the edits were housekeeping -- renaming, moving "
+             "or resizing tiles -- rather than trying things out.", "",
+             "Use `ambiguous` when the replay does not settle it. That is a "
+             "useful answer, not a failure to decide.", "",
              "Built at a burst gap of %.1fs, calibrated against trial-bounded "
              "cycles (see `build_cycles.py`). Composition rates still move with "
              "that number, and it is calibrated on the documents that have "
