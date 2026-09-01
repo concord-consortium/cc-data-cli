@@ -12,6 +12,7 @@ only the clearest cases and teaches nothing about the boundary, so the sheet
 carries strong examples of each pole, a band straddling the threshold, and some
 unclassified cycles as a check that the phenomenon is not being missed.
 """
+import hashlib
 import os
 import re
 from datetime import datetime
@@ -255,6 +256,29 @@ def _episodes(cycles_path):
     return episodes
 
 
+def episode_id(ep):
+    """A stable id for an episode, derived from what the episode IS.
+
+    Positional ids (`ep%06d` over the episode list) were the previous scheme,
+    and they shift for every episode after any episode that appears or
+    disappears. Review work keyed on them silently reattaches to a different
+    episode on the next rebuild, which is worse than losing it.
+
+    The inputs are deliberately the document, the tile, and the episode's
+    start and end truncated to the second -- NOT the history entry ids. Entry
+    ids can shift when upstream parsing changes, and an id built on them would
+    churn for reasons that have nothing to do with the episode. Second
+    resolution absorbs sub-second jitter in the timestamps for the same
+    reason. Where the ids do change, doc_id, tile_id, started and ended are
+    all carried in candidates.parquet, so old and new can still be matched.
+    """
+    key = "|".join([
+        ep["doc_id"] or "", ep["tile_id"] or "",
+        str(ep["started"])[:19], str(ep["ended"])[:19],
+    ])
+    return "ep" + hashlib.sha1(key.encode("utf-8")).hexdigest()[:10]
+
+
 def _episode_id(cell):
     """The bare id from an episode cell.
 
@@ -313,8 +337,8 @@ def main():
     ids = _portal_ids(derived, p["content"], p["logs"])
 
     episodes = _episodes(cycles)
-    for i, ep in enumerate(episodes):
-        ep["episode_id"] = "ep%06d" % i
+    for ep in episodes:
+        ep["episode_id"] = episode_id(ep)
         ep["stratum"] = _stratum(ep)
         doc_key, class_id, offering_id, source = ids.get(
             ep["doc_id"], (ep["doc_id"], None, None, "none"))

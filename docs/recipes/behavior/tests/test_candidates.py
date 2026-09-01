@@ -279,3 +279,48 @@ class TestExistingReviews(unittest.TestCase):
     def test_a_missing_sheet_is_not_an_error(self):
         self.assertEqual(
             build_candidates._existing_reviews("/nonexistent/review.md"), {})
+
+
+class TestEpisodeId(unittest.TestCase):
+    """Ids are derived from what the episode is, not from where it sits."""
+
+    BASE = {"doc_id": "d1", "tile_id": "tileA",
+            "started": "2024-03-01 16:11:08.447",
+            "ended": "2024-03-01 16:15:04.810"}
+
+    def _id(self, **over):
+        return build_candidates.episode_id({**self.BASE, **over})
+
+    def test_the_same_episode_always_gets_the_same_id(self):
+        self.assertEqual(self._id(), self._id())
+
+    def test_entry_ids_do_not_affect_it(self):
+        """The point of the scheme: entry ids can shift upstream, and an id
+        built on them would churn for reasons unrelated to the episode."""
+        a = build_candidates.episode_id({**self.BASE, "first_entry_id": "x",
+                                         "last_entry_id": "y"})
+        b = build_candidates.episode_id({**self.BASE, "first_entry_id": "p",
+                                         "last_entry_id": "q"})
+        self.assertEqual(a, b)
+
+    def test_sub_second_jitter_does_not_affect_it(self):
+        self.assertEqual(
+            self._id(),
+            self._id(started="2024-03-01 16:11:08.999",
+                     ended="2024-03-01 16:15:04.001"))
+
+    def test_a_different_second_is_a_different_episode(self):
+        self.assertNotEqual(self._id(), self._id(started="2024-03-01 16:11:09.447"))
+
+    def test_a_different_tile_is_a_different_episode(self):
+        """Two tiles in one document can be edited in the same window, so the
+        tile has to be in the key or they collide."""
+        self.assertNotEqual(self._id(), self._id(tile_id="tileB"))
+
+    def test_a_different_document_is_a_different_episode(self):
+        self.assertNotEqual(self._id(), self._id(doc_id="d2"))
+
+    def test_the_end_time_is_part_of_the_key(self):
+        """Two episodes on one tile can start at the same second after a
+        rebuild changes where they are cut."""
+        self.assertNotEqual(self._id(), self._id(ended="2024-03-01 16:20:00.000"))
