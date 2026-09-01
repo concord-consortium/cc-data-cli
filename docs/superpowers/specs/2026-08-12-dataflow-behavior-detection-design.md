@@ -599,12 +599,12 @@ each stated with the analysis it would have unblocked:
   overrides both `burst_gap_s` and `watch_min_s` with its own constant, and
   the two values it does consume — `watch_max_s` and `ui_staleness_s` — did
   not move. So that shift is inert.
-- **Is oscillation still gap-independent?** The evidence that oscillation's
-  independent contribution is stable across burst gaps (18.4%/19.3%/19.5% at
-  5s/12s/25s) was measured before the correction. The raw rate at 25s barely
-  moved afterwards, 40.4% → 41.7%, so the conclusion probably holds, but
-  `calibrate_burst_gap.py` does not report oscillation and re-deriving it
-  means rebuilding cycles at each gap.
+- ~~**Is oscillation still gap-independent?**~~ Answered: yes. Re-measured on
+  the corrected data by rebuilding cycles at each gap. The raw rate climbs
+  23.6% → 32.0% → 41.7% across 5s/12s/25s, but the share oscillation labels
+  that nothing else would have caught moves only 19.7% → 20.7% → 20.9%. A
+  five-fold change in the gap shifts the independent contribution by 1.2
+  points, so the flag is measuring something the gap does not control.
 - **How many verdicts are enough?** Recalibration needs a set large enough to
   move thresholds without overfitting to a handful of replays. Deferred until
   the first sheet exists and the rate of review is known.

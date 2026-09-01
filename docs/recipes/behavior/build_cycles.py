@@ -55,18 +55,23 @@ distinguishing those two, which the value sequence alone does not do. The
 `trial_after` signal is the obvious discriminator and is already computed.
 
 It is not, however, an artifact of the burst gap, which was the obvious worry
-when the gap moved from 5s to 25s. The raw rate does climb with the gap (22.4%
-of cycles at 5s, 40.4% at 25s), but almost all of that increase is overlap with
-the 3+-targets rule: the share of cycles oscillation labels that nothing else
-would have caught is 18.4%, 19.3% and 19.5% at 5s, 12s and 25s. Its independent
-contribution is stable.
+when the gap moved from 5s to 25s. The raw rate does climb steeply with the
+gap, but almost all of that increase is overlap with the 3+-targets rule. The
+share of cycles that oscillation labels and nothing else in classify_cycle
+would have caught -- no undo, and under three targets -- barely moves:
 
-Those cross-gap figures were measured BEFORE runtime output was removed from
-the parameter class, and have not been re-derived since; the sweep in
-calibrate_burst_gap.py does not report oscillation, so re-deriving them means
-rebuilding cycles at each gap. The raw rate at 25s afterwards is 41.7%, barely
-moved from 40.4%, so the conclusion is unlikely to have changed -- but it is
-currently an inference, not a measurement.
+    gap     cycles     raw    oscillation-only
+     5s     51,422   23.6%              19.7%
+    12s     30,077   32.0%              20.7%
+    25s     18,862   41.7%              20.9%
+
+A five-fold change in the gap nearly doubles the raw rate and moves the
+independent contribution by 1.2 points. Re-measured after runtime output was
+removed from the parameter class; the pre-correction figures were 22.4% raw
+and 18.4%/19.3%/19.5% unique, so the correction did not disturb the finding.
+Not available from calibrate_burst_gap.py, whose sweep does not report
+oscillation -- reproduce it by calling build_cycles.build() with burst_gap_s
+and watch_min_s both set to each gap.
 
 Pause classification joins ticks, log events, and carried-forward UI state.
 Documents with neither sessions nor ticks get `no_presence_data`, never
