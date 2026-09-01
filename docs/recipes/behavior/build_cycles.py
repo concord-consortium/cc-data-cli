@@ -37,12 +37,22 @@ oscillates only on parameters is invisible to this flag.
 That re-read has since been shown to be cheap. `replace` patches do carry the
 NEW value -- what they lack is the old one -- so the sequence of values a
 parameter took is recoverable directly from history, which is enough to spot a
-return to an earlier one. Worked example: episode ep002590 is labelled
-`systematic`, and its parameter sequence is Less Than, Greater Than, Less Than,
-Equal, Less Than on a single Logic node. Each cycle touched one target and
-ended in a watching pause, so every rule here votes systematic, while the value
-sequence is the design's parameter oscillation exactly. Closing this gap would
-move labels, not just add a flag.
+return to an earlier one.
+
+Worked example, and a caution about it. Episode ep002590 is labelled
+`systematic`, and its Logic operator runs Less Than, Greater Than, Less Than,
+Equal, Less Than -- the design's parameter oscillation exactly. But its label
+does not come from a watching pause: all four cycles are `present_unknown`,
+and every one has `trial_after` set, with 4 to 33 input changes following the
+edit. The student changed the operator and then drove the input to test it,
+each time.
+
+So the value sequence here is at least as consistent with deliberate
+comparison -- try each operator, then settle on the first -- as with flailing,
+and a naive revisit rule would call it oscillation and be wrong. Whether
+closing the gap improves labels or just adds false positives depends on
+distinguishing those two, which the value sequence alone does not do. The
+`trial_after` signal is the obvious discriminator and is already computed.
 
 It is not, however, an artifact of the burst gap, which was the obvious worry
 when the gap moved from 5s to 25s. The raw rate does climb with the gap (22.4%
