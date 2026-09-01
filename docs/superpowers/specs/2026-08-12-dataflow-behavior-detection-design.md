@@ -85,12 +85,35 @@ insufficiency this section warns about.
 
 It survives coalescing. After the 2-second window collapses repeats, roughly
 17,200 operations remain, against 48,100 `parameter` edits and 93,100
-`structure` edits. So about a third of the parameter class is display churn.
+`structure` edits.
 
-This inflates `n_changes` and `n_distinct_targets`, which is what carries a
-cycle over the three-target trial-and-error threshold. It does not affect
-`oscillation`, which needs a structural add and remove of one target. The size
-of the correction is unmeasured — see Open questions.
+**And it is not the only one.** Tick values are stored under each node at
+`program/nodes/{id}/data/tickEntries/{id}/nodeValue`, so the same branch
+catches them too. `build_edits.py` excludes tick ACTIONS
+(`action NOT LIKE '%tickAndProcess'`), which removes the bulk — but 14,648 of
+these patches arrive inside `setProgram` entries and pass that filter, leaving
+6,310 operations after coalescing. This is the section's own point restated:
+filtering by action name is not sufficient, because the same data arrives under
+more than one action.
+
+Together the two account for roughly 23,500 of the 48,100 `parameter` edits —
+about half the class is runtime output rather than student action.
+
+**This does not merely inflate counts; it manufactures cycles.** A burst built
+only from these patches is a cycle with no student edit in it. Episode ep004287
+is labelled `systematic` across five cycles, and four of them are
+`parameter`-only bursts whose entire content is tick values — cycle 1 is the
+single patch
+`/program/nodes/7@…/data/tickEntries/7bHv…/nodeValue`. Only cycle 3 contains a
+real edit (a Transform node added, its operator set to Ramp). The reviewer's
+note on that episode, written before any of this was known, was that it was
+"hard to see what they are actually changing in the program."
+
+So the correction removes edits, and will also remove whole cycles and
+therefore some episodes. It changes `n_changes` and `n_distinct_targets`, which
+is what carries a cycle over the three-target trial-and-error threshold. It
+does not affect `oscillation`, which needs a structural add and remove. The
+size of the correction is unmeasured — see Open questions.
 
 ### One student gesture is many history entries
 
@@ -557,13 +580,16 @@ each stated with the analysis it would have unblocked:
   Whether cycles from 2022 and 2026 are comparable is unresolved, and the
   inventory's "history of the system itself" gap is exactly why it cannot be
   answered from the data alone.
-- **How much does the `demoOutput` correction move the rates?** Roughly a
-  third of `parameter` edits are Demo Output display churn rather than student
-  edits (see "Runtime output masquerades as student activity"). Excluding them
-  lowers `n_changes` and `n_distinct_targets`, so some cycles will fall back
-  under the three-target threshold and some episodes will change kind. Whether
-  that shifts the composition rates materially, or merely trims noise, is
-  unknown until it is run both ways.
+- **How much does the runtime-output correction move the rates?** Roughly half
+  of `parameter` edits are runtime rather than student action — Demo Output
+  display churn plus tick values arriving under non-tick actions (see "Runtime
+  output masquerades as student activity"). Excluding them lowers `n_changes`
+  and `n_distinct_targets`, so some cycles fall back under the three-target
+  threshold; and because some bursts are made *entirely* of these patches,
+  whole cycles and some episodes disappear. Every rate in the calibration and
+  every count in the review sheet moves. Whether the axis survives it intact,
+  or the systematic pole was partly an artifact, is unknown until it is run
+  both ways.
 - **How many verdicts are enough?** Recalibration needs a set large enough to
   move thresholds without overfitting to a handful of replays. Deferred until
   the first sheet exists and the rate of review is known.
