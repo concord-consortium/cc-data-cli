@@ -168,7 +168,11 @@ COPY (
            ) AS oscillation,
            arg_max(n_nodes_running, seq) AS n_nodes_after,
            arg_max(n_conns_running, seq) AS n_connections_after,
-           arg_min(first_entry_id, seq) AS first_entry_id
+           arg_min(first_entry_id, seq) AS first_entry_id,
+           -- The last edit of the burst, by the same deterministic
+           -- ordinal. An episode's end marker is built from this, so it
+           -- must not wobble between runs any more than first_entry_id may.
+           arg_max(first_entry_id, seq) AS last_entry_id
     FROM grouped
     GROUP BY doc_id, tile_id, cycle_id
   ),
@@ -285,7 +289,8 @@ COPY (
     (trial_changes > 0) AS trial_after,
     trial_changes,
     logs_available, ticks_available, in_session, ticks_cover,
-    first_entry_id
+    first_entry_id,
+    last_entry_id
   FROM annotated
 ) TO '{out}' (FORMAT parquet, COMPRESSION zstd);
 """

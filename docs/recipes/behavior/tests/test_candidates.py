@@ -112,7 +112,7 @@ CYCLE_COLUMNS = {
     "oscillation": "BOOLEAN", "undo_in_burst": "BIGINT",
     "trial_after": "BOOLEAN", "trial_changes": "BIGINT",
     "n_nodes_after": "DOUBLE", "pause_after_s": "DOUBLE",
-    "first_entry_id": "VARCHAR",
+    "first_entry_id": "VARCHAR", "last_entry_id": "VARCHAR",
 }
 
 
@@ -122,7 +122,8 @@ def cycle_row(i, targets, pause_type, oscillation=False):
             "burst_started": "2025-01-01 10:%02d:00" % i,
             "n_changes": targets, "n_distinct_targets": targets,
             "pause_type": pause_type, "oscillation": oscillation,
-            "pause_after_s": 30.0, "first_entry_id": "e%d" % i}
+            "pause_after_s": 30.0,
+            "first_entry_id": "e%d" % i, "last_entry_id": "e%dz" % i}
 
 
 class TestEpisodes(unittest.TestCase):
@@ -166,3 +167,102 @@ class TestEpisodes(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestEpisodeEndEntry(unittest.TestCase):
+    """The end marker must name the last *labelled* cycle of the episode."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.cycles = os.path.join(self.dir, "cycles.parquet")
+
+    def _episodes(self, rows):
+        lib.write_parquet(rows, self.cycles, CYCLE_COLUMNS)
+        return build_candidates._episodes(self.cycles)
+
+    def test_spans_from_the_first_cycle_to_the_last(self):
+        eps = self._episodes([
+            cycle_row(0, 1, "watching"),
+            cycle_row(1, 1, "watching"),
+            cycle_row(2, 1, "watching"),
+        ])
+        self.assertEqual(len(eps), 1)
+        self.assertEqual(eps[0]["first_entry_id"], "e0")
+        self.assertEqual(eps[0]["last_entry_id"], "e2z")
+
+    def test_a_trailing_tolerated_cycle_does_not_become_the_end(self):
+        """close() drops trailing tolerated cycles from n_cycles, so letting
+        one set the end marker would point past the episode it describes."""
+        eps = self._episodes([
+            cycle_row(0, 1, "watching"),
+            cycle_row(1, 1, "watching"),
+            cycle_row(2, 2, "present_unknown"),   # unclassified, tolerated
+        ])
+        self.assertEqual(len(eps), 1)
+        self.assertEqual(eps[0]["n_cycles"], 2)
+        self.assertEqual(eps[0]["last_entry_id"], "e1z")
+
+    def test_a_single_cycle_episode_ends_where_its_burst_ends(self):
+        eps = self._episodes([cycle_row(0, 4, "absent")])
+        self.assertEqual(eps[0]["first_entry_id"], "e0")
+        self.assertEqual(eps[0]["last_entry_id"], "e0z")
+
+
+class TestExistingReviews(unittest.TestCase):
+    """A rebuild must not discard review work already entered."""
+
+    def _write(self, body):
+        path = os.path.join(tempfile.mkdtemp(), "review.md")
+        with open(path, "w") as handle:
+            handle.write(body)
+        return path
+
+    SHEET = (
+        "# Review sheet\n\n"
+        "## systematic — strong (2 shown)\n\n"
+        "| episode | date | unit/problem | cycles | start | end | "
+        "verdict | note |\n"
+        "|---|---|---|---|---|---|---|---|\n"
+        "| ep0001 | 2024-03-01 | brain 3 | 4 | [start](u) | [end](v) | "
+        "confirmed | looks right |\n"
+        "| ep0002 | 2024-03-02 | brain 3 | 4 | [start](u) | [end](v) |  |  |\n"
+        "| ep0003 | 2024-03-03 | brain 3 | 4 | [start](u) | [end](v) |  "
+        "| history error |\n"
+    )
+
+    def test_keeps_verdicts_and_notes(self):
+        kept = build_candidates._existing_reviews(self._write(self.SHEET))
+        self.assertEqual(kept["ep0001"], ("confirmed", "looks right"))
+
+    def test_keeps_a_note_with_no_verdict(self):
+        """The overwrite that prompted this checked verdicts only."""
+        kept = build_candidates._existing_reviews(self._write(self.SHEET))
+        self.assertEqual(kept["ep0003"], ("", "history error"))
+
+    def test_ignores_untouched_rows(self):
+        kept = build_candidates._existing_reviews(self._write(self.SHEET))
+        self.assertNotIn("ep0002", kept)
+
+    def test_reads_by_header_not_position(self):
+        """A column inserted before `verdict` must not shift what is carried.
+
+        Position-indexed parsing is how apply_verdicts.py came to read the
+        replay link as a verdict, so this pins the header-based behaviour.
+        """
+        moved = self.SHEET.replace(
+            "| episode | date | unit/problem | cycles | start | end | "
+            "verdict | note |",
+            "| episode | date | extra | unit/problem | cycles | start | end | "
+            "verdict | note |"
+        ).replace(
+            "|---|---|---|---|---|---|---|---|",
+            "|---|---|---|---|---|---|---|---|---|"
+        ).replace(
+            "| ep0001 | 2024-03-01 | brain 3 |",
+            "| ep0001 | 2024-03-01 | x | brain 3 |")
+        kept = build_candidates._existing_reviews(self._write(moved))
+        self.assertEqual(kept["ep0001"], ("confirmed", "looks right"))
+
+    def test_a_missing_sheet_is_not_an_error(self):
+        self.assertEqual(
+            build_candidates._existing_reviews("/nonexistent/review.md"), {})

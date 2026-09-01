@@ -42,7 +42,8 @@ CANDIDATE_COLUMNS = {
     "uid": "VARCHAR", "unit": "VARCHAR", "problem": "VARCHAR",
     "kind": "VARCHAR", "n_cycles": "BIGINT", "purity": "DOUBLE",
     "span_s": "DOUBLE", "started": "TIMESTAMP", "ended": "TIMESTAMP",
-    "first_entry_id": "VARCHAR", "replay_url": "VARCHAR", "stratum": "VARCHAR",
+    "first_entry_id": "VARCHAR", "last_entry_id": "VARCHAR",
+    "replay_url": "VARCHAR", "end_url": "VARCHAR", "stratum": "VARCHAR",
     "offering_source": "VARCHAR",
 }
 
@@ -203,7 +204,7 @@ def _episodes(cycles_path):
         "SELECT doc_id, uid, unit, problem, tile_id, cycle_id, burst_started, "
         "n_changes, n_distinct_targets, pause_type, oscillation, undo_in_burst, "
         "trial_after, trial_changes, pause_after_s, n_nodes_after, "
-        "first_entry_id FROM read_parquet('%s') "
+        "first_entry_id, last_entry_id FROM read_parquet('%s') "
         "ORDER BY doc_id, tile_id, burst_started" % cycles_path)
 
     episodes = []
@@ -230,6 +231,7 @@ def _episodes(cycles_path):
                 current["n_kind"] += 1
                 current["pending"] = 0
                 current["ended"] = row["burst_started"]
+                current["last_entry_id"] = row["last_entry_id"]
                 continue
             if kind == "unclassified" and current["pending"] < MAX_GAP_CYCLES:
                 current["pending"] += 1
@@ -244,9 +246,39 @@ def _episodes(cycles_path):
                        "n_cycles": 1, "n_kind": 1, "pending": 0,
                        "started": row["burst_started"],
                        "ended": row["burst_started"],
-                       "first_entry_id": row["first_entry_id"]}
+                       "first_entry_id": row["first_entry_id"],
+                       "last_entry_id": row["last_entry_id"]}
     close(current)
     return episodes
+
+
+def _existing_reviews(path):
+    """Read verdict and note cells already filled in, keyed by episode id.
+
+    Rebuilding the sheet must not throw away review work. Cells are located by
+    the header row rather than by position, so adding or reordering a column
+    cannot silently carry the wrong text forward -- which is exactly how
+    apply_verdicts.py came to read the replay link as a verdict.
+    """
+    if not os.path.exists(path):
+        return {}
+    kept, header = {}, None
+    with open(path) as handle:
+        for line in handle:
+            if not line.startswith("|"):
+                continue
+            cells = [c.strip() for c in line.strip().strip("|").split("|")]
+            if cells and cells[0] == "episode":
+                header = cells
+                continue
+            # The |---|---| separator carries no data.
+            if not header or set("".join(cells)) <= {"-"}:
+                continue
+            row = dict(zip(header, cells))
+            verdict, note = row.get("verdict", ""), row.get("note", "")
+            if verdict or note:
+                kept[row.get("episode", "")] = (verdict, note)
+    return kept
 
 
 def _stratum(ep):
@@ -275,6 +307,8 @@ def main():
         ep["offering_source"] = source
         ep["replay_url"] = replay_url(doc_key, ep["first_entry_id"],
                                       class_id, offering_id)
+        ep["end_url"] = replay_url(doc_key, ep["last_entry_id"],
+                                   class_id, offering_id)
 
     out = os.path.join(derived, "candidates.parquet")
     lib.write_parquet(
@@ -295,13 +329,16 @@ def main():
             print("  offering id from %-18s %5d" % (src, by_source[src]))
     print("wrote candidates.parquet")
 
+    review_path = os.path.join(derived, "review.md")
+    kept = _existing_reviews(review_path)
+
     lines = ["# Review sheet", "",
              "Each row is one episode. Open the replay link, watch what the "
              "student actually did, and fill in the verdict column.", "",
-             "The link opens at the **first** history entry of the episode, "
-             "its beginning. Play forward from there; the episode runs for the "
-             "number of cycles in the `cycles` column. Nothing in the link "
-             "marks where the episode ends -- see CLUE-635.", "",
+             "`start` opens the episode's first history entry and `end` "
+             "its last. Both open the same document at different points: CLUE "
+             "cannot yet show a range on the slider (CLUE-635), so the two "
+             "links are how you see where the episode begins and ends.", "",
              "Verdicts: `confirmed`, `rejected`, `ambiguous`. Save this file, "
              "then run `apply_verdicts.py`.", "",
              "Strata: **strong** = a long run, **boundary** = a short run near "
@@ -357,23 +394,34 @@ def main():
             if not picked:
                 continue
             lines += ["## %s — %s (%d shown)" % (kind, stratum, len(picked)), "",
-                      "| episode | date | unit/problem | cycles | replay | "
-                      "verdict | note |",
-                      "|---|---|---|---|---|---|---|"]
+                      "| episode | date | unit/problem | cycles | start | "
+                      "end | verdict | note |",
+                      "|---|---|---|---|---|---|---|---|"]
             for e in picked:
                 # No offering id means no launchable URL. Show the document key
                 # instead of a link that would fail on arrival.
-                replay = ("[replay](%s)" % e["replay_url"] if e["replay_url"]
-                          else "no offering id (`%s`)" % e["doc_key"])
-                lines.append("| %s | %s | %s %s | %d | %s |  |  |" % (
+                start = ("[start](%s)" % e["replay_url"] if e["replay_url"]
+                         else "no offering id (`%s`)" % e["doc_key"])
+                end = "[end](%s)" % e["end_url"] if e["end_url"] else "-"
+                verdict, note = kept.get(e["episode_id"], ("", ""))
+                lines.append("| %s | %s | %s %s | %d | %s | %s | %s | %s |" % (
                     e["episode_id"], episode_date(e),
                     e["unit"] or "-", e["problem"] or "-",
-                    e["n_cycles"], replay))
+                    e["n_cycles"], start, end, verdict, note))
             lines.append("")
 
-    with open(os.path.join(derived, "review.md"), "w") as handle:
+    with open(review_path, "w") as handle:
         handle.write("\n".join(lines))
     print("wrote review.md")
+    if kept:
+        shown = {e["episode_id"] for e in episodes}
+        dropped = [ep for ep in kept if ep not in shown]
+        print("  carried forward %d reviewed row(s)" % (len(kept) - len(dropped)))
+        # A reviewed episode the rebuild no longer samples would vanish
+        # silently, which is the failure this whole function exists to stop.
+        if dropped:
+            print("  WARNING: %d reviewed row(s) no longer in the sheet: %s"
+                  % (len(dropped), ", ".join(sorted(dropped))))
 
 
 if __name__ == "__main__":

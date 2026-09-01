@@ -379,3 +379,66 @@ class TestWatchMinCoupling(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestBurstEndEntry(unittest.TestCase):
+    """`last_entry_id` names the final edit of a burst, as the episode end."""
+
+    def setUp(self):
+        self._prev_tz = os.environ.get("TZ")
+        os.environ["TZ"] = "Pacific/Honolulu"
+        self.dir = tempfile.mkdtemp()
+        self.edits = os.path.join(self.dir, "edits.parquet")
+        self.presence = os.path.join(self.dir, "presence.parquet")
+        self.trials = os.path.join(self.dir, "trials.parquet")
+        self.sensor_trials = os.path.join(self.dir, "sensor_trials.parquet")
+        self.logs = os.path.join(self.dir, "logs.parquet")
+        self.out = os.path.join(self.dir, "cycles.parquet")
+
+    def tearDown(self):
+        if self._prev_tz is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = self._prev_tz
+
+    def _entries(self, edits):
+        write_parquet(edits, self.edits, EDIT_COLUMNS)
+        write_parquet([], self.presence, PRESENCE_COLUMNS)
+        write_parquet([], self.trials, TRIAL_COLUMNS)
+        write_parquet([], self.sensor_trials, SENSOR_TRIAL_COLUMNS)
+        write_parquet([], self.logs, LOG_COLUMNS)
+        build_cycles.build(self.edits, self.presence, self.trials,
+                           self.sensor_trials, self.logs, THRESHOLDS, self.out)
+        return lib.query(
+            "SELECT cycle_id, first_entry_id, last_entry_id "
+            "FROM read_parquet('%s') ORDER BY cycle_id" % self.out)
+
+    def test_spans_the_first_and_last_edit_of_one_burst(self):
+        rows = self._entries([
+            edit("2025-01-01 10:00:00", "n1", entry="a"),
+            edit("2025-01-01 10:00:05", "n2", entry="b"),
+            edit("2025-01-01 10:00:10", "n3", entry="c"),
+        ])
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["first_entry_id"], "a")
+        self.assertEqual(rows[0]["last_entry_id"], "c")
+
+    def test_each_burst_gets_its_own_end(self):
+        """A gap wider than BURST_GAP_S splits the bursts, so the first
+        burst's end must not run on into the second."""
+        rows = self._entries([
+            edit("2025-01-01 10:00:00", "n1", entry="a"),
+            edit("2025-01-01 10:00:05", "n2", entry="b"),
+            edit("2025-01-01 10:05:00", "n3", entry="c"),
+            edit("2025-01-01 10:05:05", "n4", entry="d"),
+        ])
+        self.assertEqual(len(rows), 2)
+        self.assertEqual((rows[0]["first_entry_id"], rows[0]["last_entry_id"]),
+                         ("a", "b"))
+        self.assertEqual((rows[1]["first_entry_id"], rows[1]["last_entry_id"]),
+                         ("c", "d"))
+
+    def test_a_single_edit_burst_starts_and_ends_at_the_same_entry(self):
+        rows = self._entries([edit("2025-01-01 10:00:00", "n1", entry="a")])
+        self.assertEqual(rows[0]["first_entry_id"], "a")
+        self.assertEqual(rows[0]["last_entry_id"], "a")
