@@ -1,9 +1,11 @@
 import os
 import tempfile
 import unittest
+from datetime import datetime
 from urllib.parse import parse_qs, urlparse
 
 import build_candidates
+import build_descriptions
 import lib
 
 
@@ -324,3 +326,77 @@ class TestEpisodeId(unittest.TestCase):
         """Two episodes on one tile can start at the same second after a
         rebuild changes where they are cut."""
         self.assertNotEqual(self._id(), self._id(ended="2024-03-01 16:20:00.000"))
+
+
+class TestPauseLine(unittest.TestCase):
+    """The line after a burst says what the student did to check it."""
+
+    CYCLE = {"pause_after_s": 99.0, "pause_type": "present_unknown",
+             "trial_after": True, "trial_changes": 6}
+
+    def test_names_the_input_that_was_driven(self):
+        """'tested Gripper x6' says what was varied; 'tested (6 input
+        changes)' only says that something was."""
+        line = build_descriptions._pause(self.CYCLE, [("Gripper", 6)])
+        self.assertIn("Gripper", line)
+        self.assertIn("x6", line)
+
+    def test_lists_every_input_driven_in_the_window(self):
+        line = build_descriptions._pause(
+            self.CYCLE, [("Gripper", 6), ("Surface Pressure", 2)])
+        self.assertIn("Gripper", line)
+        self.assertIn("Surface Pressure", line)
+
+    def test_falls_back_when_a_trial_is_known_but_unnamed(self):
+        """trial_after comes from cycles.parquet, so the trial is known to
+        have happened; reporting nothing would imply it did not."""
+        line = build_descriptions._pause(self.CYCLE, [])
+        self.assertIn("tested", line)
+        self.assertIn("6", line)
+
+    def test_an_unchecked_burst_reports_its_pause_type(self):
+        line = build_descriptions._pause(
+            {"pause_after_s": 40.0, "pause_type": "present_unknown",
+             "trial_after": False}, [])
+        self.assertIn("present unknown", line)
+        self.assertNotIn("tested", line)
+
+
+class TestTrialsAfter(unittest.TestCase):
+    """Trials are attributed with the same window build_cycles.py uses."""
+
+    def _cycle(self, ended="2024-03-01 16:11:08"):
+        return {"doc_id": "d1",
+                "burst_ended": datetime.fromisoformat(ended)}
+
+    def _trial(self, started, label="Gripper", n=3, doc="d1"):
+        return {"doc_id": doc, "started": started, "label": label, "n": n}
+
+    def test_a_trial_inside_the_window_counts(self):
+        hits = build_descriptions._trials_after(
+            [self._trial("2024-03-01 16:11:38")], self._cycle())
+        self.assertEqual(hits, [("Gripper", 3)])
+
+    def test_a_trial_beyond_the_window_does_not(self):
+        late = "2024-03-01 16:14:00"   # 172s > TRIAL_WINDOW_S of 120
+        self.assertEqual(
+            build_descriptions._trials_after([self._trial(late)], self._cycle()),
+            [])
+
+    def test_a_trial_before_the_burst_ended_does_not(self):
+        self.assertEqual(
+            build_descriptions._trials_after(
+                [self._trial("2024-03-01 16:10:00")], self._cycle()),
+            [])
+
+    def test_another_document_is_not_counted(self):
+        self.assertEqual(
+            build_descriptions._trials_after(
+                [self._trial("2024-03-01 16:11:38", doc="d2")], self._cycle()),
+            [])
+
+    def test_repeats_of_one_input_merge(self):
+        hits = build_descriptions._trials_after(
+            [self._trial("2024-03-01 16:11:20", n=4),
+             self._trial("2024-03-01 16:11:40", n=2)], self._cycle())
+        self.assertEqual(hits, [("Gripper", 6)])

@@ -38,7 +38,9 @@ episode is a fifth of a second:
 
 import os
 import sys
+from datetime import datetime, timedelta
 
+import build_cycles
 import lib
 
 # Repeats of one gesture inside this window are one operation, matching
@@ -57,6 +59,32 @@ RUNTIME_PARAMS = ("demoOutput", "orderedDisplayName")
 # (14,648 patches, 6,310 operations after coalescing, corpus-wide) -- so they
 # are excluded by path as well. Matched as a prefix, not an exact name.
 RUNTIME_PARAM_PREFIX = "tickEntries/"
+
+# Simulator variables are addressed by array INDEX in the action path, so
+# trials.parquet carries `var_id` = "3" rather than a name. The name is on the
+# `add` patch that created the variable. Resolves for 514 of the 516
+# (document, index) pairs that carry trials, with no pair mapping to two
+# different names.
+VAR_NAMES_SQL = """
+WITH rec AS (
+  SELECT doc_id, unnest(json_extract(entry_json, '$.records[*]')) AS r
+  FROM read_parquet('{history}')
+  WHERE doc_id IN ({docs})
+),
+p AS (
+  SELECT doc_id, unnest(json_extract(r, '$.patches[*]')) AS patch FROM rec
+)
+SELECT doc_id,
+       regexp_extract(json_extract_string(patch, '$.path'),
+                      '/variables/([0-9]+)$', 1) AS var_id,
+       any_value(json_extract_string(json_extract(patch, '$.value'),
+                                     '$.displayName')) AS display_name
+FROM p
+WHERE json_extract_string(patch, '$.op') = 'add'
+  AND regexp_matches(json_extract_string(patch, '$.path'), '/variables/[0-9]+$')
+  AND json_extract_string(json_extract(patch, '$.value'), '$.displayName') IS NOT NULL
+GROUP BY doc_id, var_id;
+"""
 
 OPS_SQL = """
 WITH rec AS (
@@ -193,13 +221,25 @@ def summarise(rows):
     return out
 
 
-def _pause(cycle):
+def _pause(cycle, trials):
     """What followed the burst. `trial_after` means the student drove the
     program's input, which is stronger evidence of checking than any pause
-    length -- so it is reported ahead of the pause type."""
+    length -- so it is reported ahead of the pause type.
+
+    Naming the input matters: "tested Gripper x12" says what the student was
+    varying, where "tested (12 input changes)" only says that they were.
+    Counts are per input here, whereas cycles.trial_changes is the single
+    largest trial in the window -- so the two can differ when a student drove
+    more than one input.
+    """
     secs = cycle.get("pause_after_s")
     tail = "%ds" % round(secs) if secs is not None else "?"
     if cycle.get("trial_after"):
+        if trials:
+            named = ", ".join("%s x%d" % (label, n) for label, n in trials)
+            return "tested %s, %s" % (named, tail)
+        # trial_after came from cycles.parquet, so a trial is known to exist;
+        # saying so without a name beats implying none happened.
         return "tested (%s input changes), %s" % (cycle.get("trial_changes") or 0, tail)
     ptype = cycle.get("pause_type") or "unknown"
     return "%s, %s" % (ptype.replace("_", " "), tail)
@@ -224,6 +264,58 @@ def group_by_cycle(ops, cycles):
     return out
 
 
+def _trials(history, derived, docs):
+    """Every trial in these documents, labelled by the input it drove.
+
+    Simulator trials name the variable; sensor trials name the reading and
+    whether the device was physical or simulated. An unresolvable variable
+    falls back to its index rather than being dropped -- the trial happened
+    either way.
+    """
+    doc_list = ", ".join("'%s'" % d.replace("'", "''") for d in docs)
+    names = {}
+    for r in lib.query(VAR_NAMES_SQL.format(history=history, docs=doc_list)):
+        names[(r["doc_id"], r["var_id"])] = r["display_name"]
+
+    rows = []
+    for r in lib.query(
+            "SELECT doc_id, var_id, started, n_changes FROM read_parquet('%s') "
+            "WHERE doc_id IN (%s)"
+            % (os.path.join(derived, "trials.parquet"), doc_list)):
+        label = names.get((r["doc_id"], r["var_id"]))
+        rows.append({"doc_id": r["doc_id"], "started": r["started"],
+                     "label": label or "Simulator input #%s" % r["var_id"],
+                     "n": r["n_changes"]})
+    for r in lib.query(
+            "SELECT doc_id, sensor_kind, sensor_type, started, n_ticks "
+            "FROM read_parquet('%s') WHERE doc_id IN (%s)"
+            % (os.path.join(derived, "sensor_trials.parquet"), doc_list)):
+        rows.append({"doc_id": r["doc_id"], "started": r["started"],
+                     "label": "%s (%s)" % (r["sensor_type"] or "sensor",
+                                           r["sensor_kind"] or "?"),
+                     "n": r["n_ticks"]})
+    return rows
+
+
+def _trials_after(trials, cycle):
+    """Trials the cycle's burst was checked by.
+
+    Same window build_cycles.py uses to set `trial_after`: a trial starting
+    at or after the burst ends, within TRIAL_WINDOW_S of it. Merged by label,
+    since one input driven twice is still one input.
+    """
+    end = str(cycle["burst_ended"])
+    horizon = str(cycle["burst_ended"] + timedelta(
+        seconds=build_cycles.TRIAL_WINDOW_S))
+    hits = {}
+    for t in trials:
+        if t["doc_id"] != cycle["doc_id"]:
+            continue
+        if end <= str(t["started"]) <= horizon:
+            hits[t["label"]] = hits.get(t["label"], 0) + (t["n"] or 0)
+    return sorted(hits.items(), key=lambda kv: (-kv[1], kv[0]))
+
+
 def describe(history, cycles_path, episodes):
     """Return {episode_id: {"summary": str, "cycles": [(cycle, [ops])]}}."""
     if not episodes:
@@ -240,6 +332,9 @@ def describe(history, cycles_path, episodes):
         "pause_after_s, pause_type, trial_after, trial_changes "
         "FROM read_parquet('%s') ORDER BY doc_id, tile_id, burst_started"
         % cycles_path)
+    for c in cycles:
+        c["burst_ended"] = datetime.fromisoformat(str(c["burst_ended"]))
+    trials = _trials(history, os.path.dirname(cycles_path), docs)
 
     described = {}
     for ep in episodes:
@@ -256,7 +351,8 @@ def describe(history, cycles_path, episodes):
                  and str(ep["started"]) <= str(r["created"]) <= window_end]
         described[ep["episode_id"]] = {
             "summary": summarise(in_ep),
-            "cycles": group_by_cycle(in_ep, ep_cycles),
+            "cycles": [(c, ops, _trials_after(trials, c))
+                       for c, ops in group_by_cycle(in_ep, ep_cycles)],
         }
     return described
 
@@ -291,7 +387,7 @@ def render(episodes, described):
         # continuation lines into one paragraph, and parameter values are
         # data that may contain markdown metacharacters.
         lines.append("```")
-        for n, (cycle, ops) in enumerate(d["cycles"], start=1):
+        for n, (cycle, ops, trials) in enumerate(d["cycles"], start=1):
             if not ops:
                 # A cycle with no describable operation still happened; saying
                 # so beats renumbering and implying it did not.
@@ -303,7 +399,7 @@ def render(episodes, described):
             note = ""
             if (cycle.get("n_distinct_targets") or 0) > 1:
                 note = "   [%d targets]" % cycle["n_distinct_targets"]
-            lines.append("   -> %s%s" % (_pause(cycle), note))
+            lines.append("   -> %s%s" % (_pause(cycle, trials), note))
         lines += ["```", ""]
     return "\n".join(lines) + "\n"
 
