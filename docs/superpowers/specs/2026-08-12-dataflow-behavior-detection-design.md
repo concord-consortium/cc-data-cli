@@ -71,6 +71,27 @@ they appear inside entries whose `action` is not a tick. The inventory's advice
 to filter ticks by action name is necessary but not sufficient; classification
 must happen at the patch path.
 
+**A third such path was missed, and the implementation inherited the gap.**
+`program/nodes/{id}/data/demoOutput` is the Demo Output node's live display
+value, rewritten as the program runs. It is not in the list above, so
+`build_edits.CLASSIFY` — which catches the two paths that are — sweeps it into
+`parameter` as though a student had set it.
+
+The evidence that it is machine output: the median gap between consecutive
+`demoOutput` changes is 0.08s and 87% fall within 2 seconds, which is not a
+human edit rate. It is emitted under the `setProgram` action rather than a tick
+action, which is why filtering by action name does not reach it — precisely the
+insufficiency this section warns about.
+
+It survives coalescing. After the 2-second window collapses repeats, roughly
+17,200 operations remain, against 48,100 `parameter` edits and 93,100
+`structure` edits. So about a third of the parameter class is display churn.
+
+This inflates `n_changes` and `n_distinct_targets`, which is what carries a
+cycle over the three-target trial-and-error threshold. It does not affect
+`oscillation`, which needs a structural add and remove of one target. The size
+of the correction is unmeasured — see Open questions.
+
 ### One student gesture is many history entries
 
 Measured across the 200 busiest documents: consecutive non-tick entries have a
@@ -536,6 +557,13 @@ each stated with the analysis it would have unblocked:
   Whether cycles from 2022 and 2026 are comparable is unresolved, and the
   inventory's "history of the system itself" gap is exactly why it cannot be
   answered from the data alone.
+- **How much does the `demoOutput` correction move the rates?** Roughly a
+  third of `parameter` edits are Demo Output display churn rather than student
+  edits (see "Runtime output masquerades as student activity"). Excluding them
+  lowers `n_changes` and `n_distinct_targets`, so some cycles will fall back
+  under the three-target threshold and some episodes will change kind. Whether
+  that shifts the composition rates materially, or merely trims noise, is
+  unknown until it is run both ways.
 - **How many verdicts are enough?** Recalibration needs a set large enough to
   move thresholds without overfitting to a handful of replays. Deferred until
   the first sheet exists and the rate of review is known.

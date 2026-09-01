@@ -36,6 +36,15 @@ CLASSIFY = """
       WHEN path LIKE '%/programZoom%' THEN 'layout'
       WHEN regexp_matches(path, '/program/nodes/[^/]+/inputs/') THEN 'structure'
       WHEN regexp_matches(path, '/program/nodes/[^/]+$') THEN 'structure'
+      -- KNOWN DEFECT: this also catches `/data/demoOutput`, which is the
+      -- Demo Output node's live display rather than a student edit -- median
+      -- 0.08s between changes, 87% within 2s, emitted under `setProgram` so
+      -- action-name filtering never reaches it. It is ~17,200 operations
+      -- after coalescing, about a third of the `parameter` class, and it
+      -- inflates the target counts that decide trial-and-error labels.
+      -- Excluding it will move every composition rate, so it wants its own
+      -- change with before/after numbers rather than a quiet fix here. See
+      -- the design's "Runtime output masquerades as student activity".
       WHEN regexp_matches(path, '/program/nodes/[^/]+/data/') THEN 'parameter'
       WHEN is_revert THEN 'undo'
       WHEN action = 'undo' THEN 'undo'

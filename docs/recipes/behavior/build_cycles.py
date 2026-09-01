@@ -34,6 +34,16 @@ operations carrying no before/after value in edits.parquet, so detecting a
 revisit would mean re-reading patch values from history. A student who
 oscillates only on parameters is invisible to this flag.
 
+That re-read has since been shown to be cheap. `replace` patches do carry the
+NEW value -- what they lack is the old one -- so the sequence of values a
+parameter took is recoverable directly from history, which is enough to spot a
+return to an earlier one. Worked example: episode ep002590 is labelled
+`systematic`, and its parameter sequence is Less Than, Greater Than, Less Than,
+Equal, Less Than on a single Logic node. Each cycle touched one target and
+ended in a watching pause, so every rule here votes systematic, while the value
+sequence is the design's parameter oscillation exactly. Closing this gap would
+move labels, not just add a flag.
+
 It is not, however, an artifact of the burst gap, which was the obvious worry
 when the gap moved from 5s to 25s. The raw rate does climb with the gap (22.4%
 of cycles at 5s, 40.4% at 25s), but almost all of that increase is overlap with
