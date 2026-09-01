@@ -263,6 +263,19 @@ class TestExistingReviews(unittest.TestCase):
         kept = build_candidates._existing_reviews(self._write(moved))
         self.assertEqual(kept["ep0001"], ("confirmed", "looks right"))
 
+    def test_a_linked_episode_id_is_keyed_by_its_bare_id(self):
+        """The episode cell is a markdown link to episodes.md. Keying on the
+        raw cell means review work is lost the moment the link changes --
+        which is exactly how five notes were dropped when it was added."""
+        linked = self.SHEET.replace(
+            "| ep0001 |", "| [ep0001](episodes.md#ep0001) |")
+        kept = build_candidates._existing_reviews(self._write(linked))
+        self.assertEqual(kept["ep0001"], ("confirmed", "looks right"))
+
+    def test_an_unlinked_episode_id_still_works(self):
+        kept = build_candidates._existing_reviews(self._write(self.SHEET))
+        self.assertIn("ep0001", kept)
+
     def test_a_missing_sheet_is_not_an_error(self):
         self.assertEqual(
             build_candidates._existing_reviews("/nonexistent/review.md"), {})

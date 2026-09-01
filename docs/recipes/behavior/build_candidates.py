@@ -13,9 +13,11 @@ carries strong examples of each pole, a band straddling the threshold, and some
 unclassified cycles as a check that the phenomenon is not being missed.
 """
 import os
+import re
 from datetime import datetime
 from urllib.parse import urlencode
 
+import build_descriptions
 import lib
 # The burst gap these cycles were built at, recorded in the review sheet
 # because composition rates move with it. Imported rather than restated: two
@@ -40,6 +42,7 @@ MAX_GAP_CYCLES = 1     # an episode survives one unclassified cycle in the middl
 CANDIDATE_COLUMNS = {
     "episode_id": "VARCHAR", "doc_id": "VARCHAR", "doc_key": "VARCHAR",
     "uid": "VARCHAR", "unit": "VARCHAR", "problem": "VARCHAR",
+    "tile_id": "VARCHAR",
     "kind": "VARCHAR", "n_cycles": "BIGINT", "purity": "DOUBLE",
     "span_s": "DOUBLE", "started": "TIMESTAMP", "ended": "TIMESTAMP",
     "first_entry_id": "VARCHAR", "last_entry_id": "VARCHAR",
@@ -242,7 +245,7 @@ def _episodes(cycles_path):
         if kind != "unclassified":
             current = {"key": key, "kind": kind, "doc_id": row["doc_id"],
                        "uid": row["uid"], "unit": row["unit"],
-                       "problem": row["problem"],
+                       "problem": row["problem"], "tile_id": row["tile_id"],
                        "n_cycles": 1, "n_kind": 1, "pending": 0,
                        "started": row["burst_started"],
                        "ended": row["burst_started"],
@@ -250,6 +253,18 @@ def _episodes(cycles_path):
                        "last_entry_id": row["last_entry_id"]}
     close(current)
     return episodes
+
+
+def _episode_id(cell):
+    """The bare id from an episode cell.
+
+    The cell is a markdown link to episodes.md, so the raw text is
+    `[ep000123](episodes.md#ep000123)`. Matching on that would key review work
+    by a string that changes whenever the link does -- which silently dropped
+    five notes the first time the link was added.
+    """
+    m = re.match(r"^\[([^\]]+)\]\(.*\)$", cell.strip())
+    return (m.group(1) if m else cell).strip()
 
 
 def _existing_reviews(path):
@@ -277,7 +292,7 @@ def _existing_reviews(path):
             row = dict(zip(header, cells))
             verdict, note = row.get("verdict", ""), row.get("note", "")
             if verdict or note:
-                kept[row.get("episode", "")] = (verdict, note)
+                kept[_episode_id(row.get("episode", ""))] = (verdict, note)
     return kept
 
 
@@ -332,9 +347,19 @@ def main():
     review_path = os.path.join(derived, "review.md")
     kept = _existing_reviews(review_path)
 
+    sampled = [e for kind in ("systematic", "trial_and_error")
+               for stratum in ("strong", "boundary", "control")
+               for e in [x for x in episodes
+                         if x["kind"] == kind and x["stratum"] == stratum][:PER_STRATUM]]
+    described = build_descriptions.describe(
+        lib.paths()["history"], cycles, sampled)
+
     lines = ["# Review sheet", "",
              "Each row is one episode. Open the replay link, watch what the "
              "student actually did, and fill in the verdict column.", "",
+             "The episode id links to `episodes.md`, which says in words "
+             "what the student did in each cycle -- easier to read than the "
+             "replay, where tick output is interleaved with the edits.", "",
              "`start` opens the episode's first history entry and `end` "
              "its last. Both open the same document at different points: CLUE "
              "cannot yet show a range on the slider (CLUE-635), so the two "
@@ -394,9 +419,9 @@ def main():
             if not picked:
                 continue
             lines += ["## %s — %s (%d shown)" % (kind, stratum, len(picked)), "",
-                      "| episode | date | unit/problem | cycles | start | "
-                      "end | verdict | note |",
-                      "|---|---|---|---|---|---|---|---|"]
+                      "| episode | date | unit/problem | cycles | changes | "
+                      "start | end | verdict | note |",
+                      "|---|---|---|---|---|---|---|---|---|"]
             for e in picked:
                 # No offering id means no launchable URL. Show the document key
                 # instead of a link that would fail on arrival.
@@ -404,15 +429,21 @@ def main():
                          else "no offering id (`%s`)" % e["doc_key"])
                 end = "[end](%s)" % e["end_url"] if e["end_url"] else "-"
                 verdict, note = kept.get(e["episode_id"], ("", ""))
-                lines.append("| %s | %s | %s %s | %d | %s | %s | %s | %s |" % (
-                    e["episode_id"], episode_date(e),
+                summary = described.get(e["episode_id"], {}).get("summary", "-")
+                lines.append("| [%s](episodes.md#%s) | %s | %s %s | %d | %s "
+                             "| %s | %s | %s | %s |" % (
+                    e["episode_id"], e["episode_id"], episode_date(e),
                     e["unit"] or "-", e["problem"] or "-",
-                    e["n_cycles"], start, end, verdict, note))
+                    e["n_cycles"], summary, start, end, verdict, note))
             lines.append("")
 
     with open(review_path, "w") as handle:
         handle.write("\n".join(lines))
     print("wrote review.md")
+
+    with open(os.path.join(derived, "episodes.md"), "w") as handle:
+        handle.write(build_descriptions.render(sampled, described))
+    print("wrote episodes.md (%d episodes)" % len(described))
     if kept:
         shown = {e["episode_id"] for e in episodes}
         dropped = [ep for ep in kept if ep not in shown]
