@@ -15,8 +15,9 @@ Run these in order; each reads earlier stages' outputs.
 2. `build_edits.py` — semantic student operations, from JSON patches
 3. `build_presence.py` — when the document was open, from program ticks
 4. `calibrate.py` — histograms, and the thresholds derived from them
-5. `build_trials.py` — static→changing→static on a Simulator variable, which
-   the student drives with the mouse
+5. `build_trials.py` — the Simulator's slider released, which is the student
+   driving the simulation's input with the mouse. Simulations with no slider
+   (terrarium) correctly yield nothing.
 6. `build_sensor_trials.py` — the same shape on a *sensor's readings*, read
    from program ticks. For a physically-bound sensor this is a gesture step 5
    cannot see at all: the student flexing an EMG, pressing a pad. Also needs

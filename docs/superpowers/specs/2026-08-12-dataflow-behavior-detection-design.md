@@ -125,10 +125,13 @@ four of them tick values; it is now one cycle — the only one that held a real
 edit, a Transform node added and its operator set to Ramp — and it survives as
 a single-cycle episode instead.
 
-### Trials measure the program's output, not the student's input
+### Trials measured the program's output, not the student's input
+
+*Corrected. `build_trials.py` now reads the slider; the measured effect is at
+the end of this section.*
 
 The design treats a "trial" as the student deliberately exercising the program
-by varying its input. `build_trials.py` implements that as
+by varying its input. `build_trials.py` originally implemented that as
 `sharedModel/variables/*/setValue` — and that action is only ever called on
 *outputs*. Across the corpus: Gripper (239,996), Heat Lamp (16,194),
 Humidifier (5,215), Fan (1,722), Simulation Mode (403). EMG, Surface Pressure,
@@ -136,14 +139,14 @@ Target EMG, Pan Temperature and Temperature — the inputs — receive **zero**.
 The writer is `sendDataToSimulatedOutput()` in `live-output-node.ts`, which
 pushes the Live Output node's computed value into the variable.
 
-So `trial_after` currently means "the program's output moved and settled after
+So `trial_after` meant "the program's output moved and settled after
 this burst", which is weak and biased evidence: it needs a Live Output node
 wired to a simulated output, it only fires when the student's program already
 works, and a wave generator moves the output continuously with no student
 involvement.
 
 **The student's control is recorded separately.** `/variables/N/value` has four
-writers, and the detector reads the wrong one:
+writers, and the detector was reading the wrong one:
 
 | action | writes | patches | docs |
 |---|---|---:|---:|
@@ -186,6 +189,41 @@ output movement, which would mix two kinds of evidence under one name.
 The slider's `onChangeComplete` fires `SIMULATOR_TOOL_CHANGE`, but there are
 **zero** such events in the log corpus, so history is the only source for these
 sessions.
+
+**What the correction did.** `build_trials.py` was rewritten onto
+`commitTemporaryValue`. Every commit carries exactly one `replace` patch and
+none is a no-op — 6,387 commits, zero where the value equals its own inverse
+patch — so a commit *is* a change and the old lag-and-compare step disappeared.
+terrarium produces no rows, as intended, and the run prints the per-simulation
+counts so that zero stays visible.
+
+| | before (`setValue`) | after (slider) |
+|---|---:|---:|
+| trials | 3,821 | 2,584 |
+| documents | 405 | 396 |
+| counted "changes" | 262,885 | 6,384 |
+| median trial duration | 3.2s | 4.4s |
+| p90 trial duration | 253.0s | 40.4s |
+
+The headline rate barely moved — 10.1% → 10.3% of cycles have `trial_after` —
+but it is **not the same cycles**. Of the 1,913 that had it, 1,019 kept it, 894
+lost it and 926 gained it: roughly half the label churned, across 347
+documents. 62 documents gained a trial signal they never had, and 30 cycles
+that previously counted as "the student checked" are in pauses now classified
+`absent` — the student was not there and the output was moving on its own,
+which is the failure mode stated above, observed.
+
+`trial_changes` fell from a median of 17 (p90 273) to 2 (p90 10). The old
+number counted output samples; the new one counts times the student moved the
+slider.
+
+Two consequences beyond the artifact. The generated episode descriptions read
+`tested Target EMG x3` where they read `tested Gripper x12` before — the domain
+error corrected itself, since the label just names whichever variable
+`trials.parquet` points at. And the burst-gap anchor got *better*: balanced
+accuracy at 25s rose from 83.5% to 88.3%, and the across-cycle p99 fell from
+83,636s to 712s, that tail having been output drifting rather than any
+student's editing span.
 
 ### One student gesture is many history entries
 
@@ -661,13 +699,15 @@ each stated with the analysis it would have unblocked:
   overrides both `burst_gap_s` and `watch_min_s` with its own constant, and
   the two values it does consume — `watch_max_s` and `ui_staleness_s` — did
   not move. So that shift is inert.
-- **Does the burst-gap anchor survive the trial correction?** The 25s gap is
-  anchored on trial-bounded spans, justified as "the student exercised the
-  program, edited, exercised it again". Since trials are currently output
-  movements rather than student gestures, that justification does not hold as
-  written. Rebuilding trials from the slider will change the anchor's
-  membership and wants the same before/after treatment the runtime-output
-  correction got.
+- ~~**Does the burst-gap anchor survive the trial correction?**~~ Answered:
+  yes, and it improved. The anchor was rebuilt from the slider, so its spans
+  are now genuinely "the student exercised the program, edited, exercised it
+  again" — the justification the 25s gap was always written against, which had
+  not actually held. Membership changed (1,298 spans / 298 documents → 1,455 /
+  287), the classes separated better (recall at 25s 81.4% → 90.7%, balanced
+  83.5% → 88.3%), and 25s remained the outright optimum. The gap did not need
+  to move, which is the strongest available evidence that it was not fitted to
+  the old signal's shape.
 - ~~**Is oscillation still gap-independent?**~~ Answered: yes. Re-measured on
   the corrected data by rebuilding cycles at each gap. The raw rate climbs
   23.6% → 32.0% → 41.7% across 5s/12s/25s, but the share oscillation labels

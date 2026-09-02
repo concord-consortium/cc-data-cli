@@ -85,10 +85,18 @@ unlabelled, so they were being asked to separate themselves. Trials supply the
 labels. Edits falling between two consecutive trials are one edit-then-check
 cycle by construction -- the student exercised the program, edited, exercised it
 again -- so every gap inside that span is a within-cycle gap, and a gap that a
-trial falls inside is an across-cycle gap. Measured over 1,298 such spans in
-298 documents: within-cycle gaps have a median of 5.2s, across-cycle gaps
-106.5s. Sweeping the threshold against both labelled classes puts the optimum
-at 25s, scoring 83.5% balanced against 83.2% at 20s and 82.2% at 32.9s.
+trial falls inside is an across-cycle gap. Measured over 1,455 such spans in
+287 documents: within-cycle gaps have a median of 5.3s, across-cycle gaps
+104.4s. Sweeping the threshold against both labelled classes puts the optimum
+at 25s, scoring 88.3% balanced against 88.2% at 20s and 87.1% at 32.9s.
+
+Those figures are from the SLIDER anchor. When build_trials.py was rewritten off
+the program's output onto the student's slider, the anchor was rebuilt with it
+and 25s survived as the outright optimum -- balanced accuracy rose from 83.5% to
+88.3%, and the across-cycle p99 fell from 83,636s to 712s, the old tail having
+been output drifting on its own rather than any student's editing span. The gap
+did not need to move, which is the strongest evidence available that it was not
+fitted to the old signal's shape.
 
 The earlier 5s value was a mistake, and the anchor shows it in two ways. A
 trial-bounded cycle was cut into a median of THREE bursts, and the composition
@@ -251,8 +259,8 @@ COPY (
   has_sess AS (SELECT DISTINCT doc_id FROM sess),
   pres AS (SELECT doc_id, started, ended FROM read_parquet('{presence}')),
   has_pres AS (SELECT DISTINCT doc_id FROM pres),
-  -- Both trial detectors count. build_trials.py sees a Simulator variable
-  -- moving under the mouse; build_sensor_trials.py sees a sensor's readings
+  -- Both trial detectors count. build_trials.py sees the Simulator's slider
+  -- released under the mouse; build_sensor_trials.py sees a sensor's readings
   -- move, which for a physically-bound sensor is a gesture the first detector
   -- cannot observe at all. Simulated-sensor trials are kept too: where a
   -- Simulation tile drives a Sensor node, only 12 of those 33 documents also

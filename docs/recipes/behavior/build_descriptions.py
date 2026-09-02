@@ -224,13 +224,20 @@ def summarise(rows):
 def _pause(cycle, trials):
     """What followed the burst. `trial_after` means the student drove the
     program's input, which is stronger evidence of checking than any pause
-    length -- so it is reported ahead of the pause type.
+    length -- so it is reported ahead of the pause type. For a simulation with
+    no slider there is no such evidence to have, and the pause type is all
+    there is; see build_trials.py on terrarium.
 
-    Naming the input matters: "tested Gripper x12" says what the student was
-    varying, where "tested (12 input changes)" only says that they were.
+    Naming the input matters: "tested Target EMG x3" says what the student was
+    varying, where "tested (3 input changes)" only says that they were.
     Counts are per input here, whereas cycles.trial_changes is the single
     largest trial in the window -- so the two can differ when a student drove
     more than one input.
+
+    This line used to read "tested Gripper x12", which was backwards: the
+    Gripper is what the program DRIVES. The label is right now because
+    build_trials.py was rewritten onto the slider, not because anything here
+    changed -- the name comes from whichever variable trials.parquet points at.
     """
     secs = cycle.get("pause_after_s")
     tail = "%ds" % round(secs) if secs is not None else "?"

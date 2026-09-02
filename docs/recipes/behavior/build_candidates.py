@@ -414,9 +414,9 @@ def main():
              "tile in one document, all carrying the same label. A cycle is a "
              "burst of edits plus the pause that follows it.", "",
              "**systematic** -- each cycle changed exactly one thing, and "
-             "there is evidence the student then checked it: they ran the "
-             "program, or the pause after the edit shows them present and "
-             "watching, or they wrote something down.", "",
+             "there is evidence the student then checked it: they moved the "
+             "simulation's slider, or the pause after the edit shows them "
+             "present and watching, or they wrote something down.", "",
              "**trial_and_error** -- a cycle changed three or more distinct "
              "things before any check, or it undid something, or it "
              "oscillated: a value put in and taken back out within the same "
@@ -435,6 +435,13 @@ def main():
              "it if the pause was the student leaving or idling rather than "
              "attending to the program, or if they changed several things and "
              "only one was visible to the detector.", "",
+             "One asymmetry to allow for: the strongest evidence of checking "
+             "is the student driving the simulation's input, and the "
+             "terrarium simulation has no control to drive -- it is a closed "
+             "loop fed by the student's own outputs. Those episodes can only "
+             "ever be evidenced by pausing or writing something down, so a "
+             "thinner case there is a limit of the data rather than a weaker "
+             "student.", "",
              "For a **trial_and_error** row, check that the student changed "
              "several things before observing any result. Reject it if a "
              "repeated change was a deliberate comparison rather than "

@@ -3,9 +3,10 @@
 
   ./build_sensor_trials.py
 
-build_trials.py finds the same shape on a Simulator variable, where the student
-drags a slider. That covers only documents with a Simulator tile, and it reads
-`sharedModel/variables/*/setValue`, a path a physical sensor never writes.
+build_trials.py covers the other input the student can drive: the Simulator's
+slider, read from `commitTemporaryValue`. That covers only documents with a
+Simulator tile whose simulation HAS a slider, and it reads a path a physical
+sensor never writes.
 
 A physical sensor's readings arrive somewhere else entirely: `tickAndProcess`
 history entries, one per program tick, each carrying a `nodeValue` per node
@@ -14,9 +15,9 @@ under `nodes/{id}/data/tickEntries/{tick}`. build_edits.py classifies those as
 the student's observation, and this is the third time in this pipeline that the
 stream discarded as machine noise turned out to carry the signal.
 
-Detection differs from build_trials.py in one way that matters. A slider writes
-exact values, so a change is `v IS DISTINCT FROM prev_v`. A sensor is noisy, so
-this uses a rolling range instead: a window of WINDOW_TICKS consecutive
+Detection differs from build_trials.py in one way that matters. A slider records
+one committed value per release, so each entry is already a change. A sensor
+records a reading per tick and is noisy, so this uses a rolling range instead: a window of WINDOW_TICKS consecutive
 readings is `changing` when it spans more than CHANGE_FRACTION of that node's
 observed range. Measured on the real corpus, resting EMG is quieter than that
 suggests -- readings sit pinned at a floor value with a rolling range of
