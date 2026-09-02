@@ -210,6 +210,37 @@ class TestEpisodeEndEntry(unittest.TestCase):
         self.assertEqual(eps[0]["last_entry_id"], "e0z")
 
 
+class TestDroppedReviews(unittest.TestCase):
+    """Which reviewed rows a rebuild is about to lose.
+
+    The check must compare against the episodes actually written into the
+    sheet. Comparing against every episode makes an episode that survives but
+    falls out of the sample look carried forward when its note goes nowhere.
+    """
+
+    KEPT = {"ep0001": ("", "a note"), "ep0002": ("ok", "")}
+
+    def test_a_sampled_episode_is_not_dropped(self):
+        self.assertEqual(
+            build_candidates._dropped_reviews(
+                self.KEPT, [{"episode_id": "ep0001"}, {"episode_id": "ep0002"}]),
+            [])
+
+    def test_an_episode_that_survives_but_is_not_sampled_is_dropped(self):
+        """The bug this exists to stop: ep0002 is still an episode, so a check
+        against the full episode list would call it carried forward, but only
+        sampled rows are rendered and it is not one."""
+        self.assertEqual(
+            build_candidates._dropped_reviews(
+                self.KEPT, [{"episode_id": "ep0001"}]),
+            ["ep0002"])
+
+    def test_an_episode_that_vanished_entirely_is_dropped(self):
+        self.assertEqual(
+            build_candidates._dropped_reviews(self.KEPT, []),
+            ["ep0001", "ep0002"])
+
+
 class TestExistingReviews(unittest.TestCase):
     """A rebuild must not discard review work already entered."""
 

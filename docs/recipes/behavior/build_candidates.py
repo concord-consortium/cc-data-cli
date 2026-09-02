@@ -320,6 +320,19 @@ def _existing_reviews(path):
     return kept
 
 
+def _dropped_reviews(kept, sampled):
+    """Reviewed episode ids that the rebuild will not write anywhere.
+
+    Compared against the SAMPLED episodes, not every episode: only sampled
+    rows are rendered into review.md, so an episode that survives the rebuild
+    but falls out of the sample carries its verdict and note into nothing.
+    Comparing against the full episode list reported those as carried forward
+    and warned about neither -- two notes were lost that way.
+    """
+    shown = {e["episode_id"] for e in sampled}
+    return sorted(ep for ep in kept if ep not in shown)
+
+
 def _stratum(ep):
     if ep["n_cycles"] >= STRONG_CYCLES:
         return "strong"
@@ -469,8 +482,7 @@ def main():
         handle.write(build_descriptions.render(sampled, described))
     print("wrote episodes.md (%d episodes)" % len(described))
     if kept:
-        shown = {e["episode_id"] for e in episodes}
-        dropped = [ep for ep in kept if ep not in shown]
+        dropped = _dropped_reviews(kept, sampled)
         print("  carried forward %d reviewed row(s)" % (len(kept) - len(dropped)))
         # A reviewed episode the rebuild no longer samples would vanish
         # silently, which is the failure this whole function exists to stop.
