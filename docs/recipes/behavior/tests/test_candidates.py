@@ -241,6 +241,167 @@ class TestDroppedReviews(unittest.TestCase):
             ["ep0001", "ep0002"])
 
 
+SHEET = (
+    "# Review sheet\n\n"
+    "## systematic — strong (3 shown)\n\n"
+    "### ep0001\n\n"
+    "- **verdict:** confirmed\n"
+    "- **note:** looks right\n"
+    "- **date:** 2024-03-01\n"
+    "- **unit/problem:** brain 3\n"
+    "- **cycles:** 4\n"
+    "- **changes:** 6 param\n"
+    "- **replay:** [start][ep0001-start] · [end][ep0001-end]\n\n"
+    "```\n"
+    "1. set Control.controlOperator = Hold Prior\n"
+    "   -> tested Target EMG x1, 45s\n"
+    "```\n\n"
+    "### ep0002\n\n"
+    "- **verdict:** \n"
+    "- **note:** \n"
+    "- **date:** 2024-03-02\n"
+    "- **cycles:** 4\n\n"
+    "## trial_and_error — control (1 shown)\n\n"
+    "### ep0003\n\n"
+    "- **verdict:** \n"
+    "- **note:** history error\n"
+    "- **date:** 2024-03-03\n\n"
+    "[ep0001-start]: https://example.org/a\n"
+    "[ep0001-end]: https://example.org/b\n"
+)
+
+
+class TestEpisodeSection(unittest.TestCase):
+    """What one episode looks like in the sheet, and that it reads back."""
+
+    EP = {"episode_id": "ep0001", "doc_id": "-NrGclyWd2sBVJyJ7Zhj",
+          "unit": "brain", "problem": "3", "n_cycles": 4,
+          "started": "2024-02-26 16:54:07.123",
+          "ended": "2024-02-26 16:57:01.456",
+          "first_entry_idx": 2944, "last_entry_idx": 3068, "n_entries": 9330,
+          "replay_url": "https://clue.example/?a=1&b=2",
+          "end_url": "https://clue.example/?a=1&b=3"}
+
+    def section(self, **over):
+        return build_candidates._episode_section(
+            {**self.EP, **over}, over.pop("_kept", {}), {})
+
+    def field(self, key, **over):
+        prefix = "- **%s:**" % key
+        return next(l for l in self.section(**over) if l.startswith(prefix))
+
+    def test_start_and_end_are_separate_fields(self):
+        """One line each, so a 300-character URL never sits beside anything
+        else a reviewer has to read."""
+        self.assertIn("entry 2944 of 9330", self.field("start"))
+        self.assertIn("entry 3068 of 9330", self.field("end"))
+
+    def test_each_end_carries_its_own_time_and_link(self):
+        start = self.field("start")
+        self.assertIn("2024-02-26 16:54:07", start)
+        self.assertIn("https://clue.example/?a=1&b=2", start)
+        self.assertIn("2024-02-26 16:57:01", self.field("end"))
+
+    def test_the_document_id_is_shown(self):
+        self.assertIn("-NrGclyWd2sBVJyJ7Zhj", self.field("document"))
+
+    def test_a_missing_offering_says_so_rather_than_linking(self):
+        """A URL cannot be built without an offering id, and a link that fails
+        on arrival is worse than none."""
+        line = self.field("start", replay_url=None)
+        self.assertIn("no offering id", line)
+        self.assertNotIn("](", line)
+
+    def test_an_unknown_position_is_marked_rather_than_guessed(self):
+        self.assertIn("entry ? of ?",
+                      self.field("start", first_entry_idx=None, n_entries=None))
+
+    def test_verdict_and_note_come_first(self):
+        """They are the only fields typed into, so nothing is scrolled past."""
+        fields = [l for l in self.section() if l.startswith("- **")]
+        self.assertTrue(fields[0].startswith("- **verdict:**"))
+        self.assertTrue(fields[1].startswith("- **note:**"))
+
+    def test_an_empty_field_has_no_trailing_space(self):
+        """Editors that strip trailing whitespace on save would otherwise
+        rewrite every unreviewed episode and bury the real edits."""
+        self.assertIn("- **verdict:**", self.section())
+
+    def test_a_written_section_reads_back(self):
+        """The writer and the parser have drifted apart twice. This pins them
+        together: whatever is rendered here must survive parse_sheet()."""
+        rendered = build_candidates._episode_section(
+            self.EP, {"ep0001": ("confirmed", "clear enough")}, {})
+        text = "## systematic — strong (1 shown)\n\n" + "\n".join(rendered)
+        row = build_candidates.parse_sheet(text)[0]
+        self.assertEqual(row["episode_id"], "ep0001")
+        self.assertEqual(row["verdict"], "confirmed")
+        self.assertEqual(row["note"], "clear enough")
+        self.assertEqual(row["kind"], "systematic")
+
+
+class TestParseSheet(unittest.TestCase):
+    """One parser serves the writer, the carry-forward, and apply_verdicts.py.
+
+    Three separate views of the format is how they drifted: apply_verdicts.py
+    read the replay link as a verdict when a column moved, then matched
+    nothing at all once episode ids stopped being decimal.
+    """
+
+    def rows(self, text=None):
+        return {r["episode_id"]: r
+                for r in build_candidates.parse_sheet(text or SHEET)}
+
+    def test_reads_verdict_and_note(self):
+        row = self.rows()["ep0001"]
+        self.assertEqual((row["verdict"], row["note"]),
+                         ("confirmed", "looks right"))
+
+    def test_carries_the_stratum_heading_onto_its_episodes(self):
+        rows = self.rows()
+        self.assertEqual((rows["ep0001"]["kind"], rows["ep0001"]["stratum"]),
+                         ("systematic", "strong"))
+        self.assertEqual((rows["ep0003"]["kind"], rows["ep0003"]["stratum"]),
+                         ("trial_and_error", "control"))
+
+    def test_an_unreviewed_episode_is_present_with_empty_fields(self):
+        """apply_verdicts.py counts reviewed against total, so an untouched
+        episode has to appear rather than be skipped."""
+        self.assertEqual(self.rows()["ep0002"]["verdict"], "")
+        self.assertEqual(self.rows()["ep0002"]["note"], "")
+
+    def test_a_note_with_no_verdict_is_kept(self):
+        """The overwrite that prompted the carry-forward checked verdicts
+        only, and dropped four notes."""
+        row = self.rows()["ep0003"]
+        self.assertEqual((row["verdict"], row["note"]), ("", "history error"))
+
+    def test_fields_are_found_by_name_not_position(self):
+        """A field inserted above `verdict` must not shift what is read."""
+        moved = SHEET.replace("### ep0001\n\n- **verdict:**",
+                              "### ep0001\n\n- **kind:** systematic\n- **verdict:**")
+        self.assertEqual(self.rows(moved)["ep0001"]["verdict"], "confirmed")
+
+    def test_the_link_definition_block_is_not_read_as_an_episode(self):
+        self.assertNotIn("[ep0001-start]:", self.rows())
+        self.assertEqual(len(self.rows()), 3)
+
+    def test_a_hex_episode_id_is_matched(self):
+        """Ids became content-derived hex. The old `ep\\d+` regex silently
+        matched none of them, and apply_verdicts.py reported no reviews at
+        all rather than failing."""
+        hexed = SHEET.replace("ep0001", "epb15d6f25a1")
+        self.assertIn("epb15d6f25a1", self.rows(hexed))
+
+    def test_the_cycle_block_is_not_read_as_fields(self):
+        """Cycle text is fenced and may contain anything; it must not be able
+        to forge a verdict."""
+        forged = SHEET.replace(
+            "1. set Control.controlOperator = Hold Prior",
+            "- **verdict:** rejected")
+        self.assertEqual(self.rows(forged)["ep0001"]["verdict"], "confirmed")
+
+
 class TestExistingReviews(unittest.TestCase):
     """A rebuild must not discard review work already entered."""
 
@@ -250,64 +411,17 @@ class TestExistingReviews(unittest.TestCase):
             handle.write(body)
         return path
 
-    SHEET = (
-        "# Review sheet\n\n"
-        "## systematic — strong (2 shown)\n\n"
-        "| episode | date | unit/problem | cycles | start | end | "
-        "verdict | note |\n"
-        "|---|---|---|---|---|---|---|---|\n"
-        "| ep0001 | 2024-03-01 | brain 3 | 4 | [start](u) | [end](v) | "
-        "confirmed | looks right |\n"
-        "| ep0002 | 2024-03-02 | brain 3 | 4 | [start](u) | [end](v) |  |  |\n"
-        "| ep0003 | 2024-03-03 | brain 3 | 4 | [start](u) | [end](v) |  "
-        "| history error |\n"
-    )
-
     def test_keeps_verdicts_and_notes(self):
-        kept = build_candidates._existing_reviews(self._write(self.SHEET))
+        kept = build_candidates._existing_reviews(self._write(SHEET))
         self.assertEqual(kept["ep0001"], ("confirmed", "looks right"))
 
     def test_keeps_a_note_with_no_verdict(self):
-        """The overwrite that prompted this checked verdicts only."""
-        kept = build_candidates._existing_reviews(self._write(self.SHEET))
+        kept = build_candidates._existing_reviews(self._write(SHEET))
         self.assertEqual(kept["ep0003"], ("", "history error"))
 
-    def test_ignores_untouched_rows(self):
-        kept = build_candidates._existing_reviews(self._write(self.SHEET))
+    def test_ignores_untouched_episodes(self):
+        kept = build_candidates._existing_reviews(self._write(SHEET))
         self.assertNotIn("ep0002", kept)
-
-    def test_reads_by_header_not_position(self):
-        """A column inserted before `verdict` must not shift what is carried.
-
-        Position-indexed parsing is how apply_verdicts.py came to read the
-        replay link as a verdict, so this pins the header-based behaviour.
-        """
-        moved = self.SHEET.replace(
-            "| episode | date | unit/problem | cycles | start | end | "
-            "verdict | note |",
-            "| episode | date | extra | unit/problem | cycles | start | end | "
-            "verdict | note |"
-        ).replace(
-            "|---|---|---|---|---|---|---|---|",
-            "|---|---|---|---|---|---|---|---|---|"
-        ).replace(
-            "| ep0001 | 2024-03-01 | brain 3 |",
-            "| ep0001 | 2024-03-01 | x | brain 3 |")
-        kept = build_candidates._existing_reviews(self._write(moved))
-        self.assertEqual(kept["ep0001"], ("confirmed", "looks right"))
-
-    def test_a_linked_episode_id_is_keyed_by_its_bare_id(self):
-        """The episode cell is a markdown link to episodes.md. Keying on the
-        raw cell means review work is lost the moment the link changes --
-        which is exactly how five notes were dropped when it was added."""
-        linked = self.SHEET.replace(
-            "| ep0001 |", "| [ep0001](episodes.md#ep0001) |")
-        kept = build_candidates._existing_reviews(self._write(linked))
-        self.assertEqual(kept["ep0001"], ("confirmed", "looks right"))
-
-    def test_an_unlinked_episode_id_still_works(self):
-        kept = build_candidates._existing_reviews(self._write(self.SHEET))
-        self.assertIn("ep0001", kept)
 
     def test_a_missing_sheet_is_not_an_error(self):
         self.assertEqual(

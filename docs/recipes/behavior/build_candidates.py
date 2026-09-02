@@ -47,9 +47,42 @@ CANDIDATE_COLUMNS = {
     "kind": "VARCHAR", "n_cycles": "BIGINT", "purity": "DOUBLE",
     "span_s": "DOUBLE", "started": "TIMESTAMP", "ended": "TIMESTAMP",
     "first_entry_id": "VARCHAR", "last_entry_id": "VARCHAR",
+    "first_entry_idx": "BIGINT", "last_entry_idx": "BIGINT",
+    "n_entries": "BIGINT",
     "replay_url": "VARCHAR", "end_url": "VARCHAR", "stratum": "VARCHAR",
     "offering_source": "VARCHAR",
 }
+
+# Where an episode's first and last entries sit in the document's history, and
+# how long that history is -- so a reviewer can see whether an episode is early
+# work or a final pass, and how much of the document it covers.
+#
+# `idx` is CLUE's own `index` field on the entry, not a position this pipeline
+# assigns, so it is the number the history slider counts in. It is not always
+# unique: 15 of the 2,294 documents carrying episodes repeat an index across
+# two distinct entries, and 19 hold a different number of entries than the
+# document's own metadata claims (worst case 298). Both are recorded upstream
+# in history_documents.parquet as `distinct_idx` and `expected_max_idx`. The
+# index is reported as CLUE stores it rather than renumbered, because a
+# renumbered position would not match what the reviewer sees.
+#
+# Semi-join against cycles.parquet rather than an IN list of ~9,000 literal
+# entry ids, which would be a quarter-megabyte of SQL text.
+ENTRY_POSITIONS_SQL = """
+WITH want AS (
+  SELECT first_entry_id AS entry_id FROM read_parquet('{cycles}')
+  UNION
+  SELECT last_entry_id FROM read_parquet('{cycles}')
+),
+totals AS (
+  SELECT doc_id, count(*) AS n_entries
+  FROM read_parquet('{history}') GROUP BY doc_id
+)
+SELECT h.doc_id, h.entry_id, h.idx, t.n_entries
+FROM read_parquet('{history}') h
+JOIN want w USING (entry_id)
+JOIN totals t USING (doc_id)
+"""
 
 
 def classify_cycle(row):
@@ -279,45 +312,62 @@ def episode_id(ep):
     return "ep" + hashlib.sha1(key.encode("utf-8")).hexdigest()[:10]
 
 
-def _episode_id(cell):
-    """The bare id from an episode cell.
+# The three places that touch review.md -- this writer, the carry-forward on
+# rebuild, and apply_verdicts.py -- agree on the format through parse_sheet()
+# alone. They used to hold three separate views of a markdown table, and two of
+# them rotted: apply_verdicts.py read the replay link as a verdict when a
+# column moved, and later matched nothing at all once episode ids stopped being
+# decimal. One parser means a format change breaks loudly or not at all.
+STRATUM_HEADING = re.compile(r"^##\s+(\S+)\s+—\s+(\w+)")
+EPISODE_HEADING = re.compile(r"^###\s+(\S+)\s*$")
+REVIEW_FIELD = re.compile(r"^-\s+\*\*(verdict|note):\*\*(.*)$")
 
-    The cell is a markdown link to episodes.md, so the raw text is
-    `[ep000123](episodes.md#ep000123)`. Matching on that would key review work
-    by a string that changes whenever the link does -- which silently dropped
-    five notes the first time the link was added.
+
+def parse_sheet(text):
+    """Every episode in the sheet, with whatever review has been filled in.
+
+    Fields are found by key name inside the episode's own `### <id>` section,
+    so adding or reordering fields cannot carry the wrong text forward.
     """
-    m = re.match(r"^\[([^\]]+)\]\(.*\)$", cell.strip())
-    return (m.group(1) if m else cell).strip()
+    rows, kind, stratum, row = [], "", "", None
+    fenced = False
+    for line in text.splitlines():
+        # The cycle block is fenced because it carries parameter VALUES, which
+        # are student data and may be any text at all. Skipping it means a
+        # value cannot forge a `- **verdict:**` line, and it is why the block
+        # is fenced rather than rendered as a list.
+        if line.startswith("```"):
+            fenced = not fenced
+            continue
+        if fenced:
+            continue
+        heading = STRATUM_HEADING.match(line)
+        if heading:
+            kind, stratum = heading.group(1), heading.group(2)
+            continue
+        episode = EPISODE_HEADING.match(line)
+        if episode:
+            row = {"episode_id": episode.group(1), "kind": kind,
+                   "stratum": stratum, "verdict": "", "note": ""}
+            rows.append(row)
+            continue
+        field = REVIEW_FIELD.match(line)
+        if field and row is not None:
+            row[field.group(1)] = field.group(2).strip()
+    return rows
 
 
 def _existing_reviews(path):
-    """Read verdict and note cells already filled in, keyed by episode id.
+    """Verdicts and notes already filled in, keyed by episode id.
 
-    Rebuilding the sheet must not throw away review work. Cells are located by
-    the header row rather than by position, so adding or reordering a column
-    cannot silently carry the wrong text forward -- which is exactly how
-    apply_verdicts.py came to read the replay link as a verdict.
+    Rebuilding the sheet must not throw away review work.
     """
     if not os.path.exists(path):
         return {}
-    kept, header = {}, None
     with open(path) as handle:
-        for line in handle:
-            if not line.startswith("|"):
-                continue
-            cells = [c.strip() for c in line.strip().strip("|").split("|")]
-            if cells and cells[0] == "episode":
-                header = cells
-                continue
-            # The |---|---| separator carries no data.
-            if not header or set("".join(cells)) <= {"-"}:
-                continue
-            row = dict(zip(header, cells))
-            verdict, note = row.get("verdict", ""), row.get("note", "")
-            if verdict or note:
-                kept[_episode_id(row.get("episode", ""))] = (verdict, note)
-    return kept
+        rows = parse_sheet(handle.read())
+    return {r["episode_id"]: (r["verdict"], r["note"]) for r in rows
+            if r["verdict"] or r["note"]}
 
 
 def _dropped_reviews(kept, sampled):
@@ -331,6 +381,71 @@ def _dropped_reviews(kept, sampled):
     """
     shown = {e["episode_id"] for e in sampled}
     return sorted(ep for ep in kept if ep not in shown)
+
+
+def _entry_field(label, when, idx, n_entries, url):
+    """One end of the episode: when it happened, where in the history, and the
+    link that opens the document there.
+
+    Position is `entry N of M` because neither number means much alone --
+    entry 400 is early in a 5,000-entry document and the whole story in a
+    420-entry one.
+    """
+    where = "entry %s of %s" % ("?" if idx is None else idx,
+                                "?" if n_entries is None else n_entries)
+    # No offering id means no launchable URL, and a link that fails on arrival
+    # is worse than none.
+    link = "[open](%s)" % url if url else "no offering id"
+    return "- **%s:** %s · %s · %s" % (label, str(when)[:19], where, link)
+
+
+def _episode_section(e, kept, described):
+    """One episode: its fields as a list, then what the student did.
+
+    The fields are a bulleted list rather than a table row. A row carrying two
+    ~300-character replay URLs was unreadable in the markdown source, which is
+    where this file is filled in -- and `verdict` and `note`, the only two
+    cells a reviewer typed into, sat at the far right of it. Here they come
+    first, and each field is its own line however long its URL is.
+
+    `verdict` and `note` are matched back by _existing_reviews() and
+    apply_verdicts.py on the `- **key:** value` shape, so the marker and the
+    key name are load-bearing; the rest of the list is for reading.
+    """
+    ep_id = e["episode_id"]
+    verdict, note = kept.get(ep_id, ("", ""))
+    # No trailing space on an empty field: editors that strip trailing
+    # whitespace on save would otherwise rewrite every unreviewed episode and
+    # bury the real edits in the diff.
+    lines = ["### %s" % ep_id, "",
+             ("- **verdict:** %s" % verdict).rstrip(),
+             ("- **note:** %s" % note).rstrip(),
+             "- **date:** %s" % episode_date(e),
+             "- **unit/problem:** %s %s" % (e["unit"] or "-", e["problem"] or "-"),
+             "- **document:** `%s`" % e["doc_id"],
+             "- **cycles:** %d" % e["n_cycles"],
+             "- **changes:** %s" % described.get(ep_id, {}).get("summary", "-"),
+             _entry_field("start", e["started"], e.get("first_entry_idx"),
+                          e.get("n_entries"), e["replay_url"]),
+             _entry_field("end", e["ended"], e.get("last_entry_idx"),
+                          e.get("n_entries"), e["end_url"]),
+             ""]
+    d = described.get(ep_id)
+    if d:
+        lines += build_descriptions.cycles_block(d)
+    return lines
+
+
+def _entry_positions(cycles, history):
+    """entry_id -> (its index in the document, the document's entry count).
+
+    Keyed on entry_id alone: entry ids are unique across the whole corpus --
+    6,381,134 entries, no id repeated even within a document -- so the doc_id
+    would add nothing to the key.
+    """
+    return {r["entry_id"]: (r["idx"], r["n_entries"])
+            for r in lib.query(ENTRY_POSITIONS_SQL.format(
+                cycles=cycles, history=history))}
 
 
 def _stratum(ep):
@@ -349,10 +464,16 @@ def main():
     p = lib.paths()
     ids = _portal_ids(derived, p["content"], p["logs"])
 
+    positions = _entry_positions(cycles, p["history"])
+
     episodes = _episodes(cycles)
     for ep in episodes:
         ep["episode_id"] = episode_id(ep)
         ep["stratum"] = _stratum(ep)
+        first = positions.get(ep["first_entry_id"], (None, None))
+        last = positions.get(ep["last_entry_id"], (None, None))
+        ep["first_entry_idx"], ep["n_entries"] = first
+        ep["last_entry_idx"] = last[0]
         doc_key, class_id, offering_id, source = ids.get(
             ep["doc_id"], (ep["doc_id"], None, None, "none"))
         ep["doc_key"] = doc_key
@@ -392,20 +513,31 @@ def main():
         lib.paths()["history"], cycles, sampled)
 
     lines = ["# Review sheet", "",
-             "Each row is one episode. Open the replay link, watch what the "
-             "student actually did, and fill in the verdict column.", "",
-             "The episode id links to `episodes.md`, which says in words "
-             "what the student did in each cycle -- easier to read than the "
-             "replay, where tick output is interleaved with the edits.", "",
-             "`start` opens the episode's first history entry and `end` "
-             "its last. Both open the same document at different points: CLUE "
-             "cannot yet show a range on the slider (CLUE-635), so the two "
-             "links are how you see where the episode begins and ends.", "",
+             "One `###` section per episode. Fill in **verdict** and **note** "
+             "on the section itself -- they are the first two fields so you "
+             "are not scrolling past anything to reach them.", "",
              "Verdicts: `confirmed`, `rejected`, `ambiguous`. Save this file, "
-             "then run `apply_verdicts.py`.", "",
+             "then run `apply_verdicts.py`. Everything else in a section is "
+             "regenerated on the next build, so only those two fields "
+             "survive; write anything longer in **note** rather than as loose "
+             "prose, which would be lost.", "",
+             "The fenced block under each episode says in words what the "
+             "student did in each cycle -- easier to read than the replay, "
+             "where tick output is interleaved with the edits. It is often "
+             "enough on its own.", "",
+             "**start** and **end** are the two ends of the episode: when it "
+             "happened, where the entry sits in the document's history, and a "
+             "link that opens the document there. They are separate fields "
+             "because CLUE cannot yet show a range on the slider (CLUE-635), "
+             "so opening both is how you see where the episode begins and "
+             "ends.", "",
+             "`entry 412 of 5,003` is CLUE's own index for that entry and the "
+             "number of entries the document holds -- how far into the "
+             "student's work this episode sits, and how much of it the "
+             "episode covers.", "",
              "Strata: **strong** = a long run, **boundary** = a short run near "
              "the threshold, **control** = a single cycle. Boundary and control "
-             "rows matter most -- they are where the thresholds are wrong.", "",
+             "episodes matter most -- they are where the thresholds are wrong.", "",
              "`date` is when the episode started, on the student's own device "
              "clock -- history entries carry no server timestamp.", "",
 
@@ -430,7 +562,7 @@ def main():
              "## What to look for", "",
              "The label is inferred from the shape of the edits. You are "
              "judging whether someone watching the student would agree.", "",
-             "For a **systematic** row, check that the student really changed "
+             "For a **systematic** episode, check that the student really changed "
              "one thing at a time and really checked between changes. Reject "
              "it if the pause was the student leaving or idling rather than "
              "attending to the program, or if they changed several things and "
@@ -442,7 +574,7 @@ def main():
              "ever be evidenced by pausing or writing something down, so a "
              "thinner case there is a limit of the data rather than a weaker "
              "student.", "",
-             "For a **trial_and_error** row, check that the student changed "
+             "For a **trial_and_error** episode, check that the student changed "
              "several things before observing any result. Reject it if a "
              "repeated change was a deliberate comparison rather than "
              "flailing, or if the edits were housekeeping -- renaming, moving "
@@ -462,32 +594,13 @@ def main():
                       if e["kind"] == kind and e["stratum"] == stratum][:PER_STRATUM]
             if not picked:
                 continue
-            lines += ["## %s — %s (%d shown)" % (kind, stratum, len(picked)), "",
-                      "| episode | date | unit/problem | cycles | changes | "
-                      "start | end | verdict | note |",
-                      "|---|---|---|---|---|---|---|---|---|"]
+            lines += ["## %s — %s (%d shown)" % (kind, stratum, len(picked)), ""]
             for e in picked:
-                # No offering id means no launchable URL. Show the document key
-                # instead of a link that would fail on arrival.
-                start = ("[start](%s)" % e["replay_url"] if e["replay_url"]
-                         else "no offering id (`%s`)" % e["doc_key"])
-                end = "[end](%s)" % e["end_url"] if e["end_url"] else "-"
-                verdict, note = kept.get(e["episode_id"], ("", ""))
-                summary = described.get(e["episode_id"], {}).get("summary", "-")
-                lines.append("| [%s](episodes.md#%s) | %s | %s %s | %d | %s "
-                             "| %s | %s | %s | %s |" % (
-                    e["episode_id"], e["episode_id"], episode_date(e),
-                    e["unit"] or "-", e["problem"] or "-",
-                    e["n_cycles"], summary, start, end, verdict, note))
-            lines.append("")
+                lines += _episode_section(e, kept, described)
 
     with open(review_path, "w") as handle:
         handle.write("\n".join(lines))
-    print("wrote review.md")
-
-    with open(os.path.join(derived, "episodes.md"), "w") as handle:
-        handle.write(build_descriptions.render(sampled, described))
-    print("wrote episodes.md (%d episodes)" % len(described))
+    print("wrote review.md (%d episodes)" % len(described))
     if kept:
         dropped = _dropped_reviews(kept, sampled)
         print("  carried forward %d reviewed row(s)" % (len(kept) - len(dropped)))

@@ -3,7 +3,7 @@
 
   ./apply_verdicts.py
 
-Reads review.md after you have filled in the verdict column, writes
+Reads review.md after you have filled in the verdict fields, writes
 verdicts.csv, and reports precision per kind and per stratum. Precision on the
 boundary stratum is the number that should move a threshold; precision on the
 strong stratum mostly tells you the obvious cases are obvious.
@@ -13,44 +13,14 @@ threshold change is a deliberate edit to thresholds.json.
 """
 import csv
 import os
-import re
 import sys
 
 import lib
-
-HEADING = re.compile(r"^##\s+(\S+)\s+—\s+(\w+)")
-ROW = re.compile(r"^\|\s*(ep\d+)\s*\|")
-
-
-def parse_review(text):
-    """Read the review sheet, locating cells by header name.
-
-    This used to index cells by position, and silently rotted when a column
-    was added: it read the replay link as the verdict, so every review looked
-    unfilled. Reading the header row means a new column costs nothing here.
-    """
-    rows = []
-    kind = stratum = ""
-    header = None
-    for line in text.splitlines():
-        heading = HEADING.match(line)
-        if heading:
-            kind, stratum = heading.group(1), heading.group(2)
-            continue
-        cells = [c.strip() for c in line.strip().strip("|").split("|")]
-        if line.startswith("|") and cells and cells[0] == "episode":
-            header = cells
-            continue
-        if not ROW.match(line):
-            continue
-        if header is None:
-            raise ValueError("review row found before any header row")
-        row = dict(zip(header, cells))
-        rows.append({"episode_id": row.get("episode", ""),
-                     "kind": kind, "stratum": stratum,
-                     "verdict": row.get("verdict", ""),
-                     "note": row.get("note", "")})
-    return rows
+# The sheet's format belongs to whoever writes it. This module owning a second
+# parser is what let the two drift apart: when episode ids stopped being
+# decimal, the regex here matched nothing and this tool silently reported no
+# reviews at all, while the writer carried on unaware.
+from build_candidates import parse_sheet
 
 
 def precision(verdicts):
@@ -71,7 +41,10 @@ def main():
     lib.require_file(review)
 
     with open(review) as handle:
-        rows = parse_review(handle.read())
+        rows = parse_sheet(handle.read())
+    if not rows:
+        sys.exit("no episodes found in %s -- has the sheet's format changed?"
+                 % review)
 
     out = os.path.join(derived, "verdicts.csv")
     with open(out, "w", newline="") as handle:

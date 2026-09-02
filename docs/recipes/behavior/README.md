@@ -25,7 +25,10 @@ Run these in order; each reads earlier stages' outputs.
 7. `build_cycles.py` — edit bursts and the pauses that follow them. Reads
    **both** trial artifacts: a trial from either detector is evidence the
    student stopped editing to exercise the program.
-8. `build_candidates.py` — ranked episodes plus a Markdown review sheet
+8. `build_candidates.py` — ranked episodes plus `review.md`, one `###`
+   section per sampled episode: its fields as a list, then what the student
+   did in each cycle. Verdicts and notes are typed into the section and
+   carried forward across rebuilds
 9. `apply_verdicts.py` — folds your review back into the thresholds
 
 Two more are reports rather than pipeline stages. Neither is read downstream;
@@ -37,6 +40,9 @@ run either any time after the stage it depends on.
   `thresholds.json`, so changing the gap stays a decision a person makes.
 - `report_documentation.py` — how much students actually write, draw, and
   tabulate. Needs `build_edits.py`.
+- `build_descriptions.py <episode id>…` — prints what the student did in an
+  episode the review sheet did not sample. The sampled ones are already
+  described in `review.md`.
 
 ## Running
 
