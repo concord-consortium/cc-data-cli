@@ -1,39 +1,88 @@
 #!/usr/bin/env python3
-"""Detect trials: stretches where the program's INPUT was changing.
+"""Detect trials -- CURRENTLY MEASURING THE WRONG THING. See below.
 
   ./build_trials.py
+
+WHAT THIS ACTUALLY DETECTS: the program's OUTPUT moving, not its input.
+
+The signal is `sharedModel/variables/*/setValue`. Measured across the corpus,
+that action is only ever called on Gripper (239,996), Heat Lamp (16,194),
+Humidifier (5,215), Fan (1,722) and Simulation Mode (403) -- every one an
+actuator the program drives. EMG, Surface Pressure, Target EMG, Pan
+Temperature and Temperature, the actual inputs, receive ZERO setValue calls.
+
+The writer is `sendDataToSimulatedOutput()` in CLUE's
+src/plugins/dataflow/nodes/live-output-node.ts, which takes the Live Output
+node's computed `nodeValue` and calls `outputVariable.setValue(val)`.
+
+So `trial_after` currently means "after this burst, the program's simulated
+output moved and then settled" -- NOT "the student varied an input". That is
+weak evidence of checking, and biased: it requires a Live Output node wired to
+a simulated output, and it only fires when the student's program works well
+enough to propagate. A wave generator feeding an output moves it continuously
+with no student involvement at all.
+
+WHAT SHOULD REPLACE IT: the simulation's slider.
+
+`/variables/N/value` is written by four different actions, and this reads the
+wrong one:
+
+    /content/step                    inputs   4.77M patches   621 docs
+    .../variables/N/setValue         outputs    264k patches   432 docs
+    .../variables/N/commitTemporaryValue  the SLIDER  6.4k     397 docs
+    .../program/tickAndProcess       outputs     38k patches    51 docs
+
+`commitTemporaryValue` is the student moving the simulation's slider.
+brainwaves-gripper defines Target EMG as "the EMG set by the slider", rendered
+by a VariableSlider with min 40, max 440, step 40, labelled relaxed -> flexed;
+`EMG` is that value minus per-frame noise. 99.8% of committed values land
+exactly on those slider steps, which confirms the attribution. 6,387 commits
+across 397 documents, median 16s apart, so 4,939 distinct gestures at a 5s
+threshold -- deliberate acts, not a drag stream.
+
+Do NOT try the static->changing->static shape on the stepped input value: it
+never holds still (0.0% of consecutive step values are unchanged), because the
+simulation adds noise every frame. The slider makes that unnecessary.
+
+Variables carry explicit `labels` in the recorded data -- ["input",
+"sensor:emg-reading", ...] versus ["output", "live-output:Fan", ...] -- so
+input and output are DECLARED, not inferred from names. A replacement should
+read those rather than hard-code a variable list. Target EMG is labelled
+neither, because it is the student's control rather than program plumbing.
+
+NOT ALL SIMULATIONS HAVE A CONTROL. Three exist:
+
+    brainwaves-gripper   VariableSlider on Target EMG     1,705 episodes
+    potentiometer-servo  VariableSlider on Potentiometer      3 episodes
+    terrarium            NO student control               132 episodes
+
+terrarium is a closed loop: its Temperature and Humidity are driven by the
+student's own Fan, Heat Lamp and Humidifier outputs, and it has no slider and
+no onChange handler. For those 132 episodes no input signal exists even in
+principle, so checking can only be evidenced by pausing or documenting. A
+replacement should report nothing there rather than fall back to output
+movement, which would quietly mix two kinds of evidence under one name -- the
+mistake this docstring exists to record.
+
+The log route is empty: the slider's onChangeComplete fires
+SIMULATOR_TOOL_CHANGE, but there are ZERO such events in the log corpus, so
+history is the only source for these sessions.
+
+--- original notes, still accurate about the mechanics ---
 
 Task 4 established that pause length cannot separate "still working" from
 "stopped to look" -- 118,054 operation gaps decay smoothly with no second peak.
 A Dataflow program runs continuously, so the student sees its output while
 editing; there is no edit-then-observe cycle to find.
 
-What is detectable is the student deliberately exercising the program: dragging
-the simulation slider makes the input go static -> changing -> static, and that
-changing stretch is a trial. Measured on the real corpus: 405 of the 506
-documents with a Simulator tile show such episodes, and 47.1% of episodes follow
-a program edit within two minutes.
-
-The signal is `sharedModel/variables/*/setValue`, which build_edits.py classifies
-as `runtime` -- correctly, since it is not a student EDIT. It is, however,
-exactly the student's OBSERVATION. Values are read from entry_json rather than
-edits.parquet because the coalescing step there does not carry patch values.
-
-Limit worth stating: a student working on the output side (a wave generator
-feeding an output node) has an input that never stops, so no trial boundary
-exists for them even in principle. This detects a bounded subpopulation, and the
-size of that subpopulation is itself a finding.
+Values are read from entry_json rather than edits.parquet because the
+coalescing step there does not carry patch values.
 
 Detection is per-variable, not per-document: a document can carry more than one
 Simulator variable, and lagging across all of them ordered only by time makes
 consecutive rows alternate between variables, so `v IS DISTINCT FROM prev_v`
-fires on nearly every row even when neither variable moved. Trials are reported
-per-variable rather than merged back into one trial per document, because two
-variables changing in the same window are two separate student gestures, not
-one -- merging them would recreate the same smearing this fix removes.
-`trial_id` stays a document-unique ordinal, renumbered across variables by
-start time, so its contract (one integer identifying a trial within a
-document) is unchanged for downstream consumers.
+fires on nearly every row even when neither variable moved. `trial_id` stays a
+document-unique ordinal, renumbered across variables by start time.
 """
 import os
 

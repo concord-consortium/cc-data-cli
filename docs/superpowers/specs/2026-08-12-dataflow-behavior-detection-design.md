@@ -125,6 +125,68 @@ four of them tick values; it is now one cycle — the only one that held a real
 edit, a Transform node added and its operator set to Ramp — and it survives as
 a single-cycle episode instead.
 
+### Trials measure the program's output, not the student's input
+
+The design treats a "trial" as the student deliberately exercising the program
+by varying its input. `build_trials.py` implements that as
+`sharedModel/variables/*/setValue` — and that action is only ever called on
+*outputs*. Across the corpus: Gripper (239,996), Heat Lamp (16,194),
+Humidifier (5,215), Fan (1,722), Simulation Mode (403). EMG, Surface Pressure,
+Target EMG, Pan Temperature and Temperature — the inputs — receive **zero**.
+The writer is `sendDataToSimulatedOutput()` in `live-output-node.ts`, which
+pushes the Live Output node's computed value into the variable.
+
+So `trial_after` currently means "the program's output moved and settled after
+this burst", which is weak and biased evidence: it needs a Live Output node
+wired to a simulated output, it only fires when the student's program already
+works, and a wave generator moves the output continuously with no student
+involvement.
+
+**The student's control is recorded separately.** `/variables/N/value` has four
+writers, and the detector reads the wrong one:
+
+| action | writes | patches | docs |
+|---|---|---:|---:|
+| `/content/step` | inputs (EMG, Surface Pressure, …) | 4.77M | 621 |
+| `…/setValue` | outputs | 264k | 432 |
+| `…/commitTemporaryValue` | **the slider** | 6.4k | 397 |
+| `…/tickAndProcess` | outputs | 38k | 51 |
+
+`commitTemporaryValue` is the student moving the simulation slider.
+`brainwaves-gripper` defines Target EMG as "the EMG set by the slider" —
+`VariableSlider`, min 40, max 440, step 40, labelled relaxed → flexed — and
+`EMG` is that value minus per-frame noise. 99.8% of committed values land
+exactly on those steps, confirming the attribution: 6,387 commits, 397
+documents, median 16s apart, 4,939 distinct gestures at a 5s threshold.
+
+Do not attempt static→changing→static on the stepped input value: it never
+holds still (0.0% of consecutive values unchanged) because noise is added every
+frame. The slider makes that unnecessary.
+
+Variables carry explicit `labels` — `["input", "sensor:emg-reading", …]` versus
+`["output", "live-output:Fan", …]` — so input and output are declared in the
+data rather than inferred from names. Target EMG is labelled neither, being the
+student's control rather than program plumbing.
+
+**Not every simulation has a control**, and this bounds what is answerable:
+
+| simulation | student control | episodes |
+|---|---|---:|
+| brainwaves-gripper | slider on Target EMG | 1,705 |
+| potentiometer-servo | slider on Potentiometer | 3 |
+| terrarium | **none** | 132 |
+
+`terrarium` is a closed loop — its Temperature and Humidity are driven by the
+student's own Fan, Heat Lamp and Humidifier outputs, and it has no slider and
+no change handler. For those 132 episodes no input signal exists even in
+principle, so checking can only be evidenced by pausing or documenting. A
+replacement detector should report nothing there rather than fall back to
+output movement, which would mix two kinds of evidence under one name.
+
+The slider's `onChangeComplete` fires `SIMULATOR_TOOL_CHANGE`, but there are
+**zero** such events in the log corpus, so history is the only source for these
+sessions.
+
 ### One student gesture is many history entries
 
 Measured across the 200 busiest documents: consecutive non-tick entries have a
@@ -599,6 +661,13 @@ each stated with the analysis it would have unblocked:
   overrides both `burst_gap_s` and `watch_min_s` with its own constant, and
   the two values it does consume — `watch_max_s` and `ui_staleness_s` — did
   not move. So that shift is inert.
+- **Does the burst-gap anchor survive the trial correction?** The 25s gap is
+  anchored on trial-bounded spans, justified as "the student exercised the
+  program, edited, exercised it again". Since trials are currently output
+  movements rather than student gestures, that justification does not hold as
+  written. Rebuilding trials from the slider will change the anchor's
+  membership and wants the same before/after treatment the runtime-output
+  correction got.
 - ~~**Is oscillation still gap-independent?**~~ Answered: yes. Re-measured on
   the corrected data by rebuilding cycles at each gap. The raw rate climbs
   23.6% → 32.0% → 41.7% across 5s/12s/25s, but the share oscillation labels
