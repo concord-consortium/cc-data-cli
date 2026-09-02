@@ -7,6 +7,7 @@ from urllib.parse import parse_qs, urlparse
 import build_candidates
 import build_descriptions
 import lib
+from fixtures import HISTORY_COLUMNS, history_entry, write_parquet
 
 
 def cycle(targets, pause_type, oscillation=False):
@@ -471,6 +472,226 @@ class TestEpisodeId(unittest.TestCase):
         """Two episodes on one tile can start at the same second after a
         rebuild changes where they are cut."""
         self.assertNotEqual(self._id(), self._id(ended="2024-03-01 16:20:00.000"))
+
+
+class TestResponseLine(unittest.TestCase):
+    """What the simulation did while the student watched.
+
+    Not evidence of a trial -- these variables are the program's own output and
+    the simulation's reply to it. It answers whether the pause was long enough
+    to see anything, which for a simulation with no slider is the only
+    evidence there is.
+    """
+
+    def test_movement_is_reported_with_its_range_and_count(self):
+        line = build_descriptions._response_line(
+            [("output", "Gripper", 12, 31.0, 93.0, None)])
+        self.assertEqual(line, "sim: Gripper 31..93 x12")
+
+    def test_no_variable_written_is_not_the_same_as_no_response(self):
+        """`not running` means there is no evidence either way. Reporting it
+        as `no change` would claim the student waited and nothing happened."""
+        self.assertEqual(build_descriptions._response_line(None),
+                         "sim: not running")
+
+    def test_written_but_unchanged_is_a_finding(self):
+        """The student drove the input and the program produced nothing --
+        which is the whole point of showing this line."""
+        self.assertEqual(
+            build_descriptions._response_line(
+                [("sensor", "Temperature", 34, 21.0, 21.0, None)]),
+            "sim: no change (Temperature 21)")
+
+    def test_nothing_kept_moved_still_reads_as_no_change(self):
+        """An empty list means variables were written in the pause but no
+        RESPONSE variable was among them. MST records only changes, so a
+        response that held still emits no patch at all."""
+        self.assertEqual(build_descriptions._response_line([]), "sim: no change")
+
+    def test_a_swing_too_small_to_print_is_not_a_change(self):
+        """Comparing raw doubles reported `Temperature 21..21 x34` -- less
+        than a tenth of a degree, shown as movement because 20.96 and 21.04
+        are not equal. Values are compared at the precision they print at."""
+        line = build_descriptions._response_line(
+            [("sensor", "Temperature", 34, 20.96, 21.04, None)])
+        self.assertIn("no change", line)
+        self.assertNotIn("..", line)
+
+
+class TestSimControls(unittest.TestCase):
+    """Clicks on the Simulator tile's own controls.
+
+    The mode buttons write their variable with `setValue`, the same action a
+    Live Output node uses to drive an actuator, so the control is identified by
+    variable rather than by action.
+    """
+
+    CYCLE = {"pause_after_s": 26.0, "pause_type": "present_unknown",
+             "trial_after": False, "controls_after": ["Temperature"]}
+
+    def test_a_switch_is_reported_before_the_pause(self):
+        """It changes what the simulation is doing, so everything after it
+        reads differently -- a mode switch is why a temperature starts
+        moving."""
+        line = build_descriptions._pause(self.CYCLE, [])
+        self.assertTrue(line.startswith("switched to Temperature, "))
+        self.assertIn("present unknown", line)
+
+    def test_a_switch_is_reported_alongside_a_trial(self):
+        cycle = dict(self.CYCLE, trial_after=True, trial_changes=3)
+        line = build_descriptions._pause(cycle, [("Target EMG", 3)])
+        self.assertIn("switched to Temperature", line)
+        self.assertIn("tested Target EMG x3", line)
+
+    def test_no_switch_leaves_the_line_unchanged(self):
+        line = build_descriptions._pause(dict(self.CYCLE, controls_after=[]), [])
+        self.assertEqual(line, "present unknown, 26s")
+
+    def test_a_cycle_predating_the_field_still_renders(self):
+        cycle = {k: v for k, v in self.CYCLE.items() if k != "controls_after"}
+        self.assertEqual(build_descriptions._pause(cycle, []),
+                         "present unknown, 26s")
+
+    def test_repeated_clicks_on_one_mode_are_named_once(self):
+        """Deduplicated by label, first seen first, so a student toggling back
+        and forth reads as the two modes rather than a list of clicks."""
+        cycle = {"doc_id": "d1",
+                 "burst_ended": datetime(2025, 1, 1, 10, 0, 0)}
+        controls = [
+            {"doc_id": "d1", "started": "2025-01-01 10:00:05",
+             "label": "Temperature"},
+            {"doc_id": "d1", "started": "2025-01-01 10:00:20",
+             "label": "Pressure"},
+            {"doc_id": "d1", "started": "2025-01-01 10:00:40",
+             "label": "Temperature"},
+        ]
+        self.assertEqual(build_descriptions._controls_after(controls, cycle),
+                         ["Temperature", "Pressure"])
+
+    def test_clicks_outside_the_window_are_not_counted(self):
+        """Same window `trial_after` uses, so the two lines agree about what
+        followed the burst."""
+        cycle = {"doc_id": "d1",
+                 "burst_ended": datetime(2025, 1, 1, 10, 0, 0)}
+        far = [{"doc_id": "d1", "started": "2025-01-01 10:30:00",
+                "label": "Temperature"}]
+        self.assertEqual(build_descriptions._controls_after(far, cycle), [])
+
+    def test_another_document_is_not_counted(self):
+        cycle = {"doc_id": "d1",
+                 "burst_ended": datetime(2025, 1, 1, 10, 0, 0)}
+        other = [{"doc_id": "d2", "started": "2025-01-01 10:00:05",
+                  "label": "Temperature"}]
+        self.assertEqual(build_descriptions._controls_after(other, cycle), [])
+
+
+class TestSelfDriven(unittest.TestCase):
+    """Some variables move with nobody driving them.
+
+    brainwaves-gripper's pan runs a canned boil stream on a loop, and
+    Temperature reports it whenever the gripper is closed past a threshold --
+    so a gripper held closed shows a changing temperature with no student and
+    no program involved. terrarium's humidity falls 10% every ten minutes
+    whatever is running. Neither can be read as the program having done
+    something, so the line says so.
+    """
+
+    def test_the_marker_names_why(self):
+        line = build_descriptions._response_line(
+            [("sensor", "Humidity", 34, 19.4, 20.0, "falls 1%/min on its own")])
+        self.assertIn("Humidity 19.4..20 x34", line)
+        self.assertIn("falls 1%/min on its own", line)
+
+    def test_an_ordinary_response_carries_no_marker(self):
+        line = build_descriptions._response_line(
+            [("output", "Gripper", 12, 31.0, 93.0, None)])
+        self.assertEqual(line, "sim: Gripper 31..93 x12")
+
+    def test_the_companion_variable_picks_the_simulation(self):
+        """Both simulations have a variable called Temperature, and only the
+        gripper's follows a pan. Heat Lamp and Pan Temperature are what say
+        which document this is."""
+        self.assertEqual(
+            build_descriptions._self_driven("Temperature",
+                                            {"Pan Temperature", "Gripper"}),
+            "pan's own boil cycle")
+        self.assertIsNone(
+            build_descriptions._self_driven("Temperature",
+                                            {"Heat Lamp", "Humidity"}))
+
+    def test_terrarium_temperature_is_honest_evidence(self):
+        """Only the fan and the heat lamp move it -- there is no base drift
+        term -- so it does stand as evidence the program drove an output."""
+        self.assertIsNone(
+            build_descriptions._self_driven("Temperature", {"Heat Lamp"}))
+
+
+class TestRespondingVars(unittest.TestCase):
+    """Which variables count as the simulation responding."""
+
+    META = {
+        ("d1", "0"): ("Target EMG", []),
+        ("d1", "1"): ("EMG", ["input", "sensor:emg-reading"]),
+        ("d1", "2"): ("Surface Pressure", ["input", "sensor:fsr-reading"]),
+        ("d1", "3"): ("Gripper", ["output", "live-output:Grabber"]),
+        ("d1", "4"): ("Pan Temperature", []),
+        ("d1", "5"): ("Pin", ["input", "reading", "sensor:pin-reading"]),
+        # A slider on a sensor-labelled variable. None of the three shipped
+        # simulations does this -- Target EMG carries no labels and
+        # Potentiometer has no `sensor:` one -- so this pins the slider rule,
+        # which nothing else in the data reaches.
+        ("d2", "0"): ("Dial", ["input", "sensor:dial-reading"]),
+        ("d2", "1"): ("Servo", ["output", "live-output:Servo"]),
+    }
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.history = os.path.join(self.dir, "history.parquet")
+        write_parquet([
+            history_entry(
+                doc, "e%s" % doc, 0, "2025-01-01 10:00:00",
+                "/content/sharedModelMap/{sharedModel}/sharedModel"
+                "/variables/0/commitTemporaryValue",
+                [{"op": "replace",
+                  "path": "/content/sharedModelMap/sm1/sharedModel"
+                          "/variables/0/value", "value": 200}])
+            for doc in ("d1", "d2")
+        ], self.history, HISTORY_COLUMNS)
+
+    def keep(self):
+        return build_descriptions._responding_vars(
+            self.history, ["d1", "d2"], self.META)
+
+    def test_the_slider_is_not_a_response(self):
+        """It is the student's own hand, already reported as the trial. Uses
+        the d2 slider, which carries a `sensor:` label and so would survive
+        every other rule here."""
+        keep = self.keep()
+        self.assertNotIn(("d2", "0"), keep)
+        self.assertEqual(keep.get(("d2", "1")), "output")
+
+    def test_the_muscle_signal_is_not_a_response(self):
+        """EMG is the simulation's input, recomputed with fresh noise every
+        frame. Reporting it would claim a response on every cycle of every
+        gripper document."""
+        self.assertNotIn(("d1", "1"), self.keep())
+
+    def test_a_reading_derived_from_the_slider_is_not_a_response(self):
+        """potentiometer-servo's step() sets Pin from the slider's angle, so
+        it reports the student's hand. It is `sensor:`-labelled like a real
+        reading, so only naming it keeps it out."""
+        self.assertNotIn(("d1", "5"), self.keep())
+
+    def test_a_sensor_reading_is_a_response(self):
+        self.assertEqual(self.keep().get(("d1", "2")), "sensor")
+
+    def test_a_live_output_is_a_response(self):
+        self.assertEqual(self.keep().get(("d1", "3")), "output")
+
+    def test_an_unlabelled_internal_is_left_out(self):
+        """Pan Temperature belongs to the simulation's own animation and moves
+        regardless of the program."""
+        self.assertNotIn(("d1", "4"), self.keep())
 
 
 class TestPauseLine(unittest.TestCase):

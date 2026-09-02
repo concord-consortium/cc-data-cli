@@ -525,6 +525,30 @@ def main():
              "student did in each cycle -- easier to read than the replay, "
              "where tick output is interleaved with the edits. It is often "
              "enough on its own.", "",
+             "Inside it, `-> ` is what followed the burst -- `tested` for "
+             "the program's input being driven, `switched to` for a click on "
+             "one of the Simulator tile's own controls -- and `sim:` is what "
+             "moved in the simulation while the student watched. Use it to "
+             "judge whether the pause was long enough to see a result. "
+             "`no change` means the simulation ran and nothing happened; "
+             "`not running` means it was not running, which is no evidence "
+             "either way.", "",
+             "`sim:` says something moved, not who moved it. The student may "
+             "have driven it by moving the slider during the pause, or "
+             "indirectly -- that move running through their program to close "
+             "the gripper and raise the pressure. Or a generator, a timer or "
+             "a feedback loop moved it with the student sitting still. The "
+             "`-> ` line separates those: a trial there means the student was "
+             "driving the input at the time.", "",
+             "A `[...]` marker means the variable moves on its own. The "
+             "gripper simulation's pan boils on a loop, and Temperature "
+             "reports it whenever the gripper is closed far enough -- so a "
+             "gripper held closed shows a changing temperature with nobody "
+             "driving it. The terrarium's humidity falls 1%/min whatever is "
+             "running. Do not read a marked change as the program having done "
+             "something. The terrarium's Temperature is unmarked and moves "
+             "only for the fan or the heat lamp, so it is honest evidence.",
+             "",
              "**start** and **end** are the two ends of the episode: when it "
              "happened, where the entry sits in the document's history, and a "
              "link that opens the document there. They are separate fields "

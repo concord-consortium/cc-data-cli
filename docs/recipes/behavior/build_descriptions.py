@@ -26,6 +26,35 @@ The values carry the meaning:
                    cannot be diffed -- only the sequence of new values is
                    recoverable. See build_cycles.py on oscillation.
 
+Each cycle also reports what the SIMULATION did during the pause that followed,
+on a `sim:` line. It answers one question only: was there anything to see while
+the student watched?
+
+It does NOT say who caused the movement, and must not be read that way. The
+student may well have driven it -- directly, by moving the slider during the
+pause, or indirectly, where that slider move ran through their program, closed
+the gripper and raised the surface pressure. Or nothing of the sort: a wave
+generator, a timer, or a feedback loop in which the simulation's own reading
+re-triggers the program will all move these variables with the student sitting
+still.
+
+The `-> ` line on the same cycle is what separates those. A trial reported
+there means the student was driving the input while this moved; no trial, and
+the movement was the program running on its own.
+
+That question is the only one available for terrarium, which has no slider and
+so can never show a trial (see build_trials.py). A 60-second pause in which
+Temperature never moved and one in which it climbed two degrees are different
+pauses, and nothing else in the description distinguishes them.
+
+Three outcomes are distinguished, because they mean different things:
+
+  sim: Gripper 31..93 x12     the simulation ran and responded
+  sim: no change (Temp 21)    it ran and did not respond -- the pause was
+                              real, and nothing came of it
+  sim: not running            no variable was written at all, so there is no
+                              evidence either way. Not the same as no response.
+
 The episodes the review sheet samples are already described inside review.md,
 which build_candidates.py writes. Run this directly to look at an episode the
 sheet did not sample -- cheap enough to do on demand, one episode being about
@@ -38,6 +67,7 @@ output: a second file describing every episode would only go stale beside the
 sheet.
 """
 
+import json
 import os
 import sys
 from datetime import datetime, timedelta
@@ -80,12 +110,65 @@ SELECT doc_id,
        regexp_extract(json_extract_string(patch, '$.path'),
                       '/variables/([0-9]+)$', 1) AS var_id,
        any_value(json_extract_string(json_extract(patch, '$.value'),
-                                     '$.displayName')) AS display_name
+                                     '$.displayName')) AS display_name,
+       any_value(CAST(json_extract(json_extract(patch, '$.value'),
+                                   '$.labels') AS VARCHAR)) AS labels
 FROM p
 WHERE json_extract_string(patch, '$.op') = 'add'
   AND regexp_matches(json_extract_string(patch, '$.path'), '/variables/[0-9]+$')
   AND json_extract_string(json_extract(patch, '$.value'), '$.displayName') IS NOT NULL
 GROUP BY doc_id, var_id;
+"""
+
+# Which variable the student drives by hand, so it can be left out of the
+# simulation's response. One per document at most; terrarium has none.
+SLIDER_VARS_SQL = """
+SELECT DISTINCT doc_id,
+       regexp_extract(json_extract_string(p, '$.path'),
+                      '/variables/([0-9]+)/value$', 1) AS var_id
+FROM (SELECT doc_id, unnest(json_extract(entry_json, '$.records[*].patches[*]')) AS p
+      FROM read_parquet('{history}')
+      WHERE doc_id IN ({docs}) AND action LIKE '%commitTemporaryValue')
+WHERE regexp_matches(json_extract_string(p, '$.path'),
+                     '/sharedModel/variables/[0-9]+/value$');
+"""
+
+# What the simulation did during each pause: every shared-model variable
+# written between the burst ending and the pause ending, with its range.
+#
+# Aggregated in SQL rather than pulled into Python -- the value stream is the
+# largest thing in the corpus (3.9M writes across the documents that carry
+# episodes) and only the range and count per cycle are wanted.
+#
+# The variables belong to the document's shared model, not to a tile, so two
+# Dataflow tiles in one document see the same simulation. Each tile's cycles
+# get the same response, which is the truth rather than an approximation.
+SIM_RESPONSE_SQL = """
+WITH cyc AS (
+  SELECT doc_id, tile_id, cycle_id, burst_ended,
+         burst_ended + to_seconds(CAST(coalesce(pause_after_s, {window}) AS BIGINT))
+           AS pause_ended
+  FROM read_parquet('{cycles}')
+  WHERE doc_id IN ({docs})
+),
+v AS (
+  SELECT doc_id, created,
+         regexp_extract(json_extract_string(p, '$.path'),
+                        '/variables/([0-9]+)/value$', 1) AS var_id,
+         TRY_CAST(json_extract_string(p, '$.value') AS DOUBLE) AS val
+  FROM (SELECT doc_id, created,
+               unnest(json_extract(entry_json, '$.records[*].patches[*]')) AS p
+        FROM read_parquet('{history}') WHERE doc_id IN ({docs}))
+  WHERE regexp_matches(json_extract_string(p, '$.path'),
+                       '/sharedModel/variables/[0-9]+/value$')
+)
+SELECT c.doc_id, c.tile_id, c.cycle_id, v.var_id,
+       count(*) AS n, min(v.val) AS lo, max(v.val) AS hi
+FROM cyc c
+JOIN v ON v.doc_id = c.doc_id
+      AND v.created > c.burst_ended AND v.created <= c.pause_ended
+WHERE v.val IS NOT NULL
+GROUP BY c.doc_id, c.tile_id, c.cycle_id, v.var_id;
 """
 
 OPS_SQL = """
@@ -243,15 +326,23 @@ def _pause(cycle, trials):
     """
     secs = cycle.get("pause_after_s")
     tail = "%ds" % round(secs) if secs is not None else "?"
+    # Clicks on the Simulator tile's own controls lead, because they change
+    # what the simulation is doing and so change how everything after them
+    # reads -- a mode switch is why a temperature suddenly starts moving.
+    switched = ", ".join("switched to %s" % c
+                         for c in cycle.get("controls_after") or ())
+    if switched:
+        switched += ", "
     if cycle.get("trial_after"):
         if trials:
             named = ", ".join("%s x%d" % (label, n) for label, n in trials)
-            return "tested %s, %s" % (named, tail)
+            return "%stested %s, %s" % (switched, named, tail)
         # trial_after came from cycles.parquet, so a trial is known to exist;
         # saying so without a name beats implying none happened.
-        return "tested (%s input changes), %s" % (cycle.get("trial_changes") or 0, tail)
+        return "%stested (%s input changes), %s" % (
+            switched, cycle.get("trial_changes") or 0, tail)
     ptype = cycle.get("pause_type") or "unknown"
-    return "%s, %s" % (ptype.replace("_", " "), tail)
+    return "%s%s, %s" % (switched, ptype.replace("_", " "), tail)
 
 
 def group_by_cycle(ops, cycles):
@@ -271,6 +362,263 @@ def group_by_cycle(ops, cycles):
         if placed is not None:
             out[placed][1].append(op)
     return out
+
+
+# `EMG` is not a response: brainwaves-gripper's step() computes it as
+# `Target EMG` minus a random fraction of itself, EVERY FRAME. It moves
+# constantly whatever the student does, so reporting it would claim the
+# simulation responded on every cycle of every gripper document -- one such
+# pause showed `EMG 36..439 x3731` and meant nothing at all.
+#
+# Named outright rather than derived from the slider, after two narrower rules
+# each missed cases. Keying on the slider missed documents where the student
+# never touched it, and keying on `Target EMG` being present missed an older
+# version of the simulation that has no such variable (its EMG runs 40..490 and
+# its Surface Pressure 0..3800). The reason is simpler than either rule: the
+# EMG is the muscle signal, which is upstream of the program in every version
+# of the simulation. It is never the simulation replying to what the program
+# did, so it is never a response.
+#
+# `Pin` is the same shape in potentiometer-servo: its step() sets it to
+# `round(Potentiometer / maxPotAngle * maxResistReading)`, a pure function of
+# the slider. Like EMG it is labelled `sensor:` -- the program reads it through
+# a Sensor node -- but it carries no information the `-> ` line does not
+# already carry, since it is the slider's own value arithmetically restated. terrarium has neither: it has no slider, so every
+# labelled variable it carries is a genuine response.
+#
+# The simulation's own name lives in the content snapshot, which this module
+# does not read; these variable names are in the history it already reads.
+STIMULUS_VARS = ("Target EMG", "EMG", "Pin")
+
+
+# Variables that move with nothing driving them, and the companion variable
+# that says which simulation this document is running (the simulation's own
+# name is in the content snapshot, which this module does not read).
+#
+# These are still worth reporting -- the student may also be driving them --
+# but they cannot be read as the program having done something, so the line
+# says so where it appears.
+#
+#   Temperature, in brainwaves-gripper, is the pan's temperature whenever the
+#   gripper is closed past a threshold and the simulation is in temperature
+#   mode, and `baseTemperature` otherwise. The pan itself runs
+#   `demoStreams.fastBoil` indexed by `frame % length`: it ramps and loops
+#   forever regardless of anyone. A gripper held closed therefore reports a
+#   changing temperature with no student and no program involved.
+#
+#   Humidity, in terrarium, has `baseHumidityImpactPerStep` applied every step
+#   whatever else is running -- "-10% every 10 minutes" in the source. Over a
+#   two-minute pause that is a 2% fall on its own. Terrarium's Temperature has
+#   no such term: only the fan and the heat lamp move it, so it stays honest
+#   evidence that the program drove an output.
+SELF_DRIVEN = {
+    ("Temperature", "Pan Temperature"): "pan's own boil cycle",
+    ("Humidity", "Heat Lamp"): "falls 1%/min on its own",
+}
+
+
+def _self_driven(name, doc_names):
+    """The note for a variable that moves on its own, or None."""
+    for (var, companion), note in SELF_DRIVEN.items():
+        if name == var and companion in doc_names:
+            return note
+    return None
+
+
+# The Simulator tile's own controls, which the student clicks directly. In
+# brainwaves-gripper's component these are two buttons, Pressure and
+# Temperature, and selectMode() writes the variable with `setValue` -- the same
+# action a Live Output node uses, so the control is identified by VARIABLE
+# rather than by action. Nothing else can write this one: it carries no
+# `live-output:` label, so no output node can bind to it.
+#
+# Reported on the `-> ` line because it is the student operating the
+# simulation, alongside the slider. It is deliberately NOT fed to
+# build_trials.py: a mode switch changes what the simulation is doing, not the
+# value of the program's input, and counting it as a trial would mix the two.
+#
+# It matters for reading the `sim:` line. Switching to Temperature is what
+# connects the pan's own boil cycle to the reported Temperature, so a mode
+# change and a temperature swing in the same cycle are one event, not two.
+SIM_CONTROLS = {
+    "Simulation Mode": {0: "Pressure", 1: "Temperature"},
+}
+
+SIM_CONTROL_SQL = """
+SELECT doc_id, created,
+       regexp_extract(json_extract_string(p, '$.path'),
+                      '/variables/([0-9]+)/value$', 1) AS var_id,
+       TRY_CAST(json_extract_string(p, '$.value') AS DOUBLE) AS val
+FROM (SELECT doc_id, created,
+             unnest(json_extract(entry_json, '$.records[*].patches[*]')) AS p
+      FROM read_parquet('{history}') WHERE doc_id IN ({docs}))
+WHERE regexp_matches(json_extract_string(p, '$.path'),
+                     '/sharedModel/variables/[0-9]+/value$')
+  AND ({wanted})
+ORDER BY doc_id, created;
+"""
+
+
+def _sim_control_changes(history, docs, meta):
+    """Every click on a Simulator tile control, as [{doc_id, started, label}].
+
+    Restricted in SQL to the variables that are controls, which is why `meta`
+    is resolved first: `setValue` writes 230k values across these documents and
+    all but a few hundred of them are a Live Output node driving an actuator.
+    """
+    wanted = [(doc_id, var_id) for (doc_id, var_id), (name, _l) in meta.items()
+              if name in SIM_CONTROLS]
+    if not wanted:
+        return []
+    clause = " OR ".join(
+        "(doc_id = '%s' AND regexp_extract(json_extract_string(p, '$.path'),"
+        " '/variables/([0-9]+)/value$', 1) = '%s')"
+        % (doc_id.replace("'", "''"), var_id) for doc_id, var_id in wanted)
+    out = []
+    for r in lib.query(SIM_CONTROL_SQL.format(
+            history=history,
+            docs=", ".join("'%s'" % d.replace("'", "''") for d in docs),
+            wanted=clause)):
+        name = meta[(r["doc_id"], r["var_id"])][0]
+        label = SIM_CONTROLS[name].get(
+            int(r["val"]) if r["val"] is not None else None)
+        out.append({"doc_id": r["doc_id"], "started": r["created"],
+                    # An unrecognised value is still a click; naming the raw
+                    # value beats dropping the event or inventing a mode.
+                    "label": label or "%s %g" % (name, r["val"] or 0)})
+    return out
+
+
+def _controls_after(controls, cycle):
+    """Control clicks in the same window `trial_after` uses."""
+    end = str(cycle["burst_ended"])
+    horizon = str(cycle["burst_ended"] + timedelta(
+        seconds=build_cycles.TRIAL_WINDOW_S))
+    seen = []
+    for c in controls:
+        if c["doc_id"] != cycle["doc_id"]:
+            continue
+        if end <= str(c["started"]) <= horizon and c["label"] not in seen:
+            seen.append(c["label"])
+    return seen
+
+
+def _var_meta(history, docs):
+    """(doc_id, var_id) -> (display name, labels), for naming the response."""
+    doc_list = ", ".join("'%s'" % d.replace("'", "''") for d in docs)
+    meta = {}
+    for r in lib.query(VAR_NAMES_SQL.format(history=history, docs=doc_list)):
+        labels = json.loads(r["labels"]) if r["labels"] else []
+        meta[(r["doc_id"], r["var_id"])] = (r["display_name"], labels)
+    return meta
+
+
+def _responding_vars(history, docs, meta):
+    """Which variables count as the simulation responding, per document.
+
+    Two are excluded, both because they restate the trial rather than because
+    the student did not cause them. The slider variable is written by hand and
+    is already reported on the `-> ` line. Whatever the simulation derives
+    arithmetically from it says the same thing a second time, and says it on
+    every frame whether the student moved or not -- see STIMULUS_VARS.
+
+    What remains is not "things the student did not drive". A slider move
+    during the pause reaches these variables through the program, and that is
+    the student driving them; so is the gripper closing and the pressure
+    rising as a result. It is only that nothing here is written by hand.
+
+    The slider exclusion is defensive rather than load-bearing today: both
+    sliders that exist (Target EMG, Potentiometer) are already dropped, the
+    first by STIMULUS_VARS and the second by carrying no `sensor:` label. It
+    stays because a slider on a sensor-labelled variable would otherwise be
+    read as the simulation responding to the program.
+
+    What remains is split by the labels the simulation declares: `output` is
+    what the student's program drove (Gripper, Fan, Heat Lamp, Humidifier), and
+    `sensor:` is what the simulation returned in response (Surface Pressure,
+    Temperature, Humidity). Variables carrying neither -- Pan Temperature, Raw
+    Temperature, Simulation Mode -- are simulation internals that move on their
+    own, and are left out.
+    """
+    doc_list = ", ".join("'%s'" % d.replace("'", "''") for d in docs)
+    sliders = {}
+    for r in lib.query(SLIDER_VARS_SQL.format(history=history, docs=doc_list)):
+        sliders.setdefault(r["doc_id"], set()).add(r["var_id"])
+
+    keep = {}
+    for (doc_id, var_id), (name, labels) in meta.items():
+        if var_id in sliders.get(doc_id, ()) or name in STIMULUS_VARS:
+            continue
+        role = ("output" if "output" in labels
+                else "sensor" if any(l.startswith("sensor:") for l in labels)
+                else None)
+        if role:
+            keep[(doc_id, var_id)] = role
+    return keep
+
+
+def _sim_responses(history, cycles_path, docs):
+    """(doc_id, tile_id, cycle_id) -> [(role, name, n, lo, hi)], ordered with
+    the program's own outputs first."""
+    doc_list = ", ".join("'%s'" % d.replace("'", "''") for d in docs)
+    meta = _var_meta(history, docs)
+    keep = _responding_vars(history, docs, meta)
+
+    names_by_doc = {}
+    for (doc_id, _var_id), (name, _labels) in meta.items():
+        names_by_doc.setdefault(doc_id, set()).add(name)
+
+    out = {}
+    for r in lib.query(SIM_RESPONSE_SQL.format(
+            history=history, cycles=cycles_path, docs=doc_list,
+            window=build_cycles.TRIAL_WINDOW_S)):
+        key = (r["doc_id"], r["tile_id"], r["cycle_id"])
+        # Every cycle with any variable write at all gets an entry, even when
+        # nothing kept moved: "the simulation ran and did not respond" and "the
+        # simulation was not running" are different findings, and the caller
+        # cannot tell them apart from an empty list alone.
+        out.setdefault(key, [])
+        role = keep.get((r["doc_id"], r["var_id"]))
+        if not role:
+            continue
+        name = (meta.get((r["doc_id"], r["var_id"])) or (None,))[0]
+        name = name or ("#" + r["var_id"])
+        out[key].append((role, name, r["n"], r["lo"], r["hi"],
+                         _self_driven(name, names_by_doc.get(r["doc_id"], ()))))
+    for key in out:
+        out[key].sort(key=lambda t: (t[0] != "output", t[1]))
+    return out
+
+
+# Values are compared at the precision they are printed at. Comparing raw
+# doubles instead reported `Temperature 21..21 x34` -- a swing of less than a
+# tenth of a degree, shown as a change because 20.96 and 21.04 are not equal.
+DISPLAY_DP = 1
+
+
+def _num(x):
+    """Trim a float that is really an integer, so `21.0` prints as `21`."""
+    return "%g" % round(x, DISPLAY_DP)
+
+
+def _response_line(response):
+    """What the simulation did during the pause, or why nothing is claimed.
+
+    `None` means no variable was written at all -- the simulation was not
+    running, which is not evidence that it failed to respond.
+    """
+    if response is None:
+        return "sim: not running"
+    moved = [r for r in response
+             if round(r[3], DISPLAY_DP) != round(r[4], DISPLAY_DP)]
+    if not moved:
+        flat = ", ".join("%s %s" % (name, _num(lo))
+                         for _role, name, _n, lo, _hi, _s in response)
+        return "sim: no change" + (" (%s)" % flat if flat else "")
+    return "sim: " + ", ".join(
+        "%s %s..%s x%d%s" % (name, _num(lo), _num(hi), n,
+                             " [%s]" % self_driven if self_driven else "")
+        for _role, name, n, lo, hi, self_driven in moved)
 
 
 def _trials(history, derived, docs):
@@ -337,13 +685,23 @@ def describe(history, cycles_path, episodes):
         coalesce=COALESCE_S))
 
     cycles = lib.query(
-        "SELECT doc_id, tile_id, burst_started, burst_ended, n_distinct_targets, "
-        "pause_after_s, pause_type, trial_after, trial_changes "
+        "SELECT doc_id, tile_id, cycle_id, burst_started, burst_ended, "
+        "n_distinct_targets, pause_after_s, pause_type, trial_after, "
+        "trial_changes "
         "FROM read_parquet('%s') ORDER BY doc_id, tile_id, burst_started"
         % cycles_path)
+    trials = _trials(history, os.path.dirname(cycles_path), docs)
+    responses = _sim_responses(history, cycles_path, docs)
+    controls = _sim_control_changes(history, docs, _var_meta(history, docs))
     for c in cycles:
         c["burst_ended"] = datetime.fromisoformat(str(c["burst_ended"]))
-    trials = _trials(history, os.path.dirname(cycles_path), docs)
+        c["controls_after"] = _controls_after(controls, c)
+        # Absent from `responses` means no variable was written in the pause at
+        # all, which _response_line reports differently from "written but
+        # unchanged". Carried on the cycle so cycles_block needs no extra
+        # argument.
+        c["sim_response"] = responses.get(
+            (c["doc_id"], c["tile_id"], c["cycle_id"]))
 
     described = {}
     for ep in episodes:
@@ -392,6 +750,11 @@ def cycles_block(d):
         if (cycle.get("n_distinct_targets") or 0) > 1:
             note = "   [%d targets]" % cycle["n_distinct_targets"]
         lines.append("   -> %s%s" % (_pause(cycle, trials), note))
+        # What the simulation did while the student watched. Not evidence of
+        # a trial and deliberately not used to detect one: it says something
+        # moved, never who moved it. Pair it with the `-> ` line above, which
+        # does say whether the student was driving the input at the time.
+        lines.append("      %s" % _response_line(cycle.get("sim_response")))
     return lines + ["```", ""]
 
 
@@ -410,7 +773,9 @@ def render(episodes, described):
              "described inside `review.md` itself.", "",
              "`-> ` is what followed the burst: `tested` means the student "
              "drove the program's input afterwards, which is the strongest "
-             "evidence in the data that they checked the change.", ""]
+             "evidence in the data that they checked the change, and "
+             "`switched to` means they clicked one of the Simulator tile's "
+             "own controls.", ""]
     for ep in episodes:
         d = described.get(ep["episode_id"])
         if not d:
