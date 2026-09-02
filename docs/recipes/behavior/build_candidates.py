@@ -48,10 +48,63 @@ CANDIDATE_COLUMNS = {
     "span_s": "DOUBLE", "started": "TIMESTAMP", "ended": "TIMESTAMP",
     "first_entry_id": "VARCHAR", "last_entry_id": "VARCHAR",
     "first_entry_idx": "BIGINT", "last_entry_idx": "BIGINT",
-    "n_entries": "BIGINT",
+    "n_entries": "BIGINT", "outputs": "VARCHAR",
     "replay_url": "VARCHAR", "end_url": "VARCHAR", "stratum": "VARCHAR",
     "offering_source": "VARCHAR",
 }
+
+# What the student's program could actually drive, resolved as of the episode.
+#
+# Read from history rather than from the content snapshot, which is the
+# document's FINAL state: a student can rebuild a program completely, and one
+# episode here ends with a Timer driving a Light Bulb having spent the episode
+# on a Sensor driving a Grabber.
+#
+# `Live Output` drives a device; `hubSelect` says which, and CLUE writes the
+# literal string `⚠️ connect device` when a node wants one and none is
+# attached. That is the most common value in the corpus (451 documents), and it
+# means the program produced no visible effect anywhere -- a strong reason for a
+# pause to be idle, and worth telling apart from a student ignoring a working
+# gripper.
+#
+# `Demo Output` never touches hardware, but it is not nothing: it animates on
+# screen, which is more watchable than a number changing, so it is reported too
+# with whatever it was set to display.
+DEMO_OUTPUT_DEFAULT = "Light Bulb"
+
+OUTPUT_EVENTS_SQL = """
+WITH pat AS (
+  SELECT h.doc_id, h.created,
+         unnest(json_extract(h.entry_json, '$.records[*].patches[*]')) AS p
+  FROM read_parquet('{history}') h
+  WHERE h.doc_id IN (SELECT DISTINCT doc_id FROM read_parquet('{cycles}'))
+),
+e AS (
+  SELECT doc_id, created,
+         regexp_extract(json_extract_string(p, '$.path'), '/tileMap/([^/]+)', 1) AS tile_id,
+         regexp_extract(json_extract_string(p, '$.path'),
+                        '/program/nodes/([^/]+)', 1) AS node_id,
+         json_extract_string(p, '$.op') AS op,
+         json_extract_string(p, '$.path') AS path,
+         json_extract_string(json_extract(p, '$.value'), '$.name') AS node_name,
+         json_extract_string(p, '$.value') AS raw_value
+  FROM pat
+  WHERE regexp_matches(json_extract_string(p, '$.path'), '/program/nodes/')
+)
+SELECT doc_id, tile_id, node_id, created,
+       CASE
+         WHEN regexp_matches(path, '/program/nodes/[^/]+$') AND op = 'add' THEN 'add'
+         WHEN regexp_matches(path, '/program/nodes/[^/]+$') AND op = 'remove' THEN 'remove'
+         WHEN regexp_matches(path, '/data/hubSelect$') THEN 'hubSelect'
+         WHEN regexp_matches(path, '/data/liveOutputType$') THEN 'liveOutputType'
+         WHEN regexp_matches(path, '/data/outputType$') THEN 'outputType'
+       END AS kind,
+       coalesce(node_name, raw_value) AS value
+FROM e
+WHERE (regexp_matches(path, '/program/nodes/[^/]+$') AND op IN ('add', 'remove'))
+   OR regexp_matches(path, '/data/(hubSelect|liveOutputType|outputType)$')
+ORDER BY doc_id, tile_id, node_id, created
+"""
 
 # Where an episode's first and last entries sit in the document's history, and
 # how long that history is -- so a reviewer can see whether an episode is early
@@ -423,6 +476,7 @@ def _episode_section(e, kept, described):
              "- **date:** %s" % episode_date(e),
              "- **unit/problem:** %s %s" % (e["unit"] or "-", e["problem"] or "-"),
              "- **document:** `%s`" % e["doc_id"],
+             "- **outputs:** %s" % (e.get("outputs") or "none"),
              "- **cycles:** %d" % e["n_cycles"],
              "- **changes:** %s" % described.get(ep_id, {}).get("summary", "-"),
              _entry_field("start", e["started"], e.get("first_entry_idx"),
@@ -434,6 +488,78 @@ def _episode_section(e, kept, described):
     if d:
         lines += build_descriptions.cycles_block(d)
     return lines
+
+
+def _output_state(events):
+    """(doc_id, tile_id) -> ordered events, for resolving outputs per episode."""
+    by_tile = {}
+    for r in events:
+        if r["kind"]:
+            by_tile.setdefault((r["doc_id"], r["tile_id"]), []).append(r)
+    return by_tile
+
+
+def _outputs_during(events, started, ended):
+    """What the tile's output nodes were at any point during the episode.
+
+    Presence is an interval overlap, not a snapshot. Resolving at the
+    episode's end alone would drop a node the student built, watched and then
+    deleted -- which is exactly the thing they were watching. Anything present
+    for even part of the window is something they could have been looking at.
+
+    Parameters take their last value at or before `ended`, since that is the
+    state the node spent the episode arriving at.
+    """
+    nodes, live = {}, {}
+    for e in events:
+        # `continue`, not `break`: the events arrive grouped by node, so the
+        # first one past the episode belongs to whichever node sorted first
+        # and says nothing about the rest. Breaking here dropped every output
+        # in an episode whose earliest node outlived it.
+        if str(e["created"]) > str(ended):
+            continue
+        node = nodes.setdefault(e["node_id"], {"spans": []})
+        if e["kind"] == "add":
+            # A reused node id starts a fresh node, not a continuation, but
+            # its earlier spans still happened and are kept.
+            spans = node["spans"]
+            nodes[e["node_id"]] = {"name": e["value"], "spans": spans}
+            live[e["node_id"]] = str(e["created"])
+        elif e["kind"] == "remove":
+            opened = live.pop(e["node_id"], None)
+            if opened is not None:
+                node["spans"].append((opened, str(e["created"])))
+            node["last_name"] = node.get("name") or node.get("last_name")
+            node["name"] = None
+        elif e["kind"]:
+            node[e["kind"]] = e["value"]
+    for node_id, opened in live.items():
+        nodes[node_id]["spans"].append((opened, None))
+
+    out = []
+    for node in nodes.values():
+        # Overlaps the window if it started before the episode ended and had
+        # not already been deleted when the episode began.
+        if not any(span[0] <= str(ended)
+                   and (span[1] is None or span[1] >= str(started))
+                   for span in node["spans"]):
+            continue
+        name = node.get("name") or node.get("last_name")
+        if name == "Live Output":
+            # hubSelect is the binding; the type alone says what it would drive
+            # if anything were attached.
+            out.append("Live Output %s" % (node.get("hubSelect")
+                                           or node.get("liveOutputType")
+                                           or "unset"))
+        elif name == "Demo Output":
+            # A node whose type was never written is still showing something:
+            # demo-output-node.ts defaults `outputType` to "Light Bulb", and
+            # MST records only changes, so silence means the default.
+            out.append("Demo Output %s"
+                       % (node.get("outputType") or DEMO_OUTPUT_DEFAULT))
+    # Deduplicated and sorted: two identical outputs are one thing to watch,
+    # and a stable order keeps the sheet diffable between rebuilds.
+    return sorted(set(out))
 
 
 def _entry_positions(cycles, history):
@@ -465,6 +591,8 @@ def main():
     ids = _portal_ids(derived, p["content"], p["logs"])
 
     positions = _entry_positions(cycles, p["history"])
+    outputs = _output_state(lib.query(OUTPUT_EVENTS_SQL.format(
+        history=p["history"], cycles=cycles)))
 
     episodes = _episodes(cycles)
     for ep in episodes:
@@ -474,6 +602,9 @@ def main():
         last = positions.get(ep["last_entry_id"], (None, None))
         ep["first_entry_idx"], ep["n_entries"] = first
         ep["last_entry_idx"] = last[0]
+        ep["outputs"] = ", ".join(_outputs_during(
+            outputs.get((ep["doc_id"], ep["tile_id"]), []),
+            ep["started"], ep["ended"]))
         doc_key, class_id, offering_id, source = ids.get(
             ep["doc_id"], (ep["doc_id"], None, None, "none"))
         ep["doc_key"] = doc_key
@@ -559,6 +690,16 @@ def main():
              "because CLUE cannot yet show a range on the slider (CLUE-635), "
              "so opening both is how you see where the episode begins and "
              "ends.", "",
+             "**outputs** is what the program could drive during the "
+             "episode, and so what the student could have been watching. "
+             "`Live Output` drives a device and names its binding; "
+             "`⚠️ connect device` is CLUE's own words for a node that wants "
+             "one with none attached -- that program produced no visible "
+             "effect anywhere, which is a strong reason for a pause to be "
+             "idle. `Demo Output` never touches hardware but animates on "
+             "screen, which is more watchable than a number changing, so it "
+             "counts too. A node the student built and later deleted is still "
+             "listed: it was there to watch at the time.", "",
              "`entry 412 of 5,003` is CLUE's own index for that entry and the "
              "number of entries the document holds -- how far into the "
              "student's work this episode sits, and how much of it the "

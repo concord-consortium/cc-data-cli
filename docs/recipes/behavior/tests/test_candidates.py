@@ -529,6 +529,103 @@ def cycle_lines(**over):
     return build_descriptions._cycle_lines(2, {**base, **over}, ops, trials)
 
 
+class TestEpisodeOutputs(unittest.TestCase):
+    """What the student's program could drive, and so could watch.
+
+    Read from history rather than the content snapshot: that is the document's
+    final state, and a student can rebuild a program completely.
+    """
+
+    def ev(self, node, kind, value, created, tile="t1"):
+        return {"doc_id": "d1", "tile_id": tile, "node_id": node,
+                "kind": kind, "value": value, "created": created}
+
+    def outputs(self, events, started="2024-03-01 10:00:00",
+                ended="2024-03-01 11:00:00"):
+        return build_candidates._outputs_during(events, started, ended)
+
+    def test_a_live_output_reports_its_binding(self):
+        """`hubSelect` is what it drives; CLUE writes a literal warning string
+        when a node wants a device and none is attached, and that is the most
+        common value in the corpus."""
+        self.assertEqual(
+            self.outputs([self.ev("n1", "add", "Live Output", "2024-03-01 10:05:00"),
+                          self.ev("n1", "hubSelect", "⚠️ connect device",
+                                  "2024-03-01 10:06:00")]),
+            ["Live Output ⚠️ connect device"])
+
+    def test_the_binding_wins_over_the_type(self):
+        """`liveOutputType` says what the node WOULD drive; `hubSelect` says
+        what it actually is. A node typed Grabber and bound to nothing is
+        driving nothing, and reporting "Grabber" would hide that."""
+        self.assertEqual(
+            self.outputs([self.ev("n1", "add", "Live Output", "2024-03-01 10:05:00"),
+                          self.ev("n1", "liveOutputType", "Grabber",
+                                  "2024-03-01 10:06:00"),
+                          self.ev("n1", "hubSelect", "⚠️ connect device",
+                                  "2024-03-01 10:07:00")]),
+            ["Live Output ⚠️ connect device"])
+
+    def test_an_unbound_live_output_falls_back_to_its_type(self):
+        self.assertEqual(
+            self.outputs([self.ev("n1", "add", "Live Output", "2024-03-01 10:05:00"),
+                          self.ev("n1", "liveOutputType", "Grabber",
+                                  "2024-03-01 10:06:00")]),
+            ["Live Output Grabber"])
+
+    def test_a_demo_output_with_no_type_shows_the_default(self):
+        """MST records only changes, so silence means demo-output-node.ts's
+        default rather than nothing being displayed."""
+        self.assertEqual(
+            self.outputs([self.ev("n1", "add", "Demo Output", "2024-03-01 10:05:00")]),
+            ["Demo Output Light Bulb"])
+
+    def test_a_node_deleted_during_the_episode_still_counts(self):
+        """It is exactly the thing the student was watching before they
+        replaced it."""
+        self.assertEqual(
+            self.outputs([self.ev("n1", "add", "Demo Output", "2024-03-01 10:05:00"),
+                          self.ev("n1", "outputType", "Grabber", "2024-03-01 10:06:00"),
+                          self.ev("n1", "remove", None, "2024-03-01 10:30:00")]),
+            ["Demo Output Grabber"])
+
+    def test_a_node_deleted_before_the_episode_does_not(self):
+        self.assertEqual(
+            self.outputs([self.ev("n1", "add", "Demo Output", "2024-03-01 09:00:00"),
+                          self.ev("n1", "remove", None, "2024-03-01 09:30:00")]),
+            [])
+
+    def test_a_node_added_after_the_episode_does_not(self):
+        self.assertEqual(
+            self.outputs([self.ev("n1", "add", "Demo Output", "2024-03-01 12:00:00")]),
+            [])
+
+    def test_a_node_outliving_the_episode_does_not_truncate_the_others(self):
+        """Events arrive grouped by node, so the first one past the window
+        belongs to whichever node sorted first. Breaking there dropped every
+        output in an episode whose earliest node outlived it -- which is how
+        an episode with a Live Output reported none at all."""
+        events = [
+            self.ev("n1", "add", "Demo Output", "2024-03-01 10:05:00"),
+            self.ev("n1", "outputType", "Grabber", "2024-03-01 23:00:00"),
+            self.ev("n2", "add", "Live Output", "2024-03-01 10:10:00"),
+            self.ev("n2", "hubSelect", "Physical Gripper", "2024-03-01 10:11:00"),
+        ]
+        self.assertIn("Live Output Physical Gripper", self.outputs(events))
+
+    def test_identical_outputs_are_reported_once(self):
+        """Two nodes showing the same thing are one thing to watch, and a
+        stable order keeps the sheet diffable between rebuilds."""
+        self.assertEqual(
+            self.outputs([self.ev("n1", "add", "Demo Output", "2024-03-01 10:05:00"),
+                          self.ev("n2", "add", "Demo Output", "2024-03-01 10:06:00")]),
+            ["Demo Output Light Bulb"])
+
+    def test_a_program_with_no_output_reports_nothing(self):
+        self.assertEqual(
+            self.outputs([self.ev("n1", "add", "Logic", "2024-03-01 10:05:00")]), [])
+
+
 class TestCycleLines(unittest.TestCase):
     """A cycle reads as two phases of an interaction log.
 

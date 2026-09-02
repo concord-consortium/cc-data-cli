@@ -34,9 +34,11 @@ seconds, and it is symmetric, so it does not bias one pole of the axis.
   physical   bound to a device (a serial, an Arduino pin). The student flexed,
              pressed, or heated something. This is the population that extends
              coverage beyond the Simulator.
-  simulated  bound to a SIM* key, so the reading comes from a Simulation tile.
-             Real trials, but the same mouse-driven students build_trials.py
-             already covers, counted a second way.
+  simulated  the node declares `virtual: true`, or its key starts with SIM*.
+             Either way the reading is generated rather than measured. The
+             `virtual` flag has to be checked FIRST: 548 nodes carry it with
+             ids like `00001-VIR` that no prefix rule would catch, and reading
+             the prefix alone filed every one of them as physical.
   unbound    no device chosen. Almost entirely NaN in practice, so it rarely
              survives to a trial at all.
 
@@ -91,6 +93,12 @@ COPY (
            CASE
              WHEN coalesce(json_extract_string(node, '$.data.sensor'), '') = ''
                THEN 'unbound'
+             -- `virtual` is the node's own declaration and outranks the id's
+             -- shape. Reading the prefix alone counted 548 nodes bound to ids
+             -- like `00001-VIR` and `00008VIR` as physical, which is the whole
+             -- population this column exists to isolate.
+             WHEN json_extract_string(node, '$.data.virtual') = 'true'
+               THEN 'simulated'
              WHEN json_extract_string(node, '$.data.sensor') LIKE 'SIM%'
                THEN 'simulated'
              ELSE 'physical'
@@ -260,6 +268,8 @@ sn AS (
   SELECT doc_id,
     CASE WHEN coalesce(json_extract_string(node, '$.data.sensor'), '') = ''
            THEN 'unbound'
+         WHEN json_extract_string(node, '$.data.virtual') = 'true'
+           THEN 'simulated'
          WHEN json_extract_string(node, '$.data.sensor') LIKE 'SIM%'
            THEN 'simulated'
          ELSE 'physical' END AS kind
