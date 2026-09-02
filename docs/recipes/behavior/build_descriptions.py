@@ -306,43 +306,55 @@ def summarise(rows):
     return out
 
 
-def _pause(cycle, trials):
-    """What followed the burst. `trial_after` means the student drove the
-    program's input, which is stronger evidence of checking than any pause
-    length -- so it is reported ahead of the pause type. For a simulation with
-    no slider there is no such evidence to have, and the pause type is all
-    there is; see build_trials.py on terrarium.
+def _cycle_lines(n, cycle, ops, trials):
+    """One cycle, as two phases of an interaction log.
 
-    Naming the input matters: "tested Target EMG x3" says what the student was
-    varying, where "tested (3 input changes)" only says that they were.
-    Counts are per input here, whereas cycles.trial_changes is the single
-    largest trial in the window -- so the two can differ when a student drove
-    more than one input.
+    The split is exact rather than approximate: every operation in the corpus
+    falls inside some burst's [started, ended] window, so nothing a student
+    typed lands under `Outside Program`. The two durations sum to the header's
+    total, which makes a misattributed event visible rather than silent.
 
-    This line used to read "tested Gripper x12", which was backwards: the
-    Gripper is what the program DRIVES. The label is right now because
-    build_trials.py was rewritten onto the slider, not because anything here
-    changed -- the name comes from whichever variable trials.parquet points at.
+    The header carries the wall-clock time and the history index of the burst's
+    first entry, so a reviewer can open the replay at this cycle instead of at
+    the episode and scrubbing.
     """
-    secs = cycle.get("pause_after_s")
-    tail = "%ds" % round(secs) if secs is not None else "?"
-    # Clicks on the Simulator tile's own controls lead, because they change
-    # what the simulation is doing and so change how everything after them
-    # reads -- a mode switch is why a temperature suddenly starts moving.
-    switched = ", ".join("switched to %s" % c
-                         for c in cycle.get("controls_after") or ())
-    if switched:
-        switched += ", "
-    if cycle.get("trial_after"):
-        if trials:
-            named = ", ".join("%s x%d" % (label, n) for label, n in trials)
-            return "%stested %s, %s" % (switched, named, tail)
-        # trial_after came from cycles.parquet, so a trial is known to exist;
-        # saying so without a name beats implying none happened.
-        return "%stested (%s input changes), %s" % (
-            switched, cycle.get("trial_changes") or 0, tail)
-    ptype = cycle.get("pause_type") or "unknown"
-    return "%s%s, %s" % (switched, ptype.replace("_", " "), tail)
+    burst_s = cycle.get("burst_duration_s") or 0
+    pause_s = cycle.get("pause_after_s")
+    idx = cycle.get("first_entry_idx")
+    total = ("duration %s" % _dur(burst_s + pause_s) if pause_s is not None
+             else "then no further edits")
+    lines = ["%d. %s, history start %s, %s" % (
+        n, str(cycle["burst_started"])[:19],
+        "?" if idx is None else idx, total)]
+
+    targets = cycle.get("n_distinct_targets") or 0
+    lines.append("  Program Changes (%s%s)" % (
+        _dur(burst_s), ", %d targets" % targets if targets > 1 else ""))
+    if ops:
+        lines += ["    %s" % sentence(op) for op in ops]
+    else:
+        # A cycle with no describable operation still happened; saying so
+        # beats renumbering and implying it did not.
+        lines.append("    (no program change captured)")
+
+    # Everything here happened between this burst's last edit and the next
+    # burst's first. `pause_type` is the presence channels' verdict on that
+    # gap, so it belongs to the span rather than to any one event in it.
+    if pause_s is None:
+        lines.append("  Outside Program (no further edits, showing %s)"
+                     % _dur(build_cycles.TRIAL_WINDOW_S))
+    else:
+        lines.append("  Outside Program (%s, %s)" % (
+            _dur(pause_s), (cycle.get("pause_type") or "unknown").replace("_", " ")))
+    # Control clicks lead: they change what the simulation is doing, so
+    # everything after them reads differently.
+    for control in cycle.get("controls_after") or ():
+        lines.append("    switched to %s" % control)
+    if trials:
+        lines.append("    tested %s" % ", ".join(
+            "%s x%d" % (label, count) for label, count in trials))
+    lines.append("    %s" % _response_line(cycle.get("sim_response")))
+    return lines
 
 
 def group_by_cycle(ops, cycles):
@@ -489,11 +501,31 @@ def _sim_control_changes(history, docs, meta):
     return out
 
 
+def _window_end(cycle):
+    """The end of this cycle's pause -- when the student started editing again.
+
+    Every line of the description covers this same span, so a cycle reads as
+    one entry in an interaction log: what the student changed, what they did
+    next, and what the simulation did while they watched.
+
+    It is NOT the window build_cycles.py uses to set `trial_after`, which is a
+    fixed 120s and so keeps looking after the student has gone back to work.
+    On 59% of cycles the pause is shorter than that, median 59.5s, and the
+    difference showed: two adjacent cycles both reported the same pair of mode
+    clicks because both bursts ended within 120s of them.
+
+    With no following burst there is no pause to bound, and TRIAL_WINDOW_S is
+    as good a horizon as any.
+    """
+    secs = cycle.get("pause_after_s")
+    return cycle["burst_ended"] + timedelta(
+        seconds=build_cycles.TRIAL_WINDOW_S if secs is None else secs)
+
+
 def _controls_after(controls, cycle):
-    """Control clicks in the same window `trial_after` uses."""
+    """Control clicks during the cycle's pause."""
     end = str(cycle["burst_ended"])
-    horizon = str(cycle["burst_ended"] + timedelta(
-        seconds=build_cycles.TRIAL_WINDOW_S))
+    horizon = str(_window_end(cycle))
     seen = []
     for c in controls:
         if c["doc_id"] != cycle["doc_id"]:
@@ -501,6 +533,39 @@ def _controls_after(controls, cycle):
         if end <= str(c["started"]) <= horizon and c["label"] not in seen:
             seen.append(c["label"])
     return seen
+
+
+# Where each burst starts in the document's history, so a reviewer can open a
+# cycle rather than only an episode. `idx` is CLUE's own index field, the number
+# the history slider counts in. Semi-join against cycles.parquet rather than an
+# IN list of literal entry ids.
+ENTRY_INDEX_SQL = """
+SELECT h.entry_id, h.idx
+FROM read_parquet('{history}') h
+JOIN (SELECT DISTINCT first_entry_id AS entry_id FROM read_parquet('{cycles}')) w
+  USING (entry_id)
+"""
+
+
+def _entry_indices(history, cycles_path):
+    """entry_id -> its index in the document's history."""
+    return {r["entry_id"]: r["idx"] for r in lib.query(
+        ENTRY_INDEX_SQL.format(history=history, cycles=cycles_path))}
+
+
+def _dur(secs):
+    """A duration a person can read. Raw seconds stop being legible somewhere
+    around a minute, and pauses in this corpus run to days."""
+    secs = int(round(secs or 0))
+    # Inclusive of 120 so TRIAL_WINDOW_S renders as the constant's own value
+    # rather than as "2m", which reads as a different number.
+    if secs <= 120:
+        return "%ds" % secs
+    if secs < 7200:
+        return "%dm" % (secs // 60) if secs % 60 == 0 else \
+            "%dm %ds" % (secs // 60, secs % 60)
+    return "%dh" % (secs // 3600) if (secs % 3600) // 60 == 0 else \
+        "%dh %dm" % (secs // 3600, (secs % 3600) // 60)
 
 
 def _var_meta(history, docs):
@@ -655,15 +720,15 @@ def _trials(history, derived, docs):
 
 
 def _trials_after(trials, cycle):
-    """Trials the cycle's burst was checked by.
+    """Trials during the cycle's pause. Merged by label, since one input
+    driven twice is still one input.
 
-    Same window build_cycles.py uses to set `trial_after`: a trial starting
-    at or after the burst ends, within TRIAL_WINDOW_S of it. Merged by label,
-    since one input driven twice is still one input.
+    Bounded by the pause rather than by build_cycles.TRIAL_WINDOW_S -- see
+    _window_end. A trial the student ran after going back to editing belongs
+    to whichever cycle they were in by then, not to this one.
     """
     end = str(cycle["burst_ended"])
-    horizon = str(cycle["burst_ended"] + timedelta(
-        seconds=build_cycles.TRIAL_WINDOW_S))
+    horizon = str(_window_end(cycle))
     hits = {}
     for t in trials:
         if t["doc_id"] != cycle["doc_id"]:
@@ -686,15 +751,19 @@ def describe(history, cycles_path, episodes):
 
     cycles = lib.query(
         "SELECT doc_id, tile_id, cycle_id, burst_started, burst_ended, "
-        "n_distinct_targets, pause_after_s, pause_type, trial_after, "
-        "trial_changes "
+        "first_entry_id, n_distinct_targets, pause_after_s, pause_type, "
+        "trial_after, trial_changes "
         "FROM read_parquet('%s') ORDER BY doc_id, tile_id, burst_started"
         % cycles_path)
     trials = _trials(history, os.path.dirname(cycles_path), docs)
     responses = _sim_responses(history, cycles_path, docs)
     controls = _sim_control_changes(history, docs, _var_meta(history, docs))
+    indices = _entry_indices(history, cycles_path)
     for c in cycles:
+        started = datetime.fromisoformat(str(c["burst_started"]))
         c["burst_ended"] = datetime.fromisoformat(str(c["burst_ended"]))
+        c["burst_duration_s"] = (c["burst_ended"] - started).total_seconds()
+        c["first_entry_idx"] = indices.get(c["first_entry_id"])
         c["controls_after"] = _controls_after(controls, c)
         # Absent from `responses` means no variable was written in the pause at
         # all, which _response_line reports differently from "written but
@@ -738,23 +807,7 @@ def cycles_block(d):
     # that may contain markdown metacharacters.
     lines = ["```"]
     for n, (cycle, ops, trials) in enumerate(d["cycles"], start=1):
-        if not ops:
-            # A cycle with no describable operation still happened; saying so
-            # beats renumbering and implying it did not.
-            lines.append("%d. (no program change captured)" % n)
-        else:
-            lines.append("%d. %s" % (n, sentence(ops[0])))
-            for op in ops[1:]:
-                lines.append("   %s" % sentence(op))
-        note = ""
-        if (cycle.get("n_distinct_targets") or 0) > 1:
-            note = "   [%d targets]" % cycle["n_distinct_targets"]
-        lines.append("   -> %s%s" % (_pause(cycle, trials), note))
-        # What the simulation did while the student watched. Not evidence of
-        # a trial and deliberately not used to detect one: it says something
-        # moved, never who moved it. Pair it with the `-> ` line above, which
-        # does say whether the student was driving the input at the time.
-        lines.append("      %s" % _response_line(cycle.get("sim_response")))
+        lines += _cycle_lines(n, cycle, ops, trials)
     return lines + ["```", ""]
 
 
@@ -771,11 +824,15 @@ def render(episodes, described):
              "document history. Printed by `build_descriptions.py` for "
              "episodes the review sheet did not sample; the sampled ones are "
              "described inside `review.md` itself.", "",
-             "`-> ` is what followed the burst: `tested` means the student "
-             "drove the program's input afterwards, which is the strongest "
-             "evidence in the data that they checked the change, and "
-             "`switched to` means they clicked one of the Simulator tile's "
-             "own controls.", ""]
+             "Each cycle is two phases. **Program Changes** is the burst of "
+             "edits and its duration. **Outside Program** is the gap from that "
+             "burst's last edit to the next burst's first, and everything the "
+             "student and the simulation did inside it. The two add up to the "
+             "duration in the header.", "",
+             "`tested` means the student drove the program's input; `switched "
+             "to` means they clicked one of the Simulator tile's own controls; "
+             "`sim:` is what moved in the simulation, which says something "
+             "happened, not who caused it.", ""]
     for ep in episodes:
         d = described.get(ep["episode_id"])
         if not d:

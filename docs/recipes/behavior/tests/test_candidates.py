@@ -518,6 +518,101 @@ class TestResponseLine(unittest.TestCase):
         self.assertNotIn("..", line)
 
 
+def cycle_lines(**over):
+    """One rendered cycle, as a list of lines."""
+    base = {"burst_started": "2024-03-21 13:08:05",
+            "burst_duration_s": 4.0, "pause_after_s": 29.0,
+            "first_entry_idx": 4655, "pause_type": "present_unknown",
+            "n_distinct_targets": 1, "sim_response": None}
+    trials = over.pop("_trials", [])
+    ops = over.pop("_ops", [])
+    return build_descriptions._cycle_lines(2, {**base, **over}, ops, trials)
+
+
+class TestCycleLines(unittest.TestCase):
+    """A cycle reads as two phases of an interaction log.
+
+    The split is exact: every operation in the corpus falls inside some
+    burst's window, so nothing a student typed lands under `Outside Program`.
+    """
+
+    def test_the_header_carries_time_position_and_total(self):
+        """The history index is what lets a reviewer open the replay at this
+        cycle rather than at the episode and scrub."""
+        head = cycle_lines()[0]
+        self.assertIn("2024-03-21 13:08:05", head)
+        self.assertIn("history start 4655", head)
+        self.assertIn("duration 33s", head)
+
+    def test_the_two_phases_sum_to_the_total(self):
+        """A misattributed event shows up as arithmetic that does not add."""
+        lines = cycle_lines()
+        self.assertIn("duration 33s", lines[0])
+        self.assertIn("Program Changes (4s)", lines[1])
+        self.assertTrue(any("Outside Program (29s" in l for l in lines))
+
+    def test_edits_sit_under_program_changes(self):
+        lines = cycle_lines(_ops=[{"kind": "node", "op": "add",
+                                   "node_type": "Timer", "node_id": "n1",
+                                   "param": None, "raw_value": None,
+                                   "socket": None, "source_type": None}])
+        self.assertEqual(lines[1], "  Program Changes (4s)")
+        self.assertIn("Timer", lines[2])
+
+    def test_a_burst_with_no_captured_change_says_so(self):
+        self.assertIn("(no program change captured)", cycle_lines()[2])
+
+    def test_several_targets_are_noted_on_the_burst(self):
+        """It is a property of the edits, not of the pause."""
+        self.assertIn("Program Changes (4s, 3 targets)",
+                      cycle_lines(n_distinct_targets=3)[1])
+
+    def test_the_pause_type_qualifies_the_span(self):
+        """It is the presence channels' verdict on the gap, so it belongs to
+        the span rather than to any one event inside it."""
+        self.assertTrue(any("Outside Program (29s, present unknown)" in l
+                            for l in cycle_lines()))
+
+    def test_every_input_driven_is_named(self):
+        """"tested Target EMG x3" says what was varied; a bare count only says
+        that something was."""
+        line = next(l for l in cycle_lines(
+            _trials=[("Gripper", 6), ("Surface Pressure", 2)])
+            if l.startswith("    tested"))
+        self.assertIn("Gripper x6", line)
+        self.assertIn("Surface Pressure x2", line)
+
+    def test_a_trial_outside_the_pause_is_not_claimed(self):
+        """`trial_after` on the cycle is set over a fixed 120s window, so it
+        can be true for a trial run after the student went back to editing.
+        This block is the cycle's own log entry, so it reports only the
+        pause; the episode's label still comes from that flag."""
+        lines = cycle_lines(trial_after=True, trial_changes=6, _trials=[])
+        self.assertFalse(any(l.startswith("    tested") for l in lines))
+
+    def test_a_trial_and_a_switch_sit_under_outside_program(self):
+        lines = cycle_lines(controls_after=["Temperature"],
+                            _trials=[("Target EMG", 3)])
+        i = next(n for n, l in enumerate(lines) if l.startswith("  Outside"))
+        self.assertEqual(lines[i + 1], "    switched to Temperature")
+        self.assertEqual(lines[i + 2], "    tested Target EMG x3")
+
+    def test_a_last_cycle_has_no_total_to_report(self):
+        """No later burst is a fact about the document ending, not a pause of
+        unknown length."""
+        lines = cycle_lines(pause_after_s=None)
+        self.assertIn("then no further edits", lines[0])
+        self.assertIn("no further edits, showing 120s",
+                      next(l for l in lines if "Outside Program" in l))
+
+    def test_a_long_pause_is_not_printed_as_raw_seconds(self):
+        """Pauses in this corpus run to days; 343500s is not a legible
+        number."""
+        self.assertIn("Outside Program (2h 30m",
+                      next(l for l in cycle_lines(pause_after_s=9000.0)
+                           if "Outside Program" in l))
+
+
 class TestSimControls(unittest.TestCase):
     """Clicks on the Simulator tile's own controls.
 
@@ -526,36 +621,10 @@ class TestSimControls(unittest.TestCase):
     variable rather than by action.
     """
 
-    CYCLE = {"pause_after_s": 26.0, "pause_type": "present_unknown",
-             "trial_after": False, "controls_after": ["Temperature"]}
-
-    def test_a_switch_is_reported_before_the_pause(self):
-        """It changes what the simulation is doing, so everything after it
-        reads differently -- a mode switch is why a temperature starts
-        moving."""
-        line = build_descriptions._pause(self.CYCLE, [])
-        self.assertTrue(line.startswith("switched to Temperature, "))
-        self.assertIn("present unknown", line)
-
-    def test_a_switch_is_reported_alongside_a_trial(self):
-        cycle = dict(self.CYCLE, trial_after=True, trial_changes=3)
-        line = build_descriptions._pause(cycle, [("Target EMG", 3)])
-        self.assertIn("switched to Temperature", line)
-        self.assertIn("tested Target EMG x3", line)
-
-    def test_no_switch_leaves_the_line_unchanged(self):
-        line = build_descriptions._pause(dict(self.CYCLE, controls_after=[]), [])
-        self.assertEqual(line, "present unknown, 26s")
-
-    def test_a_cycle_predating_the_field_still_renders(self):
-        cycle = {k: v for k, v in self.CYCLE.items() if k != "controls_after"}
-        self.assertEqual(build_descriptions._pause(cycle, []),
-                         "present unknown, 26s")
-
     def test_repeated_clicks_on_one_mode_are_named_once(self):
         """Deduplicated by label, first seen first, so a student toggling back
         and forth reads as the two modes rather than a list of clicks."""
-        cycle = {"doc_id": "d1",
+        cycle = {"doc_id": "d1", "pause_after_s": 120.0,
                  "burst_ended": datetime(2025, 1, 1, 10, 0, 0)}
         controls = [
             {"doc_id": "d1", "started": "2025-01-01 10:00:05",
@@ -568,17 +637,16 @@ class TestSimControls(unittest.TestCase):
         self.assertEqual(build_descriptions._controls_after(controls, cycle),
                          ["Temperature", "Pressure"])
 
-    def test_clicks_outside_the_window_are_not_counted(self):
-        """Same window `trial_after` uses, so the two lines agree about what
-        followed the burst."""
-        cycle = {"doc_id": "d1",
+    def test_clicks_outside_the_pause_are_not_counted(self):
+        """Bounded by the pause, like everything else on the cycle."""
+        cycle = {"doc_id": "d1", "pause_after_s": 20.0,
                  "burst_ended": datetime(2025, 1, 1, 10, 0, 0)}
-        far = [{"doc_id": "d1", "started": "2025-01-01 10:30:00",
-                "label": "Temperature"}]
-        self.assertEqual(build_descriptions._controls_after(far, cycle), [])
+        late = [{"doc_id": "d1", "started": "2025-01-01 10:00:45",
+                 "label": "Temperature"}]
+        self.assertEqual(build_descriptions._controls_after(late, cycle), [])
 
     def test_another_document_is_not_counted(self):
-        cycle = {"doc_id": "d1",
+        cycle = {"doc_id": "d1", "pause_after_s": 120.0,
                  "burst_ended": datetime(2025, 1, 1, 10, 0, 0)}
         other = [{"doc_id": "d2", "started": "2025-01-01 10:00:05",
                   "label": "Temperature"}]
@@ -694,46 +762,30 @@ class TestRespondingVars(unittest.TestCase):
         self.assertNotIn(("d1", "4"), self.keep())
 
 
-class TestPauseLine(unittest.TestCase):
-    """The line after a burst says what the student did to check it."""
-
-    CYCLE = {"pause_after_s": 99.0, "pause_type": "present_unknown",
-             "trial_after": True, "trial_changes": 6}
-
-    def test_names_the_input_that_was_driven(self):
-        """'tested Gripper x6' says what was varied; 'tested (6 input
-        changes)' only says that something was."""
-        line = build_descriptions._pause(self.CYCLE, [("Gripper", 6)])
-        self.assertIn("Gripper", line)
-        self.assertIn("x6", line)
-
-    def test_lists_every_input_driven_in_the_window(self):
-        line = build_descriptions._pause(
-            self.CYCLE, [("Gripper", 6), ("Surface Pressure", 2)])
-        self.assertIn("Gripper", line)
-        self.assertIn("Surface Pressure", line)
-
-    def test_falls_back_when_a_trial_is_known_but_unnamed(self):
-        """trial_after comes from cycles.parquet, so the trial is known to
-        have happened; reporting nothing would imply it did not."""
-        line = build_descriptions._pause(self.CYCLE, [])
-        self.assertIn("tested", line)
-        self.assertIn("6", line)
-
-    def test_an_unchecked_burst_reports_its_pause_type(self):
-        line = build_descriptions._pause(
-            {"pause_after_s": 40.0, "pause_type": "present_unknown",
-             "trial_after": False}, [])
-        self.assertIn("present unknown", line)
-        self.assertNotIn("tested", line)
-
-
 class TestTrialsAfter(unittest.TestCase):
-    """Trials are attributed with the same window build_cycles.py uses."""
+    """Trials are attributed to the pause they happened in."""
 
-    def _cycle(self, ended="2024-03-01 16:11:08"):
-        return {"doc_id": "d1",
+    def _cycle(self, ended="2024-03-01 16:11:08", pause=None):
+        return {"doc_id": "d1", "pause_after_s": pause,
                 "burst_ended": datetime.fromisoformat(ended)}
+
+    def test_the_window_is_the_pause_not_a_fixed_horizon(self):
+        """A trial 45s after a 20s pause happened while the student was back
+        at work, so it belongs to a later cycle, not this one. Under the fixed
+        120s window both cycles claimed it."""
+        trial = self._trial("2024-03-01 16:11:53")   # 45s after the burst
+        self.assertEqual(
+            build_descriptions._trials_after([trial], self._cycle(pause=20)), [])
+        self.assertEqual(
+            build_descriptions._trials_after([trial], self._cycle(pause=60)),
+            [("Gripper", 3)])
+
+    def test_a_last_cycle_falls_back_to_the_fixed_horizon(self):
+        """With no following burst there is no pause to bound."""
+        self.assertEqual(
+            build_descriptions._trials_after(
+                [self._trial("2024-03-01 16:12:48")], self._cycle()),
+            [("Gripper", 3)])
 
     def _trial(self, started, label="Gripper", n=3, doc="d1"):
         return {"doc_id": doc, "started": started, "label": label, "n": n}
