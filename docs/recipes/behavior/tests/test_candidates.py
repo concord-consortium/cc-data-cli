@@ -115,17 +115,19 @@ CYCLE_COLUMNS = {
     "oscillation": "BOOLEAN", "undo_in_burst": "BIGINT",
     "trial_after": "BOOLEAN", "trial_changes": "BIGINT",
     "n_nodes_after": "DOUBLE", "pause_after_s": "DOUBLE",
+    "ticks_available": "BOOLEAN", "ticks_cover": "BOOLEAN",
     "first_entry_id": "VARCHAR", "last_entry_id": "VARCHAR",
 }
 
 
-def cycle_row(i, targets, pause_type, oscillation=False):
+def cycle_row(i, targets, pause_type, oscillation=False, ticks_cover=False):
     return {"doc_id": "d1", "uid": "u1", "unit": "brain", "problem": "1.4",
             "tile_id": "tileA", "cycle_id": i,
             "burst_started": "2025-01-01 10:%02d:00" % i,
             "n_changes": targets, "n_distinct_targets": targets,
             "pause_type": pause_type, "oscillation": oscillation,
             "pause_after_s": 30.0,
+            "ticks_available": True, "ticks_cover": ticks_cover,
             "first_entry_id": "e%d" % i, "last_entry_id": "e%dz" % i}
 
 
@@ -527,6 +529,79 @@ def cycle_lines(**over):
     trials = over.pop("_trials", [])
     ops = over.pop("_ops", [])
     return build_descriptions._cycle_lines(2, {**base, **over}, ops, trials)
+
+
+class TestTickCoverageFold(unittest.TestCase):
+    """Covered pauses are counted over the episode's own cycles."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.cycles = os.path.join(self.dir, "cycles.parquet")
+
+    def _episodes(self, rows):
+        lib.write_parquet(rows, self.cycles, CYCLE_COLUMNS)
+        return build_candidates._episodes(self.cycles)
+
+    def test_covered_cycles_are_counted(self):
+        eps = self._episodes([
+            cycle_row(0, 5, "long", ticks_cover=True),
+            cycle_row(1, 5, "long", ticks_cover=False),
+            cycle_row(2, 5, "long", ticks_cover=True),
+        ])
+        self.assertEqual((eps[0]["n_ticks_cover"], eps[0]["n_cycles"]), (2, 3))
+
+    def test_a_trailing_tolerated_cycle_is_not_counted(self):
+        """It is dropped from n_cycles at close, so counting its coverage
+        would report more covered pauses than the episode has."""
+        eps = self._episodes([
+            cycle_row(0, 5, "long", ticks_cover=True),
+            cycle_row(1, 5, "long", ticks_cover=True),
+            cycle_row(2, 1, "unknown", ticks_cover=True),
+        ])
+        self.assertEqual(eps[0]["n_cycles"], 2)
+        self.assertLessEqual(eps[0]["n_ticks_cover"], eps[0]["n_cycles"])
+        self.assertEqual(eps[0]["n_ticks_cover"], 2)
+
+    def test_a_tolerated_cycle_in_the_middle_is_counted(self):
+        """It stays part of the episode, so its coverage counts too."""
+        eps = self._episodes([
+            cycle_row(0, 5, "long", ticks_cover=True),
+            cycle_row(1, 1, "unknown", ticks_cover=True),
+            cycle_row(2, 5, "long", ticks_cover=True),
+        ])
+        self.assertEqual((eps[0]["n_ticks_cover"], eps[0]["n_cycles"]), (3, 3))
+
+
+class TestTicksField(unittest.TestCase):
+    """How much of the episode the tick stream can speak to.
+
+    Ticks are the only presence channel for a document with no log session,
+    and the only place a node's output value is recorded. Their absence is a
+    property of when the document was written -- `tickAndProcess` does not
+    appear in the corpus before 2024 -- not of the student.
+    """
+
+    def field(self, **over):
+        return build_candidates._ticks_field(
+            {"ticks_available": True, "n_ticks_cover": 2, "n_cycles": 4, **over})
+
+    def test_no_tick_data_at_all_is_distinguished(self):
+        """"the document has none" and "none in this window" are different
+        facts: the first says the instrument was never there."""
+        self.assertIn("no tick data at all", self.field(ticks_available=False))
+
+    def test_a_document_with_ticks_but_none_here_says_so(self):
+        line = self.field(n_ticks_cover=0)
+        self.assertIn("none during this episode", line)
+        self.assertNotIn("no tick data at all", line)
+
+    def test_partial_coverage_is_reported_as_a_fraction(self):
+        """Neither number means much alone -- 2 covered pauses is most of a
+        3-cycle episode and a fifth of a 10-cycle one."""
+        self.assertIn("2 of 4 pauses covered", self.field())
+
+    def test_full_coverage_reads_as_full(self):
+        self.assertIn("4 of 4 pauses covered", self.field(n_ticks_cover=4))
 
 
 class TestEpisodeOutputs(unittest.TestCase):

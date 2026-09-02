@@ -49,6 +49,7 @@ CANDIDATE_COLUMNS = {
     "first_entry_id": "VARCHAR", "last_entry_id": "VARCHAR",
     "first_entry_idx": "BIGINT", "last_entry_idx": "BIGINT",
     "n_entries": "BIGINT", "outputs": "VARCHAR",
+    "ticks_available": "BOOLEAN", "n_ticks_cover": "BIGINT",
     "replay_url": "VARCHAR", "end_url": "VARCHAR", "stratum": "VARCHAR",
     "offering_source": "VARCHAR",
 }
@@ -294,6 +295,7 @@ def _episodes(cycles_path):
         "SELECT doc_id, uid, unit, problem, tile_id, cycle_id, burst_started, "
         "n_changes, n_distinct_targets, pause_type, oscillation, undo_in_burst, "
         "trial_after, trial_changes, pause_after_s, n_nodes_after, "
+        "ticks_available, ticks_cover, "
         "first_entry_id, last_entry_id FROM read_parquet('%s') "
         "ORDER BY doc_id, tile_id, burst_started" % cycles_path)
 
@@ -305,6 +307,10 @@ def _episodes(cycles_path):
             return
         # Trailing tolerated cycles are not part of the episode.
         ep["n_cycles"] -= ep.pop("pending")
+        # Pending cover flags belong to trailing tolerated cycles, which are
+        # not part of the episode -- counting them would report more covered
+        # pauses than the episode has.
+        ep.pop("pending_cover")
         ep["purity"] = ep["n_kind"] / ep["n_cycles"]
         ep["span_s"] = (datetime.fromisoformat(ep["ended"])
                         - datetime.fromisoformat(ep["started"])).total_seconds()
@@ -320,12 +326,16 @@ def _episodes(cycles_path):
                 current["n_cycles"] += 1
                 current["n_kind"] += 1
                 current["pending"] = 0
+                current["n_ticks_cover"] += (
+                    current.pop("pending_cover") + bool(row["ticks_cover"]))
+                current["pending_cover"] = 0
                 current["ended"] = row["burst_started"]
                 current["last_entry_id"] = row["last_entry_id"]
                 continue
             if kind == "unclassified" and current["pending"] < MAX_GAP_CYCLES:
                 current["pending"] += 1
                 current["n_cycles"] += 1
+                current["pending_cover"] += bool(row["ticks_cover"])
                 continue
         close(current)
         current = None
@@ -334,6 +344,9 @@ def _episodes(cycles_path):
                        "uid": row["uid"], "unit": row["unit"],
                        "problem": row["problem"], "tile_id": row["tile_id"],
                        "n_cycles": 1, "n_kind": 1, "pending": 0,
+                       "ticks_available": bool(row["ticks_available"]),
+                       "n_ticks_cover": bool(row["ticks_cover"]),
+                       "pending_cover": 0,
                        "started": row["burst_started"],
                        "ended": row["burst_started"],
                        "first_entry_id": row["first_entry_id"],
@@ -452,6 +465,24 @@ def _entry_field(label, when, idx, n_entries, url):
     return "- **%s:** %s · %s · %s" % (label, str(when)[:19], where, link)
 
 
+def _ticks_field(e):
+    """How much of the episode the tick stream can speak to.
+
+    Ticks are the only presence channel for a document with no log session, so
+    their absence weakens every `pause_type` in the episode -- and they are the
+    ONLY place a node's output value is recorded, so without them there is no
+    way to tell whether the student's program was driving anything. Both limits
+    are properties of when the document was written, not of the student:
+    `tickAndProcess` does not appear in the corpus before 2024.
+    """
+    if not e.get("ticks_available"):
+        return "none -- this document has no tick data at all"
+    covered = e.get("n_ticks_cover") or 0
+    if not covered:
+        return "none during this episode (the document has some)"
+    return "%d of %d pauses covered" % (covered, e["n_cycles"])
+
+
 def _episode_section(e, kept, described):
     """One episode: its fields as a list, then what the student did.
 
@@ -477,6 +508,7 @@ def _episode_section(e, kept, described):
              "- **unit/problem:** %s %s" % (e["unit"] or "-", e["problem"] or "-"),
              "- **document:** `%s`" % e["doc_id"],
              "- **outputs:** %s" % (e.get("outputs") or "none"),
+             "- **ticks:** %s" % _ticks_field(e),
              "- **cycles:** %d" % e["n_cycles"],
              "- **changes:** %s" % described.get(ep_id, {}).get("summary", "-"),
              _entry_field("start", e["started"], e.get("first_entry_idx"),
@@ -690,6 +722,15 @@ def main():
              "because CLUE cannot yet show a range on the slider (CLUE-635), "
              "so opening both is how you see where the episode begins and "
              "ends.", "",
+             "**ticks** is how much of the episode the program's tick "
+             "stream covers. It matters twice: ticks are the only presence "
+             "channel for a document with no log session, so their absence "
+             "weakens every pause classification in the episode; and they are "
+             "the only place a node's output value is recorded, so without "
+             "them there is no way to tell whether the program was driving "
+             "anything. Both are properties of when the document was written "
+             "-- `tickAndProcess` does not appear in the corpus before 2024 -- "
+             "not of the student.", "",
              "**outputs** is what the program could drive during the "
              "episode, and so what the student could have been watching. "
              "`Live Output` drives a device and names its binding; "
