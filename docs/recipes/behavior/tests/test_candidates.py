@@ -277,7 +277,10 @@ SHEET = (
 class TestEpisodeSection(unittest.TestCase):
     """What one episode looks like in the sheet, and that it reads back."""
 
-    EP = {"episode_id": "ep0001", "doc_id": "-NrGclyWd2sBVJyJ7Zhj",
+    EP = {"episode_id": "ep0001", # Synthetic, in the shape of a Firebase push id. Fixtures never
+          # carry a real document key: this repository is public and a
+          # key plus a class id opens a specific student's work.
+          "doc_id": "-NsyntheticDocKey01",
           "unit": "brain", "problem": "3", "n_cycles": 4,
           "started": "2024-02-26 16:54:07.123",
           "ended": "2024-02-26 16:57:01.456",
@@ -306,7 +309,7 @@ class TestEpisodeSection(unittest.TestCase):
         self.assertIn("2024-02-26 16:57:01", self.field("end"))
 
     def test_the_document_id_is_shown(self):
-        self.assertIn("-NrGclyWd2sBVJyJ7Zhj", self.field("document"))
+        self.assertIn("-NsyntheticDocKey01", self.field("document"))
 
     def test_a_missing_offering_says_so_rather_than_linking(self):
         """A URL cannot be built without an offering id, and a link that fails
