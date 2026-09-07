@@ -512,6 +512,15 @@ func TestBothSurfacesCarryTheAuthRemedy(t *testing.T) {
 	}
 }
 
+// The core renders into the MCP instructions, where the model has tools and no shell, so
+// a command written there would be an instruction it cannot carry out. Command spellings
+// belong in the per-surface wrappers.
+func TestCoreNamesNoCommand(t *testing.T) {
+	if strings.Contains(guidance.Core(), "`cc-data ") {
+		t.Error("the core names a cc-data command; move it to skill_header.md")
+	}
+}
+
 func TestResearcherGuideDocumentsEveryStaticView(t *testing.T) {
 	body, err := os.ReadFile("../../docs/researcher-guide.md")
 	if err != nil {

@@ -186,6 +186,9 @@ criterion is directly testable in-process with no new harness.
   norm. That norm is the one sentence the wrapper split leaves in two places, worded differently on
   each surface, so no other check can notice a surface losing it. It is a safety rule about not
   attempting a login on the user's behalf, which is why it is guarded rather than trusted.
+- A test asserts the core names no `cc-data` command. The core renders into the MCP instructions, so
+  a command spelling there is an instruction the model cannot carry out; command spellings belong in
+  the wrappers, and nothing else notices one drifting into the core.
 - The existing tool-surface test's hardcoded `want` list **stays hardcoded**. It is not a third
   inventory to be derived away: it is the specification of the intended surface, and its
   exact-count assertion is what catches a tool added by accident, which a derived list could never

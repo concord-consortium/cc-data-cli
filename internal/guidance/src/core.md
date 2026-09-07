@@ -83,7 +83,8 @@ like `wildfire_2026.answers`):
   of a doc across a session's history. Binary attachments (audio, images) are
   excluded here (not UTF-8 text) but remain downloadable via `attachment_files`.
 - `downloads` — a manifest dimension table.
-- Per-run views: `report_<run>`, `answers_<run>`, `history_<run>`.
+- Per-run views: `report_<run>`, `answers_<run>`, `history_<run>`, and
+  `report_<run>_job_<job>` for a run that has post-processing jobs.
 
 Learner identity (within a portal): in `answers`/`history`, a learner-run is keyed
 by `remote_endpoint` (one per student per offering-run); `platform_user_id` can

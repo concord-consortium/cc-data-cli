@@ -216,12 +216,13 @@ func registerTools(s *mcp.Server, opts Options) {
 		queryHandler(opts))
 }
 
-// queryDescription names the views from the registration rather than restating them, so
-// it cannot drift from what a dataset actually exposes.
+// queryDescription names the views from the registration rather than restating them, so it
+// cannot drift from what a dataset actually exposes. The per-run and per-job view shapes are
+// left to the guidance, which every client of this tool also receives: written here they
+// would be a view-name copy in the one place the drift guard cannot read.
 func queryDescription() string {
 	return "Run SQL over one or more datasets. Each datasets entry may be alias=ref to schema-qualify that dataset. " +
-		"Available views: " + strings.Join(duck.StaticViewNames(), ", ") +
-		", plus per-run report_<run>, answers_<run> and history_<run>. " +
+		"Available views: " + strings.Join(duck.StaticViewNames(), ", ") + ". " +
 		"res_<N>_<question_id>_answer columns are VARCHAR and hold prompt text on pseudo-header rows, so aggregate them numerically with TRY_CAST. " +
 		"Cross-dataset unions are never implicit: write them with UNION ALL BY NAME. " +
 		"Rows beyond max_rows (default 1000) are dropped and truncated is set. " + noArgsMsg
