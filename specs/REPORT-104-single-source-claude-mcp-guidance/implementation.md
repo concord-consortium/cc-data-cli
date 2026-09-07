@@ -357,9 +357,11 @@ on, so each commit stands alone.
 - `internal/claude/skill.go` — render `guidance.Skill()` instead of the embedded `SKILL.md`
 - `internal/claude/skill/SKILL.md` — deleted, its content now living in `internal/guidance/src/`
 - `internal/mcpserver/server.go` — pass `Instructions`
-- `internal/mcpserver/server_test.go` — assert the instructions arrive
+- `internal/mcpserver/server_test.go` — assert the instructions arrive, and that they carry
+  nothing an MCP client cannot act on
+- `internal/claude/skill_test.go` — require the frontmatter at the start of the written file
 
-**Estimated diff size**: ~60 lines
+**Estimated diff size**: ~75 lines
 
 ```go
 // internal/mcpserver/server.go
@@ -382,16 +384,27 @@ The acceptance test reads the value back over the transport the repo's tests alr
 ```go
 func TestMCPInstructionsArriveInInitialize(t *testing.T) {
 	setupEnv(t)
-	cs := connect(t)
-	got := cs.InitializeResult().Instructions
+	got := connect(t).InitializeResult().Instructions
 	if got == "" {
 		t.Fatal("no instructions in the initialize response")
 	}
-	if !strings.Contains(got, "run_membership") {
-		t.Fatal("instructions do not carry the data model")
+	for _, want := range []string{"run_membership", "NOT_AUTHENTICATED", "auth_status"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("instructions do not carry %q", want)
+		}
+	}
+	for _, unwanted := range []string{"---\nname: cc-data", "--help"} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("instructions carry %q, which is meaningless to an MCP client", unwanted)
+		}
 	}
 }
 ```
+
+The install test's frontmatter assertion is strengthened in the same step. It checked that the
+written file *contained* `name: cc-data`, which was enough while the skill was one embedded file but
+is not once the body is assembled: the wrong wrapper order still contains it while failing to
+register the skill. It now requires the file to open with it.
 
 ---
 
@@ -596,7 +609,7 @@ wording review and should not hold up the substrate.
 ```go
 type datasetCreateIn struct {
 	Portal      string `json:"portal,omitempty" jsonschema:"the dataset's portal as a hostname; environment aliases are not accepted here. Omit to use the configured default portal."`
-	Name        string `json:"name" jsonschema:"the dataset name"`
+	Name        string `json:"name" jsonschema:"the dataset name, not a ref: it must not contain a slash"`
 	Description string `json:"description,omitempty"`
 }
 ```
@@ -608,11 +621,11 @@ existing validation stay exactly where they are:
 if strings.Contains(in.Name, "/") {
 	return nil, nil, fmt.Errorf("dataset name %q must not contain a slash; pass the portal in the portal argument", in.Name)
 }
-ref := in.Name
+raw := in.Name
 if in.Portal != "" {
-	ref = in.Portal + "/" + in.Name
+	raw = in.Portal + "/" + in.Name
 }
-parsed, err := dataset.ParseRefForConfig(cfg, ref)
+ref, err := dataset.ParseRefForConfig(cfg, raw)
 ```
 
 The slash check is about which of two spellings a call means, not about safety. `splitRef` splits at
