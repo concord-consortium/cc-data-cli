@@ -393,10 +393,11 @@ func TestMCPInstructionsArriveInInitialize(t *testing.T) {
 			t.Errorf("instructions do not carry %q", want)
 		}
 	}
-	for _, unwanted := range []string{"---\nname: cc-data", "--help"} {
-		if strings.Contains(got, unwanted) {
-			t.Errorf("instructions carry %q, which is meaningless to an MCP client", unwanted)
-		}
+	if strings.HasPrefix(got, "---") {
+		t.Error("instructions open with frontmatter, which is meaningless to an MCP client")
+	}
+	if strings.Contains(got, "--help") {
+		t.Error("instructions point at --help, which an MCP client cannot read")
 	}
 }
 ```
@@ -405,6 +406,13 @@ The install test's frontmatter assertion is strengthened in the same step. It ch
 written file *contained* `name: cc-data`, which was enough while the skill was one embedded file but
 is not once the body is assembled: the wrong wrapper order still contains it while failing to
 register the skill. It now requires the file to open with it.
+
+Neither assertion may compare a byte sequence spanning a newline. The guidance sources are plain
+files in the repo with no `.gitattributes` normalizing them, so a Windows checkout embeds them with
+CRLF, and `HasPrefix(skill, "---\nname: cc-data\n")` fails there while passing everywhere else.
+Both compare within a line instead: the install test splits the head into lines first, and the
+instructions test asks whether the body *starts* with `---` rather than matching frontmatter across
+two lines. Verified by converting all four sources to CRLF and running the suite.
 
 ---
 

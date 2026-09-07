@@ -55,10 +55,11 @@ func TestMCPInstructionsArriveInInitialize(t *testing.T) {
 			t.Errorf("instructions do not carry %q", want)
 		}
 	}
-	for _, unwanted := range []string{"---\nname: cc-data", "--help"} {
-		if strings.Contains(got, unwanted) {
-			t.Errorf("instructions carry %q, which is meaningless to an MCP client", unwanted)
-		}
+	if strings.HasPrefix(got, "---") {
+		t.Error("instructions open with frontmatter, which is meaningless to an MCP client")
+	}
+	if strings.Contains(got, "--help") {
+		t.Error("instructions point at --help, which an MCP client cannot read")
 	}
 }
 
