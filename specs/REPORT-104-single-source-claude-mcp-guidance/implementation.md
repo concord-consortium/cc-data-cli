@@ -193,10 +193,9 @@ var leadingNames = regexp.MustCompile("^(?:- |\\| )((?:`[a-z0-9_]+`(?:, )?)+)")
 
 // ParseCatalog returns every name documented in the first section whose heading
 // contains heading. The section runs to the next heading of any level, and a later
-// heading containing heading does not reopen it, so the result is one span rather
-// than the union of everything below every mention of the word. A section that is
-// not found, or is found empty, is an error: the "every documented name still
-// exists" check would otherwise pass against nothing.
+// heading containing heading does not reopen it. A section that is not found, or is
+// found empty, is an error: the "every documented name still exists" check would
+// otherwise pass against nothing.
 func ParseCatalog(body, heading string) ([]string, error) {
 	var names []string
 	found, in, closed := false, false, false
@@ -226,10 +225,9 @@ func ParseCatalog(body, heading string) ([]string, error) {
 }
 
 // Missing returns the names in want that are absent from have, sorted, so a guard
-// failure names the entries to fix rather than reporting that two sets differ.
-// It is shipped code rather than a helper in the guard's test file because the
-// negative-control test has to be able to fail: a comparison defined beside the
-// assertions would still report the missing name if the guard were deleted.
+// failure names the entries to fix rather than reporting that two sets differ. It
+// ships here rather than in the guard's test file so the negative-control test
+// exercises the same comparison the guard does.
 func Missing(want, have []string) []string {
 	set := make(map[string]bool, len(have))
 	for _, h := range have {
