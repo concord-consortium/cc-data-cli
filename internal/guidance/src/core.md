@@ -2,12 +2,13 @@
 
 - Auth, datasets and downloaded data are all per portal, and a portal is always a
   full hostname.
-- A dataset is identified by its portal and its name. Most places spell that as a
-  ref, `<portal>/<name>` (e.g. `learn.concord.org/wildfire`), where a bare
-  `<name>` resolves under the configured default portal. Creating one takes the
-  two separately, as a `portal` and a `name`, with the portal optional and the
-  same default-portal fallback; a `name` there is a name only and must not
-  contain a slash.
+- A dataset is identified by its portal and its name, spelled as a ref,
+  `<portal>/<name>` (e.g. `learn.concord.org/wildfire`), where a bare `<name>`
+  resolves under the configured default portal. That is the spelling everywhere a
+  dataset is named, on the command line included. The one exception is the
+  `dataset_create` MCP tool, which takes the two as separate arguments, with
+  the portal optional and the same fallback, and whose `name` must not contain a
+  slash.
 - A dataset's portal is always a hostname and never an environment alias, because
   it also names the folder the data lives in. `prod`, `staging` and `dev` are
   **refused** when naming a dataset, and the error names the hostname to use.
@@ -93,6 +94,17 @@ learners by either. Join to `reports` on `remote_endpoint = res_<N>_remote_endpo
 to attach the person: `user_id` is the Portal user (the learner) and `learner_id`
 is that user in one offering. Count distinct learners by `user_id` (or `learner_id`);
 cross-portal identity is out of scope.
+
+## Identity columns
+
+A record is identified across the stores by these columns, which are also the
+`USING` key when joining a store to `run_membership`:
+
+- `source_key` — the data-source host the record came from.
+- `remote_endpoint` — one per student per offering-run, the learner-run key.
+- `question_id` — the question within the resource.
+- `history_id` — one snapshot within an answer's history. Only history joins
+  need it; answers joins use the other three.
 
 ## Multi-dataset (longitudinal)
 

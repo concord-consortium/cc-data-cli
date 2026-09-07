@@ -75,18 +75,15 @@ func TestGuidanceDocumentsEveryIdentityColumn(t *testing.T) {
 	if len(cols) == 0 {
 		t.Fatal("no identity columns enumerated; the inventory side of the guard is broken")
 	}
-	// Identity columns are described in sentences, not catalog entries, so this half matches a
-	// backticked name anywhere in the core prose. That is safe here and nowhere else: unlike
-	// `query` or `reports`, none of these four is an ordinary English word.
-	body := guidance.Core()
-	var undocumented []string
-	for _, col := range cols {
-		if !strings.Contains(body, "`"+col+"`") {
-			undocumented = append(undocumented, col)
-		}
+	documented, err := guidance.ParseCatalog(guidance.Core(), "Identity columns")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if len(undocumented) > 0 {
-		t.Fatalf("identity columns registered but not documented: %v", undocumented)
+	if m := guidance.Missing(cols, documented); len(m) > 0 {
+		t.Fatalf("identity columns registered but not documented: %v", m)
+	}
+	if m := guidance.Missing(documented, cols); len(m) > 0 {
+		t.Fatalf("identity columns documented but no longer registered: %v", m)
 	}
 }
 

@@ -37,7 +37,7 @@ All requirements were implemented. Rationale for the non-obvious ones is in Deci
 - It also covers the view table in `docs/researcher-guide.md`, a second catalog that had already drifted. `README.md` is not covered; its list is illustrative.
 - Only static view names are guarded. The per-run and per-job names (`report_<run>`, `answers_<run>`, `history_<run>`, `report_<run>_job_<job>`) cannot be enumerated in prose, so the guidance describes their shape and the guard does not match them.
 - The guard matches a **documented entry**, not any occurrence of a name in prose: it parses catalog sections and reads the leading backticked identifiers of their entries.
-- The identity columns are the single exception, matched as backticked names anywhere in the core, because none of the four is an ordinary word. Adding a fifth name to that check means first asking whether it could be.
+- The identity columns are documented as their own catalog section and guarded by the same parse, in both directions, so a column removed from `membershipColumns` while its documentation stays is caught too.
 - The parse takes the first matching section only, so a later heading carrying the same word cannot fold unrelated entries in.
 - An entry may document more than one name, and the two guarded files use different markup (bulleted list, markdown table). One parse handles both.
 - A catalog section the guard cannot locate is a **failure**, not an empty result.
@@ -97,9 +97,9 @@ The full core. Claude Desktop has no skill file and no `--help`, so `instruction
 
 No, and nothing needs to absorb it. MCP tool arguments are composed by the model from the schema handed to it at `initialize`, so a changed schema is picked up on the next connection with nothing to migrate. Accepting both spellings would leave a deprecated argument in a schema the model reads every session, which is the same rot the story exists to remove, in the most expensive place for it to live.
 
-### Which identity columns does the guard pin?
+### Which identity columns does the guard pin, and how?
 
-Only the four with a code-side inventory, from `membershipColumns`. Pinning `learner_id` too would put a hand-maintained list back on the guard's truth side, and would not even work: no local code can observe the server renaming a CSV column, so the literal would guard nothing but itself. Deliberately not `contractStoreColumns`, which also carries the internal `_fetched_at`/`_run_id` bookkeeping that has no business being required in prose.
+Only the four with a code-side inventory, from `membershipColumns`, documented as a catalog section and compared in both directions like the views and tools. They were first written as sentences and matched as backticked names anywhere in the core, which could only check registration against documentation: a column deleted from `membershipColumns` left its documentation standing and the guard still passed. Giving them a catalog section removed the special case rather than patching it, and a reader writing a join now has the key listed in one place. Pinning `learner_id` too would put a hand-maintained list back on the guard's truth side, and would not even work: no local code can observe the server renaming a CSV column, so the literal would guard nothing but itself. Deliberately not `contractStoreColumns`, which also carries the internal `_fetched_at`/`_run_id` bookkeeping that has no business being required in prose.
 
 ### One core file plus per-surface wrappers, or marked regions in one file?
 
