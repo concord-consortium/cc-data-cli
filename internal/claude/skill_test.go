@@ -27,8 +27,8 @@ func TestInstallWritesSkillAndPointer(t *testing.T) {
 	if !strings.Contains(string(skill), "cc-data skill version: 1.2.3") {
 		t.Fatal("skill should carry the version stamp")
 	}
-	if !strings.Contains(string(skill), "name: cc-data") {
-		t.Fatal("skill should have frontmatter")
+	if !strings.HasPrefix(string(skill), "---\nname: cc-data\n") {
+		t.Fatal("skill must open with the Claude Code frontmatter, which registers it")
 	}
 	md, _ := os.ReadFile(filepath.Join(home, ".claude", "CLAUDE.md"))
 	if !strings.Contains(string(md), pointerMarker) {

@@ -3,16 +3,14 @@
 package claude
 
 import (
-	_ "embed"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
-)
 
-//go:embed skill/SKILL.md
-var skillBody string
+	"github.com/concord-consortium/cc-data-cli/internal/guidance"
+)
 
 var stampRe = regexp.MustCompile(`cc-data skill version:\s*(\S+)`)
 
@@ -39,7 +37,7 @@ func skillPath() (string, error) {
 
 // stampedContent returns the skill body with the version stamp appended.
 func stampedContent(version string) string {
-	return strings.TrimRight(skillBody, "\n") + fmt.Sprintf("\n\n<!-- cc-data skill version: %s -->\n", version)
+	return strings.TrimRight(guidance.Skill(), "\n") + fmt.Sprintf("\n\n<!-- cc-data skill version: %s -->\n", version)
 }
 
 // WriteSkill writes the skill file (and its directory) stamped with version.

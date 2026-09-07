@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/concord-consortium/cc-data-cli/internal/config"
@@ -40,6 +41,24 @@ func connect(t *testing.T) *mcp.ClientSession {
 	}
 	t.Cleanup(func() { cs.Close() })
 	return cs
+}
+
+func TestMCPInstructionsArriveInInitialize(t *testing.T) {
+	setupEnv(t)
+	got := connect(t).InitializeResult().Instructions
+	if got == "" {
+		t.Fatal("no instructions in the initialize response")
+	}
+	for _, want := range []string{"run_membership", "NOT_AUTHENTICATED", "auth_status"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("instructions do not carry %q", want)
+		}
+	}
+	for _, unwanted := range []string{"---\nname: cc-data", "--help"} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("instructions carry %q, which is meaningless to an MCP client", unwanted)
+		}
+	}
 }
 
 func callJSON(t *testing.T, cs *mcp.ClientSession, name string, args any) (*mcp.CallToolResult, map[string]any) {

@@ -10,6 +10,7 @@ import (
 	"github.com/concord-consortium/cc-data-cli/internal/api"
 	"github.com/concord-consortium/cc-data-cli/internal/config"
 	"github.com/concord-consortium/cc-data-cli/internal/dataset"
+	"github.com/concord-consortium/cc-data-cli/internal/guidance"
 	"github.com/concord-consortium/cc-data-cli/internal/output"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -22,9 +23,13 @@ type Options struct {
 
 func ptr(b bool) *bool { return &b }
 
-// NewServer assembles the server with the pinned tool surface.
+// NewServer assembles the server with the pinned tool surface and the guidance it
+// advertises in the initialize response.
 func NewServer(opts Options) *mcp.Server {
-	s := mcp.NewServer(&mcp.Implementation{Name: "cc-data", Version: opts.Version}, nil)
+	s := mcp.NewServer(
+		&mcp.Implementation{Name: "cc-data", Version: opts.Version},
+		&mcp.ServerOptions{Instructions: guidance.Instructions()},
+	)
 	registerTools(s, opts)
 	return s
 }
