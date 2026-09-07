@@ -499,10 +499,8 @@ func TestGuidanceDocumentsEveryIdentityColumn(t *testing.T) {
 }
 
 // The auth remedy is the one piece of guidance that exists on both surfaces, worded
-// differently on each, so no inventory comparison can notice a surface losing it. The
-// norm is a safety rule (do not attempt the login on the user's behalf), which is why
-// it is pinned rather than trusted. Matched without its leading capital so a sentence
-// rewrite that keeps the rule does not fail the test.
+// differently on each, so no inventory comparison can notice a surface losing it.
+// Matched without its leading capital, so rewording around the rule does not fail.
 func TestBothSurfacesCarryTheAuthRemedy(t *testing.T) {
 	for surface, body := range map[string]string{"skill": guidance.Skill(), "instructions": guidance.Instructions()} {
 		if !strings.Contains(body, "NOT_AUTHENTICATED") {
@@ -544,7 +542,6 @@ func TestGuardDetectsAnUndocumentedName(t *testing.T) {
 		t.Fatalf("guard did not report the missing name, got %v", m)
 	}
 }
-
 ```
 
 The parser's own properties are asserted in `catalog_test.go`, next to the parser. What lives here is

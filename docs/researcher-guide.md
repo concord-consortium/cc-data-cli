@@ -309,6 +309,7 @@ When you (or Claude) query a dataset, the data is exposed as a set of SQL
 | `history` | Every interactive-state snapshot, how each answer evolved over time. |
 | `report_prompts` | The prompt and correct-answer text for each question. |
 | `attachment_files` | One row per downloaded file (audio, saved docs) with its type and local path. |
+| `attachment_states` | The saved CODAP/SageModeler state the current answer points at. |
 | `attachment_content` | The text/JSON content of every saved CODAP/SageModeler snapshot, queryable and diffable. |
 | `run_membership`, `downloads` | Provenance, which run's fetch covered which records, and what each download was. |
 
