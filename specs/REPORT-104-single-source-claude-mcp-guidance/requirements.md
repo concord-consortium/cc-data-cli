@@ -160,9 +160,11 @@ criterion is directly testable in-process with no new harness.
   ref is split, so leaving it would be this story shipping its own first piece of drift.
 - `get_attachments` states its precondition: answers or history must be fetched for the run first.
 - `query` echoes `TRY_CAST` on VARCHAR answer columns and `UNION ALL BY NAME` for cross-dataset
-  unions. If it also lists the available views, that list is generated from the same catalog the
-  guidance renders, never typed into the description: a hand-written view list inside a tool
-  description is a third copy, and one the drift guard does not read.
+  unions. If it also lists the available views, that list is generated from the code-derived
+  inventory, never typed into the description: a hand-written view list inside a tool description is
+  a third copy, and one the drift guard does not read. A test asserts every registered view appears
+  in the description, so replacing the generated list with a typed one fails as soon as a view is
+  added.
 - `dataset_delete` and `dataset_purge` carry stronger confirmation language about what is destroyed
   and that it is not recoverable.
 - The existing MCP behavior contracts are unchanged: the excluded terminal and installer commands

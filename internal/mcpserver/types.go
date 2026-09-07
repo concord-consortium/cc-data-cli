@@ -51,7 +51,8 @@ type getAttachmentsIn struct {
 }
 
 type datasetCreateIn struct {
-	Ref         string `json:"ref"`
+	Portal      string `json:"portal,omitempty" jsonschema:"the dataset's portal as a hostname; environment aliases are not accepted here. Omit to use the configured default portal."`
+	Name        string `json:"name" jsonschema:"the dataset name, not a ref: it must not contain a slash"`
 	Description string `json:"description,omitempty"`
 }
 

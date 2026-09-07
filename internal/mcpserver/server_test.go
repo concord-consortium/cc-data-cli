@@ -9,6 +9,7 @@ import (
 
 	"github.com/concord-consortium/cc-data-cli/internal/config"
 	"github.com/concord-consortium/cc-data-cli/internal/dataset"
+	"github.com/concord-consortium/cc-data-cli/internal/duck"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/zalando/go-keyring"
 )
@@ -150,7 +151,7 @@ func TestMCPDeletePurgeRequireConfirm(t *testing.T) {
 	setupEnv(t)
 	cs := connect(t)
 	// Create a dataset first.
-	callJSON(t, cs, "dataset_create", map[string]any{"ref": "learn.concord.org/ds"})
+	callJSON(t, cs, "dataset_create", map[string]any{"portal": "learn.concord.org", "name": "ds"})
 
 	res, _ := callJSON(t, cs, "dataset_delete", map[string]any{"ref": "learn.concord.org/ds"})
 	if !res.IsError {
@@ -167,10 +168,80 @@ func TestMCPDeletePurgeRequireConfirm(t *testing.T) {
 	}
 }
 
+func TestMCPQueryDescriptionCarriesTheQueryRules(t *testing.T) {
+	setupEnv(t)
+	res, err := connect(t).ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var desc string
+	for _, tool := range res.Tools {
+		if tool.Name == "query" {
+			desc = tool.Description
+		}
+	}
+	if desc == "" {
+		t.Fatal("no query tool")
+	}
+	for _, want := range append(duck.StaticViewNames(), "TRY_CAST", "UNION ALL BY NAME") {
+		if !strings.Contains(desc, want) {
+			t.Errorf("query description does not mention %q", want)
+		}
+	}
+}
+
+func TestMCPDatasetCreateArguments(t *testing.T) {
+	setupEnv(t)
+	cs := connect(t)
+
+	res, out := callJSON(t, cs, "dataset_create", map[string]any{"portal": "ngss-assessment.portal.concord.org", "name": "wf"})
+	if res.IsError {
+		t.Fatalf("explicit portal should create: %v", out)
+	}
+	if out["ref"] != "ngss-assessment.portal.concord.org/wf" {
+		t.Errorf("created under the wrong portal: %v", out["ref"])
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.DefaultPortal = "learn.concord.org"
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	res, out = callJSON(t, cs, "dataset_create", map[string]any{"name": "fallback"})
+	if res.IsError {
+		t.Fatalf("an omitted portal should fall back to the default: %v", out)
+	}
+	if out["ref"] != "learn.concord.org/fallback" {
+		t.Errorf("fallback resolved to %v", out["ref"])
+	}
+
+	for _, tc := range []struct {
+		label string
+		args  map[string]any
+		want  string
+	}{
+		{"environment alias", map[string]any{"portal": "staging", "name": "wf"}, "environment alias"},
+		{"slash in name", map[string]any{"portal": "learn.concord.org", "name": "a/b"}, "must not contain a slash"},
+		{"ref in name", map[string]any{"name": "learn.concord.org/wf"}, "must not contain a slash"},
+	} {
+		res, _ := callJSON(t, cs, "dataset_create", tc.args)
+		if !res.IsError {
+			t.Errorf("%s should be refused", tc.label)
+			continue
+		}
+		if text, ok := res.Content[0].(*mcp.TextContent); !ok || !strings.Contains(text.Text, tc.want) {
+			t.Errorf("%s: error should mention %q, got %v", tc.label, tc.want, res.Content[0])
+		}
+	}
+}
+
 func TestMCPDatasetShowParity(t *testing.T) {
 	root := setupEnv(t)
 	cs := connect(t)
-	callJSON(t, cs, "dataset_create", map[string]any{"ref": "learn.concord.org/ds", "description": "hi"})
+	callJSON(t, cs, "dataset_create", map[string]any{"portal": "learn.concord.org", "name": "ds", "description": "hi"})
 
 	_, out := callJSON(t, cs, "dataset_show", map[string]any{"ref": "learn.concord.org/ds"})
 

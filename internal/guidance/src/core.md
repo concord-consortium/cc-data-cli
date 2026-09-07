@@ -2,14 +2,19 @@
 
 - Auth, datasets and downloaded data are all per portal, and a portal is always a
   full hostname.
-- A dataset ref is `<portal>/<name>` (e.g. `learn.concord.org/wildfire`); a bare
-  `<name>` resolves under the configured default portal. Dataset refs take a
-  hostname only: the environment aliases (`prod`, `staging`, `dev`) are
-  **refused** here rather than expanded, so `staging/wildfire` is an error naming
-  the hostname to use. If a fetch returns `NOT_AUTHENTICATED`, check the ref's
-  portal is a hostname before relaying a login.
+- A dataset is identified by its portal and its name. Most places spell that as a
+  ref, `<portal>/<name>` (e.g. `learn.concord.org/wildfire`), where a bare
+  `<name>` resolves under the configured default portal. Creating one takes the
+  two separately, as a `portal` and a `name`, with the portal optional and the
+  same default-portal fallback; a `name` there is a name only and must not
+  contain a slash.
+- A dataset's portal is always a hostname and never an environment alias, because
+  it also names the folder the data lives in. `prod`, `staging` and `dev` are
+  **refused** when naming a dataset, and the error names the hostname to use.
 - An environment alias is accepted, and expanded, wherever a `portal` selects a
   server to read from rather than a folder to write into.
+- If a fetch returns `NOT_AUTHENTICATED`, check the dataset's portal is a
+  hostname before relaying a login.
 
 ## Runs and their data
 

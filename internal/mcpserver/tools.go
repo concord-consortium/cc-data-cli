@@ -79,7 +79,7 @@ func registerTools(s *mcp.Server, opts Options) {
 	mcp.AddTool(s, &mcp.Tool{Name: "get_history", Description: "Download a run's interactive state history into a dataset."},
 		pagedHandler(store.TypeHistory))
 
-	mcp.AddTool(s, &mcp.Tool{Name: "get_attachments", Description: "Download a run's file attachments into a dataset. " + noArgsMsg},
+	mcp.AddTool(s, &mcp.Tool{Name: "get_attachments", Description: "Download a run's file attachments into a dataset. Fetch that run's answers or history first: attachments are reached through those records. " + noArgsMsg},
 		func(ctx context.Context, req *mcp.CallToolRequest, in getAttachmentsIn) (*mcp.CallToolResult, mapOut, error) {
 			d, client, err := openForFetch(in.Dataset)
 			if err != nil {
@@ -91,13 +91,20 @@ func registerTools(s *mcp.Server, opts Options) {
 			return fetchResult(fetch.FetchAttachments(ctx, o))
 		})
 
-	mcp.AddTool(s, &mcp.Tool{Name: "dataset_create", Description: "Create a new dataset."},
+	mcp.AddTool(s, &mcp.Tool{Name: "dataset_create", Description: "Create a new, empty dataset to pull runs into. The portal is optional and falls back to the configured default portal. It takes a hostname only and refuses an environment alias (prod / staging / dev), unlike the portal on reports_list and reports_jobs, because it also names the folder the data lives in."},
 		func(ctx context.Context, req *mcp.CallToolRequest, in datasetCreateIn) (*mcp.CallToolResult, mapOut, error) {
 			cfg, root, err := loadRuntime()
 			if err != nil {
 				return nil, nil, err
 			}
-			ref, err := dataset.ParseRefForConfig(cfg, in.Ref)
+			if strings.Contains(in.Name, "/") {
+				return nil, nil, fmt.Errorf("dataset name %q must not contain a slash; pass the portal in the portal argument", in.Name)
+			}
+			raw := in.Name
+			if in.Portal != "" {
+				raw = in.Portal + "/" + in.Name
+			}
+			ref, err := dataset.ParseRefForConfig(cfg, raw)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -163,7 +170,7 @@ func registerTools(s *mcp.Server, opts Options) {
 			return nil, mapOut{"ref": d.Ref.String(), "edited": true}, nil
 		})
 
-	mcp.AddTool(s, &mcp.Tool{Name: "dataset_delete", Description: "Delete a dataset folder (requires confirm:true).", Annotations: destructive},
+	mcp.AddTool(s, &mcp.Tool{Name: "dataset_delete", Description: "Permanently delete a dataset: its folder, its manifest, and every report, answer, history and attachment file downloaded into it. This cannot be undone and nothing is moved to a trash folder; the runs would have to be fetched again into a new dataset. Requires confirm:true.", Annotations: destructive},
 		func(ctx context.Context, req *mcp.CallToolRequest, in confirmRefIn) (*mcp.CallToolResult, mapOut, error) {
 			if !in.Confirm {
 				return nil, nil, fmt.Errorf("dataset_delete requires confirm:true")
@@ -178,7 +185,7 @@ func registerTools(s *mcp.Server, opts Options) {
 			return nil, mapOut{"ref": d.Ref.String(), "deleted": true}, nil
 		})
 
-	mcp.AddTool(s, &mcp.Tool{Name: "dataset_purge", Description: "Delete a dataset's downloaded data but keep the dataset (requires confirm:true).", Annotations: destructive},
+	mcp.AddTool(s, &mcp.Tool{Name: "dataset_purge", Description: "Permanently delete every file downloaded into a dataset, keeping the dataset itself, its name and its description. This cannot be undone; the runs would have to be fetched again. Requires confirm:true.", Annotations: destructive},
 		func(ctx context.Context, req *mcp.CallToolRequest, in confirmRefIn) (*mcp.CallToolResult, mapOut, error) {
 			if !in.Confirm {
 				return nil, nil, fmt.Errorf("dataset_purge requires confirm:true")
@@ -205,8 +212,19 @@ func registerTools(s *mcp.Server, opts Options) {
 			return nil, mapOut{"ref": d.Ref.String(), "reindexed": true}, nil
 		})
 
-	mcp.AddTool(s, &mcp.Tool{Name: "query", Description: "Run SQL over one or more datasets. Each datasets entry may be alias=ref to schema-qualify that dataset. Rows beyond max_rows (default 1000) are dropped and truncated is set. " + noArgsMsg, Annotations: readOnly},
+	mcp.AddTool(s, &mcp.Tool{Name: "query", Description: queryDescription(), Annotations: readOnly},
 		queryHandler(opts))
+}
+
+// queryDescription names the views from the registration rather than restating them, so
+// it cannot drift from what a dataset actually exposes.
+func queryDescription() string {
+	return "Run SQL over one or more datasets. Each datasets entry may be alias=ref to schema-qualify that dataset. " +
+		"Available views: " + strings.Join(duck.StaticViewNames(), ", ") +
+		", plus per-run report_<run>, answers_<run> and history_<run>. " +
+		"res_<N>_<question_id>_answer columns are VARCHAR and hold prompt text on pseudo-header rows, so aggregate them numerically with TRY_CAST. " +
+		"Cross-dataset unions are never implicit: write them with UNION ALL BY NAME. " +
+		"Rows beyond max_rows (default 1000) are dropped and truncated is set. " + noArgsMsg
 }
 
 func pagedHandler(typ string) func(context.Context, *mcp.CallToolRequest, getPagedIn) (*mcp.CallToolResult, mapOut, error) {

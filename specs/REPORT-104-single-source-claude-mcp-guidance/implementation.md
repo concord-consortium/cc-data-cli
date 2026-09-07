@@ -621,9 +621,17 @@ since it currently explains the rule in terms of a `staging/wildfire` ref spelli
 exists.
 
 The other descriptions: `get_attachments` states that answers or history must be fetched first;
-`query` echoes `TRY_CAST` on VARCHAR answer columns and `UNION ALL BY NAME`, and generates any view
-list from `guidance.Core()` rather than restating it; `dataset_delete` and `dataset_purge` say what
-is destroyed and that it is not recoverable.
+`query` echoes `TRY_CAST` on VARCHAR answer columns and `UNION ALL BY NAME`, and generates its view
+list from `duck.StaticViewNames()` rather than restating it; `dataset_delete` and `dataset_purge`
+say what is destroyed and that it is not recoverable.
+
+The view list is generated from the registration rather than from `guidance.Core()`'s catalog, which
+the requirement's "the same catalog the guidance renders" would also allow. Both avoid the third
+hand-written copy, which is what the requirement is protecting; the registration wins on two counts.
+It names the views a query can actually run against rather than the ones the prose claims, and it
+has no error path, where parsing the catalog at registration time would need a silent fallback that
+could ship a description with its view list missing. The guard already pins the two sets equal, so
+the choice costs nothing in drift.
 
 ## Open Questions
 
