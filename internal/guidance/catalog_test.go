@@ -54,6 +54,30 @@ func TestParseCatalogTakesOnlyTheFirstMatchingSection(t *testing.T) {
 	}
 }
 
+// A "#" line inside a code block used to end the section, which hid every entry after it.
+// That direction fails silently: a stale entry nobody can see is a stale entry nobody catches.
+func TestParseCatalogSeesEntriesAfterAFencedBlock(t *testing.T) {
+	body := "## Views\n\n- `reports` — x\n\n```sh\n# 1. a shell comment\n```\n\n- `stale_view` — x\n"
+	got, err := ParseCatalog(body, "Views")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, []string{"reports", "stale_view"}) {
+		t.Fatalf("a fenced comment line hid part of the section: %v", got)
+	}
+}
+
+func TestParseCatalogIgnoresEntriesInsideAFencedBlock(t *testing.T) {
+	body := "## Views\n\n- `reports` — x\n\n```markdown\n- `not_a_view` — an example, not documentation\n```\n"
+	got, err := ParseCatalog(body, "Views")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, []string{"reports"}) {
+		t.Fatalf("an example inside a code block counted as documentation: %v", got)
+	}
+}
+
 func TestParseCatalogFailsOnAMissingSection(t *testing.T) {
 	if _, err := ParseCatalog("## Something Else\n\n- `reports` — x\n", "Views"); err == nil {
 		t.Fatal("a missing catalog section must be an error, not an empty result")

@@ -4,6 +4,8 @@ package mcpserver
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"io"
 	"strings"
 
@@ -32,6 +34,30 @@ func NewServer(opts Options) *mcp.Server {
 	)
 	registerTools(s, opts)
 	return s
+}
+
+// addTool registers a tool whose handler errors keep their machine-readable envelope.
+// The SDK renders a handler error with Error(), which for a CLIError is the message alone,
+// so the code and action the guidance tells the model to act on would never reach it.
+func addTool[In, Out any](s *mcp.Server, t *mcp.Tool, h mcp.ToolHandlerFor[In, Out]) {
+	mcp.AddTool(s, t, func(ctx context.Context, req *mcp.CallToolRequest, in In) (*mcp.CallToolResult, Out, error) {
+		res, out, err := h(ctx, req, in)
+		return res, out, codedError(err)
+	})
+}
+
+// codedError renders a CLIError as the JSON envelope the CLI prints with --json, so a tool
+// caller sees the same code, message and action a terminal user does. Anything else passes through.
+func codedError(err error) error {
+	var ce *output.CLIError
+	if !errors.As(err, &ce) {
+		return err
+	}
+	b, jsonErr := json.Marshal(ce.Envelope())
+	if jsonErr != nil {
+		return err
+	}
+	return errors.New(string(b))
 }
 
 // Run starts the stdio MCP server.

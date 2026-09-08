@@ -302,6 +302,11 @@ dataset named `wildfire` on `learn.concord.org` lives in
 When you (or Claude) query a dataset, the data is exposed as a set of SQL
 **views** you can ask questions of:
 
+<!-- A test parses this table (internal/guidance/guard_test.go) to check it lists every view
+     the code registers. Keep one view per row with its name first, in backticks. The parser
+     reads this whole section, not just the table, so any bullet here that opens with a
+     backticked name is read as a view too. -->
+
 | View | What it holds |
 |---|---|
 | `reports` | Report CSV rows across all runs, with a `run_id` column. Covers both answer reports and log/action reports. |

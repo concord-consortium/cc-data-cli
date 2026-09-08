@@ -5,10 +5,10 @@
 - A dataset is identified by its portal and its name, spelled as a ref,
   `<portal>/<name>` (e.g. `learn.concord.org/wildfire`), where a bare `<name>`
   resolves under the configured default portal. That is the spelling everywhere a
-  dataset is named, on the command line included. The one exception is the
-  `dataset_create` MCP tool, which takes the two as separate arguments, with
-  the portal optional and the same fallback, and whose `name` must not contain a
-  slash.
+  dataset is identified, on the command line included. `dataset_create` is the
+  exception: it takes the two as separate arguments, with the portal optional and
+  the same fallback, and its `name` must not contain a slash. A bare name is also
+  what `dataset_rename` takes as `new_name`, which renames within the same portal.
 - A dataset's portal is always a hostname and never an environment alias, because
   it also names the folder the data lives in. `prod`, `staging` and `dev` are
   **refused** when naming a dataset, and the error names the hostname to use.

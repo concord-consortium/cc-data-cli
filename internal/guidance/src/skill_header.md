@@ -16,6 +16,8 @@ guessing flags.
   `manifest.json` directly. It reports per-type totals, the download table, and
   warnings.
 - List datasets with `cc-data dataset list --json`.
+- Make one with `cc-data dataset create <ref>` before fetching into it; a fetch into
+  a dataset that does not exist fails.
 - Delete a dataset's data with `cc-data dataset purge <ref>`.
 - `--dataset` is repeatable on `query`/`repl`, which is how a query spans more
   than one dataset.
