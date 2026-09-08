@@ -20,7 +20,7 @@ func newReportsCmd() *cobra.Command {
 		Use:   "reports",
 		Short: "List report runs and jobs",
 	}
-	cmd.AddCommand(newReportsListCmd(), newReportsJobsCmd())
+	cmd.AddCommand(newReportsListCmd(), newReportsJobsCmd(), newReportsFilterOptionsCmd())
 	return cmd
 }
 
@@ -118,6 +118,117 @@ func newReportsJobsCmd() *cobra.Command {
 	cmd.Flags().StringVar(&portal, "portal", "", "portal the run belongs to: an environment alias or a hostname")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "emit JSON instead of a table")
 	return cmd
+}
+
+// filterOptionsFlags is the filter-options flag set. The flags-to-request step lives on it so
+// it can be exercised without a server; reached only through RunE, every flag but --dimension
+// was unverifiable.
+type filterOptionsFlags struct {
+	portal, dimension, slug, search, pageToken string
+	limit                                      int
+	all, asJSON                                bool
+}
+
+func (f filterOptionsFlags) request() (api.FilterOptionsReq, error) {
+	if f.dimension == "" {
+		return api.FilterOptionsReq{}, output.Usagef("--dimension is required")
+	}
+	return api.FilterOptionsReq{
+		Dimension:  f.dimension,
+		ReportSlug: f.slug,
+		Search:     f.search,
+		Limit:      f.limit,
+		PageToken:  f.pageToken,
+	}, nil
+}
+
+// fetch runs the request the flags describe, walking the pages when --all is set. The walk
+// decision lives here rather than at the call site so a test can reach it.
+func (f filterOptionsFlags) fetch(ctx context.Context, client *api.Client) (api.FilterOptionsPage, error) {
+	req, err := f.request()
+	if err != nil {
+		return api.FilterOptionsPage{}, err
+	}
+	return client.FilterOptionsFor(ctx, req, f.all)
+}
+
+// render writes a page in the form the flags asked for.
+func (f filterOptionsFlags) render(page api.FilterOptionsPage) error {
+	if f.asJSON {
+		return output.JSONLine(reportview.FilterOptions(page))
+	}
+	renderFilterOptionsTable(page)
+	return nil
+}
+
+func newReportsFilterOptionsCmd() *cobra.Command {
+	var f filterOptionsFlags
+
+	cmd := &cobra.Command{
+		Use:   "filter-options --dimension <dimension> --portal <portal|env>",
+		Short: "Browse the values a report filter dimension offers",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if _, err := f.request(); err != nil {
+				return err
+			}
+			cfg, _, err := loadRuntime()
+			if err != nil {
+				return err
+			}
+			host, err := resolvePortal(cfg, f.portal)
+			if err != nil {
+				return err
+			}
+			client, err := api.ForPortal(host)
+			if err != nil {
+				return err
+			}
+			page, err := f.fetch(context.Background(), client)
+			if err != nil {
+				return api.AsCLIError(err)
+			}
+			return f.render(page)
+		},
+	}
+	cmd.Flags().StringVar(&f.portal, "portal", "", "portal to browse: an environment alias or a hostname")
+	cmd.Flags().StringVar(&f.dimension, "dimension", "", "the dimension to list options for")
+	cmd.Flags().StringVar(&f.slug, "report-slug", "", "restrict to a report that offers the dimension")
+	cmd.Flags().StringVar(&f.search, "search", "", "narrow the options by a substring of the label")
+	cmd.Flags().IntVar(&f.limit, "limit", 0, "options per page (server default when unset)")
+	cmd.Flags().StringVar(&f.pageToken, "page-token", "", "continue from a token a previous run reported")
+	cmd.Flags().BoolVar(&f.all, "all", false, fmt.Sprintf("walk the pages instead of returning the first, stopping after %d options", api.FilterOptionsDrainMax))
+	cmd.Flags().BoolVar(&f.asJSON, "json", false, "emit JSON instead of a table")
+	return cmd
+}
+
+func renderFilterOptionsTable(page api.FilterOptionsPage) {
+	tw := tabwriter.NewWriter(output.Stdout(), 0, 2, 2, ' ', 0)
+	fmt.Fprintln(tw, "ID\tLABEL")
+	for _, o := range page.Items {
+		fmt.Fprintf(tw, "%s\t%s\n", o.ID, o.Label)
+	}
+	tw.Flush()
+	if page.Count != nil {
+		fmt.Fprintf(output.Stdout(), "\n%d shown of %d total\n", len(page.Items), *page.Count)
+	}
+	if page.CountSkipped && page.CountSkippedReason == nil {
+		fmt.Fprintf(output.Stdout(), "\nno total available\n")
+	}
+	if page.CountSkipped && page.CountSkippedReason != nil {
+		fmt.Fprintf(output.Stdout(), "\n%d shown; no total: %s\n", len(page.Items), *page.CountSkippedReason)
+	}
+	if page.NextPageToken == nil || *page.NextPageToken == "" {
+		return
+	}
+	if page.Truncated {
+		// The walk already ran, so telling the user to pass --all would name what they just did.
+		fmt.Fprintf(output.Stdout(), "stopped at the %d-option cap; continue with --page-token %s\n",
+			api.FilterOptionsDrainMax, *page.NextPageToken)
+		return
+	}
+	fmt.Fprintf(output.Stdout(), "more options remain; pass --all to walk them, or --page-token %s for the next page\n",
+		*page.NextPageToken)
 }
 
 func renderRunsTable(runs []api.ReportRun) {

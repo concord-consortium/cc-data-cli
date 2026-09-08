@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 )
 
@@ -87,4 +88,104 @@ func (c *Client) ReportDownloadEnvelope(ctx context.Context, runID int, jobID *i
 		return nil, err
 	}
 	return &env, nil
+}
+
+// FilterOptionsReq is one page request for a report filter dimension. ReportFilter is passed
+// through as the server emitted it on a run, so the client never has to decode a filter.
+type FilterOptionsReq struct {
+	Dimension    string
+	ReportSlug   string
+	Search       string
+	Limit        int
+	PageToken    string
+	IncludeCount *bool
+	ReportFilter json.RawMessage
+}
+
+func (r FilterOptionsReq) body() map[string]any {
+	body := map[string]any{"dimension": r.Dimension}
+	if r.ReportSlug != "" {
+		body["report_slug"] = r.ReportSlug
+	}
+	if r.Search != "" {
+		body["search"] = r.Search
+	}
+	if r.Limit > 0 {
+		body["limit"] = r.Limit
+	}
+	if r.PageToken != "" {
+		body["page_token"] = r.PageToken
+	}
+	if r.IncludeCount != nil {
+		body["include_count"] = *r.IncludeCount
+	}
+	if len(r.ReportFilter) > 0 {
+		body["report_filter"] = r.ReportFilter
+	}
+	return body
+}
+
+// FilterOptions fetches one page of a filter dimension's options.
+func (c *Client) FilterOptions(ctx context.Context, req FilterOptionsReq) (FilterOptionsPage, error) {
+	var page FilterOptionsPage
+	if err := c.postJSON(ctx, "/api/v1/reports/filter-options", req.body(), &page); err != nil {
+		return FilterOptionsPage{}, err
+	}
+	return page, nil
+}
+
+// FilterOptionsFor returns one page of a dimension's options, or every page when all is set. It is
+// the shape both the CLI and the MCP tool need, so neither has to make the choice itself. The whole
+// envelope comes back either way: a caller that pages needs the next token, and a caller that asked
+// for a count needs to tell a refused one from a count it never requested.
+func (c *Client) FilterOptionsFor(ctx context.Context, req FilterOptionsReq, all bool) (FilterOptionsPage, error) {
+	if all {
+		return c.DrainFilterOptions(ctx, req)
+	}
+	return c.FilterOptions(ctx, req)
+}
+
+// FilterOptionsDrainMax bounds an all=true walk. A dimension such as student is bounded by the size
+// of the portal rather than by one researcher's work, so an uncapped walk pulls a whole portal into
+// the caller's context. It matches the row cap the query tool applies for the same reason.
+const FilterOptionsDrainMax = 1000
+
+// DrainFilterOptions walks a dimension's pages and returns one envelope holding the options, the
+// first page's count fields, and no next token, since the walk consumed them all. Only the first
+// page asks for a count: it costs what a page costs and would not change. A walk that reaches
+// FilterOptionsDrainMax stops at the page boundary, sets Truncated and hands back the token of the
+// page it did not fetch, so the result says it is partial and where to continue.
+func (c *Client) DrainFilterOptions(ctx context.Context, req FilterOptionsReq) (FilterOptionsPage, error) {
+	var drained FilterOptionsPage
+	seen := map[string]bool{}
+
+	for first := true; ; first = false {
+		page, err := c.FilterOptions(ctx, req)
+		if err != nil {
+			return FilterOptionsPage{}, err
+		}
+		drained.Items = append(drained.Items, page.Items...)
+		if first {
+			drained.Count = page.Count
+			drained.CountSkipped = page.CountSkipped
+			drained.CountSkippedReason = page.CountSkippedReason
+		}
+		if page.NextPageToken == nil || *page.NextPageToken == "" {
+			return drained, nil
+		}
+		next := *page.NextPageToken
+		// A trusted server never repeats a token within a walk; a repeat would loop forever.
+		if seen[next] {
+			return FilterOptionsPage{}, fmt.Errorf("pagination stopped: server repeated page token")
+		}
+		seen[next] = true
+		if len(drained.Items) >= FilterOptionsDrainMax {
+			drained.Truncated = true
+			drained.NextPageToken = &next
+			return drained, nil
+		}
+		declined := false
+		req.PageToken = next
+		req.IncludeCount = &declined
+	}
 }

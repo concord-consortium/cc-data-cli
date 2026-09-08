@@ -3,11 +3,15 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/concord-consortium/cc-data-cli/internal/config"
+	"github.com/concord-consortium/cc-data-cli/internal/creds"
 	"github.com/concord-consortium/cc-data-cli/internal/dataset"
 	"github.com/concord-consortium/cc-data-cli/internal/duck"
 	"github.com/concord-consortium/cc-data-cli/internal/guidance"
@@ -99,7 +103,8 @@ func TestMCPToolSurface(t *testing.T) {
 	for _, tool := range res.Tools {
 		names[tool.Name] = tool
 	}
-	want := []string{"auth_status", "version", "reports_list", "reports_jobs", "get_report",
+	want := []string{"auth_status", "version", "reports_list", "reports_jobs",
+		"reports_filter_options", "get_report",
 		"get_answers", "get_history", "get_attachments", "dataset_create", "dataset_list",
 		"dataset_show", "dataset_rename", "dataset_edit", "dataset_delete", "dataset_purge",
 		"dataset_reindex", "query"}
@@ -119,8 +124,10 @@ func TestMCPToolSurface(t *testing.T) {
 	}
 
 	// Annotations: read-only on listings/show/query/status/version.
-	if names["query"].Annotations == nil || !names["query"].Annotations.ReadOnlyHint {
-		t.Fatal("query should be read-only")
+	for _, n := range []string{"query", "reports_filter_options"} {
+		if names[n].Annotations == nil || !names[n].Annotations.ReadOnlyHint {
+			t.Fatalf("%s should be read-only", n)
+		}
 	}
 	// Destructive hint on delete/purge.
 	if names["dataset_delete"].Annotations == nil || names["dataset_delete"].Annotations.DestructiveHint == nil || !*names["dataset_delete"].Annotations.DestructiveHint {
@@ -180,7 +187,7 @@ func TestMCPUnauthenticatedResponseCarriesTheCodeAndAction(t *testing.T) {
 	if !res.IsError {
 		t.Fatal("expected an error with no stored credential")
 	}
-	text := errorText(t, res)
+	text := errorText(res)
 	for _, want := range []string{"NOT_AUTHENTICATED", "cc-data login"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("response does not carry %q: %s", want, text)
@@ -191,16 +198,77 @@ func TestMCPUnauthenticatedResponseCarriesTheCodeAndAction(t *testing.T) {
 	}
 }
 
-func errorText(t *testing.T, res *mcp.CallToolResult) string {
-	t.Helper()
-	if len(res.Content) == 0 {
-		t.Fatal("error result carries no content")
+// A run whose report_filter is a real object has to survive the library's output-schema
+// validation. Held as json.RawMessage it typed as an array of bytes, so the call failed at the
+// protocol level and the model got no runs at all, from the tool a run_id comes from.
+func TestMCPReportsListCarriesARunFilterObject(t *testing.T) {
+	setupEnv(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"items":[{"id":601,"report_slug":"student-answers","athena_query_state":"succeeded","report_filter":{"class":[601],"cohort":null}}],"next_page_token":null}`)
+	}))
+	defer srv.Close()
+	if err := (creds.Store{}).Save(config.MustPortal("learn.concord.org"), "test-token", srv.URL); err != nil {
+		t.Fatal(err)
 	}
-	tc, ok := res.Content[0].(*mcp.TextContent)
+
+	res, out := callJSON(t, connect(t), "reports_list", map[string]any{"portal": "learn.concord.org"})
+	if res.IsError {
+		t.Fatalf("reports_list failed: %s", errorText(res))
+	}
+	runs, _ := out["runs"].([]any)
+	if len(runs) != 1 {
+		t.Fatalf("runs = %v", out["runs"])
+	}
+	run, _ := runs[0].(map[string]any)
+	filter, ok := run["report_filter"].(map[string]any)
 	if !ok {
-		t.Fatalf("error content is %T, not text", res.Content[0])
+		t.Fatalf("report_filter did not arrive as an object: %v", run["report_filter"])
 	}
-	return tc.Text
+	if _, present := filter["cohort"]; !present {
+		t.Error("an explicit null inside the filter did not survive the round trip")
+	}
+	class, _ := filter["class"].([]any)
+	if len(class) != 1 || class[0] != float64(601) {
+		t.Errorf("the class selection did not survive: %v", filter["class"])
+	}
+}
+
+// Stopping at NOT_AUTHENTICATED proves the argument decoded, not that it was sent. This drives
+// the whole path and asserts the filter arrives in the request body.
+func TestMCPFilterOptionsSendsTheFilterToTheServer(t *testing.T) {
+	setupEnv(t)
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&body)
+		fmt.Fprint(w, `{"items":[{"id":"601","label":"Class 601"}],"next_page_token":null,"count":null,"count_skipped":false,"count_skipped_reason":null}`)
+	}))
+	defer srv.Close()
+	if err := (creds.Store{}).Save(config.MustPortal("learn.concord.org"), "test-token", srv.URL); err != nil {
+		t.Fatal(err)
+	}
+
+	res, out := callJSON(t, connect(t), "reports_filter_options", map[string]any{
+		"portal":        "learn.concord.org",
+		"dimension":     "student",
+		"report_filter": map[string]any{"class": []any{601}, "cohort": nil},
+	})
+	if res.IsError {
+		t.Fatalf("call failed: %s", errorText(res))
+	}
+	filter, ok := body["report_filter"].(map[string]any)
+	if !ok {
+		t.Fatalf("report_filter did not reach the request body: %v", body)
+	}
+	class, _ := filter["class"].([]any)
+	if len(class) != 1 || class[0] != float64(601) {
+		t.Errorf("the class selection did not reach the server: %v", filter["class"])
+	}
+	if _, present := filter["cohort"]; !present {
+		t.Error("an explicit null was dropped on the way out")
+	}
+	if options, _ := out["options"].([]any); len(options) != 1 {
+		t.Errorf("options = %v", out["options"])
+	}
 }
 
 func TestMCPQueryDescriptionCarriesTheQueryRules(t *testing.T) {
@@ -327,4 +395,85 @@ func TestMCPQueryTruncation(t *testing.T) {
 	if !out.Truncated || out.RowCount != 10 || len(out.Rows) != 3 {
 		t.Fatalf("truncation wrong: truncated=%v total=%d rows=%d", out.Truncated, out.RowCount, len(out.Rows))
 	}
+}
+
+// The API tests drive the client directly, which bypasses the SDK's argument schema and its
+// json.RawMessage decoding. These cover the path an MCP client actually takes.
+func TestMCPFilterOptionsAcceptsAFilterObject(t *testing.T) {
+	setupEnv(t)
+	cs := connect(t)
+
+	res, err := cs.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var props map[string]any
+	for _, tool := range res.Tools {
+		if tool.Name != "reports_filter_options" {
+			continue
+		}
+		schema, _ := json.Marshal(tool.InputSchema)
+		var parsed struct {
+			Properties map[string]any `json:"properties"`
+		}
+		json.Unmarshal(schema, &parsed)
+		props = parsed.Properties
+	}
+	if props == nil {
+		t.Fatal("no reports_filter_options tool")
+	}
+	for _, arg := range []string{"dimension", "report_filter", "page_token", "include_count", "all"} {
+		if _, ok := props[arg]; !ok {
+			t.Fatalf("the tool does not expose %q", arg)
+		}
+	}
+	// The advertised round trip needs the schema to permit the object reports_list hands back.
+	// Asserting that directly, rather than ruling out one wrong type: held as json.RawMessage
+	// this typed as an array of bytes, which a denylist of wrong shapes would have passed.
+	filter, _ := props["report_filter"].(map[string]any)
+	if !schemaPermitsObject(filter) {
+		t.Fatalf("report_filter must accept an object, schema = %v", filter)
+	}
+
+	// No stored credential, so this cannot reach the network. Reaching the portal lookup is
+	// proved by the error being NOT_AUTHENTICATED: an argument the library refuses never gets
+	// that far, and naming the error we want beats ruling out three words we do not.
+	callRes, _ := callJSON(t, cs, "reports_filter_options", map[string]any{
+		"portal":        "learn.concord.org",
+		"dimension":     "student",
+		"report_filter": map[string]any{"class": []any{601}, "cohort": nil},
+		"include_count": true,
+	})
+	if !callRes.IsError {
+		t.Fatal("without a credential the call cannot succeed")
+	}
+	if text := errorText(callRes); !strings.Contains(text, "NOT_AUTHENTICATED") {
+		t.Fatalf("the filter object did not reach the portal lookup: %s", text)
+	}
+}
+
+// schemaPermitsObject reports whether a JSON Schema fragment allows an object, covering both
+// a bare "type" and the list form the library emits for nullable fields.
+func schemaPermitsObject(schema map[string]any) bool {
+	switch t := schema["type"].(type) {
+	case string:
+		return t == "object"
+	case []any:
+		for _, v := range t {
+			if v == "object" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func errorText(res *mcp.CallToolResult) string {
+	if len(res.Content) == 0 {
+		return ""
+	}
+	if tc, ok := res.Content[0].(*mcp.TextContent); ok {
+		return tc.Text
+	}
+	return ""
 }

@@ -2,6 +2,7 @@ package mcpserver
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -46,6 +47,35 @@ func registerTools(s *mcp.Server, opts Options) {
 				return nil, reportview.RunsPayload{}, api.AsCLIError(err)
 			}
 			return nil, reportview.Runs(runs), nil
+		})
+
+	addTool(s, &mcp.Tool{Name: "reports_filter_options", Description: "List the values a report filter dimension offers the user, narrowed by any selections already made, so a filter can be assembled without the web form. Also answers \"what data can I see?\" on its own. Pass report_filter to narrow (the same object reports_list returns on a run), search to match labels, and report_slug to restrict to a report that offers the dimension. Set include_count=true when the user asks how many there are, and all=true to walk the pages, which stops after 1000 options and sets truncated with next_page_token to continue from. The portal may be a hostname or an environment alias (prod / staging / dev).", Annotations: readOnly},
+		func(ctx context.Context, req *mcp.CallToolRequest, in reportsFilterOptionsIn) (*mcp.CallToolResult, reportview.FilterOptionsPayload, error) {
+			client, err := portalClient(in.Portal)
+			if err != nil {
+				return nil, reportview.FilterOptionsPayload{}, err
+			}
+			var filter json.RawMessage
+			if len(in.ReportFilter) > 0 {
+				filter, err = json.Marshal(in.ReportFilter)
+				if err != nil {
+					return nil, reportview.FilterOptionsPayload{}, fmt.Errorf("report_filter is not encodable: %w", err)
+				}
+			}
+			optReq := api.FilterOptionsReq{
+				Dimension:    in.Dimension,
+				ReportSlug:   in.ReportSlug,
+				Search:       in.Search,
+				Limit:        in.Limit,
+				PageToken:    in.PageToken,
+				IncludeCount: in.IncludeCount,
+				ReportFilter: filter,
+			}
+			page, err := client.FilterOptionsFor(ctx, optReq, in.All)
+			if err != nil {
+				return nil, reportview.FilterOptionsPayload{}, api.AsCLIError(err)
+			}
+			return nil, reportview.FilterOptions(page), nil
 		})
 
 	addTool(s, &mcp.Tool{Name: "reports_jobs", Description: "List a run's post-processing jobs. The portal may be a hostname or an environment alias (prod / staging / dev).", Annotations: readOnly},

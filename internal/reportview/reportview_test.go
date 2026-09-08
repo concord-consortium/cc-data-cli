@@ -1,6 +1,7 @@
 package reportview
 
 import (
+	"encoding/json"
 	"reflect"
 	"testing"
 
@@ -55,6 +56,26 @@ func TestStateText(t *testing.T) {
 	}
 }
 
+// The hand-copy into the payload is deliberate, so each field it carries needs an assertion:
+// truncated is what tells a caller the list is partial.
+func TestFilterOptionsPayloadCarriesTruncated(t *testing.T) {
+	token := "next"
+	got := FilterOptions(api.FilterOptionsPage{
+		Items:         []api.FilterOption{{ID: "1", Label: "Ada"}},
+		NextPageToken: &token,
+		Truncated:     true,
+	})
+	if !got.Truncated {
+		t.Error("truncated did not survive the copy into the payload")
+	}
+	if got.NextPageToken == nil || *got.NextPageToken != token {
+		t.Errorf("next_page_token did not survive: %v", got.NextPageToken)
+	}
+	if plain := FilterOptions(api.FilterOptionsPage{}); plain.Truncated {
+		t.Error("a complete walk must not report truncation")
+	}
+}
+
 func TestToRunJSON(t *testing.T) {
 	rt := "answers"
 	state := "succeeded"
@@ -62,5 +83,82 @@ func TestToRunJSON(t *testing.T) {
 	j := ToRunJSON(run)
 	if j.RunID != 216 || j.Slug != "student-answers" || j.State != "succeeded" || j.ReportType != "answers" {
 		t.Fatalf("json = %+v", j)
+	}
+}
+
+func TestFilterOptionsPayload(t *testing.T) {
+	total := 9
+	token := "eyJ0b2tlbiI6MX0"
+	payload := FilterOptions(api.FilterOptionsPage{
+		Items:         []api.FilterOption{{ID: "3", Label: ""}, {ID: "2", Label: "Adams (a)"}},
+		NextPageToken: &token,
+		Count:         &total,
+	})
+
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	options, ok := got["options"].([]any)
+	if !ok || len(options) != 2 {
+		t.Fatalf("options = %+v", got["options"])
+	}
+	first := options[0].(map[string]any)
+	if first["id"] != "3" || first["label"] != "" {
+		t.Fatalf("a coalesced empty label must keep its row: %+v", first)
+	}
+	if got["count"] != float64(9) {
+		t.Fatalf("count = %v", got["count"])
+	}
+	// Without the token a caller that paged has no way to continue.
+	if got["next_page_token"] != "eyJ0b2tlbiI6MX0" {
+		t.Fatalf("next_page_token = %v", got["next_page_token"])
+	}
+}
+
+func TestFilterOptionsPayloadKeepsTheThreeCountStates(t *testing.T) {
+	reason := "counting every student without a narrowing selection is unbounded"
+	total := 9
+
+	for _, tc := range []struct {
+		name        string
+		page        api.FilterOptionsPage
+		wantCount   any
+		wantSkipped bool
+		wantReason  any
+	}{
+		{"produced", api.FilterOptionsPage{Count: &total}, float64(9), false, nil},
+		{"refused", api.FilterOptionsPage{CountSkipped: true, CountSkippedReason: &reason}, nil, true, reason},
+		{"never asked for", api.FilterOptionsPage{}, nil, false, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := json.Marshal(FilterOptions(tc.page))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got map[string]any
+			if err := json.Unmarshal(raw, &got); err != nil {
+				t.Fatal(err)
+			}
+			if got["count"] != tc.wantCount || got["count_skipped"] != tc.wantSkipped || got["count_skipped_reason"] != tc.wantReason {
+				t.Fatalf("%s = %s", tc.name, raw)
+			}
+		})
+	}
+}
+
+func TestFilterOptionsPayloadWithoutACount(t *testing.T) {
+	raw, err := json.Marshal(FilterOptions(api.FilterOptionsPage{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// An absent count is null rather than zero, and no options is [] rather than null, so a
+	// consumer never reads "we did not count" as "there are none" or has to guard a nil list.
+	if string(raw) != `{"options":[],"next_page_token":null,"count":null,"count_skipped":false,"count_skipped_reason":null}` {
+		t.Fatalf("payload = %s", raw)
 	}
 }

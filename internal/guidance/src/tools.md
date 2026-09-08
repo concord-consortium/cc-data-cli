@@ -6,6 +6,9 @@
 - `reports_list` — the user's report runs for a portal, which is where a `run_id`
   comes from.
 - `reports_jobs` — a run's post-processing jobs.
+- `reports_filter_options` — the values a report filter dimension offers the user,
+  narrowed by any selections already made. Use it to assemble a filter without the
+  web form, or on its own to answer what data the user can see.
 - `get_report` — the report CSV for a run, into a dataset.
 - `get_answers`, `get_history` — a run's student answers, and the full series of
   how each answer's interactive state evolved, into a dataset.

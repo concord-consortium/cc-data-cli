@@ -30,6 +30,31 @@ type BulkPage struct {
 	TotalEndpoints *int              `json:"total_endpoints"`
 }
 
+// FilterOption is one selectable value of a report filter dimension. The id is a string for every
+// dimension, because state's id is a state code rather than a number, and is echoed back unchanged.
+type FilterOption struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+}
+
+// FilterOptionsPage is the filter-options envelope. It is Page[T] plus the count fields rather than
+// Page[T] itself, because encoding/json drops what it does not name and the count would be lost.
+//
+// Count is a pointer so the wire's explicit null stays distinguishable from a real zero: a number
+// with CountSkipped false is the total, null with CountSkipped true and a reason was asked for and
+// refused, and null with CountSkipped false was never asked for.
+type FilterOptionsPage struct {
+	Items              []FilterOption `json:"items"`
+	NextPageToken      *string        `json:"next_page_token"`
+	Count              *int           `json:"count"`
+	CountSkipped       bool           `json:"count_skipped"`
+	CountSkippedReason *string        `json:"count_skipped_reason"`
+	// Truncated is set by DrainFilterOptions when it stopped at its cap rather than at the end
+	// of the dimension. NextPageToken then holds the page it stopped before, so a caller can
+	// carry on from exactly there.
+	Truncated bool `json:"truncated,omitempty"`
+}
+
 // DownloadEnvelope is the presigned-URL envelope for a CSV download.
 type DownloadEnvelope struct {
 	DownloadURL      string `json:"download_url"`
