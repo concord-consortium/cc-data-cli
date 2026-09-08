@@ -99,7 +99,8 @@ func TestMCPToolSurface(t *testing.T) {
 	for _, tool := range res.Tools {
 		names[tool.Name] = tool
 	}
-	want := []string{"auth_status", "version", "reports_list", "reports_jobs", "get_report",
+	want := []string{"auth_status", "version", "reports_list", "reports_jobs",
+		"reports_filter_options", "get_report",
 		"get_answers", "get_history", "get_attachments", "dataset_create", "dataset_list",
 		"dataset_show", "dataset_rename", "dataset_edit", "dataset_delete", "dataset_purge",
 		"dataset_reindex", "query"}
@@ -119,8 +120,10 @@ func TestMCPToolSurface(t *testing.T) {
 	}
 
 	// Annotations: read-only on listings/show/query/status/version.
-	if names["query"].Annotations == nil || !names["query"].Annotations.ReadOnlyHint {
-		t.Fatal("query should be read-only")
+	for _, n := range []string{"query", "reports_filter_options"} {
+		if names[n].Annotations == nil || !names[n].Annotations.ReadOnlyHint {
+			t.Fatalf("%s should be read-only", n)
+		}
 	}
 	// Destructive hint on delete/purge.
 	if names["dataset_delete"].Annotations == nil || names["dataset_delete"].Annotations.DestructiveHint == nil || !*names["dataset_delete"].Annotations.DestructiveHint {

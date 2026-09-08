@@ -116,3 +116,18 @@ func joinLabels(items []any) string {
 	}
 	return strings.Join(parts, "/")
 }
+
+// FilterOptionsPayload is the reports_filter_options payload. Count is nil when the server did not
+// produce one, either because it was not asked for or because it refused.
+type FilterOptionsPayload struct {
+	Options []api.FilterOption `json:"options"`
+	Count   *int               `json:"count"`
+}
+
+// FilterOptions shapes a list of filter options and the total, when there is one.
+func FilterOptions(options []api.FilterOption, count *int) FilterOptionsPayload {
+	if options == nil {
+		options = []api.FilterOption{}
+	}
+	return FilterOptionsPayload{Options: options, Count: count}
+}

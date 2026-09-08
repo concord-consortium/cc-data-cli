@@ -2,6 +2,7 @@ package mcpserver
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/concord-consortium/cc-data-cli/internal/duck"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -24,6 +25,18 @@ type portalIn struct {
 type reportsJobsIn struct {
 	Portal string `json:"portal"`
 	RunID  int    `json:"run_id"`
+}
+
+type reportsFilterOptionsIn struct {
+	Portal       string          `json:"portal"`
+	Dimension    string          `json:"dimension"`
+	ReportSlug   string          `json:"report_slug,omitempty"`
+	Search       string          `json:"search,omitempty"`
+	Limit        int             `json:"limit,omitempty"`
+	PageToken    string          `json:"page_token,omitempty"`
+	IncludeCount *bool           `json:"include_count,omitempty"`
+	All          bool            `json:"all,omitempty"`
+	ReportFilter json.RawMessage `json:"report_filter,omitempty"`
 }
 
 type getReportIn struct {

@@ -20,7 +20,7 @@ func newReportsCmd() *cobra.Command {
 		Use:   "reports",
 		Short: "List report runs and jobs",
 	}
-	cmd.AddCommand(newReportsListCmd(), newReportsJobsCmd())
+	cmd.AddCommand(newReportsListCmd(), newReportsJobsCmd(), newReportsFilterOptionsCmd())
 	return cmd
 }
 
@@ -118,6 +118,72 @@ func newReportsJobsCmd() *cobra.Command {
 	cmd.Flags().StringVar(&portal, "portal", "", "portal the run belongs to: an environment alias or a hostname")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "emit JSON instead of a table")
 	return cmd
+}
+
+func newReportsFilterOptionsCmd() *cobra.Command {
+	var portal, dimension, slug, search string
+	var limit int
+	var all, asJSON bool
+
+	cmd := &cobra.Command{
+		Use:   "filter-options --dimension <dimension> --portal <portal|env>",
+		Short: "Browse the values a report filter dimension offers",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if dimension == "" {
+				return output.Usagef("--dimension is required")
+			}
+			cfg, _, err := loadRuntime()
+			if err != nil {
+				return err
+			}
+			host, err := resolvePortal(cfg, portal)
+			if err != nil {
+				return err
+			}
+			client, err := api.ForPortal(host)
+			if err != nil {
+				return err
+			}
+
+			req := api.FilterOptionsReq{
+				Dimension:  dimension,
+				ReportSlug: slug,
+				Search:     search,
+				Limit:      limit,
+			}
+
+			options, count, err := client.FilterOptionsFor(context.Background(), req, all)
+			if err != nil {
+				return api.AsCLIError(err)
+			}
+			if asJSON {
+				return output.JSONLine(reportview.FilterOptions(options, count))
+			}
+			renderFilterOptionsTable(options, count)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&portal, "portal", "", "portal to browse: an environment alias or a hostname")
+	cmd.Flags().StringVar(&dimension, "dimension", "", "the dimension to list options for")
+	cmd.Flags().StringVar(&slug, "report-slug", "", "restrict to a report that offers the dimension")
+	cmd.Flags().StringVar(&search, "search", "", "narrow the options by a substring of the label")
+	cmd.Flags().IntVar(&limit, "limit", 0, "options per page (server default when unset)")
+	cmd.Flags().BoolVar(&all, "all", false, "walk every page instead of returning the first")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "emit JSON instead of a table")
+	return cmd
+}
+
+func renderFilterOptionsTable(options []api.FilterOption, count *int) {
+	tw := tabwriter.NewWriter(output.Stdout(), 0, 2, 2, ' ', 0)
+	fmt.Fprintln(tw, "ID\tLABEL")
+	for _, o := range options {
+		fmt.Fprintf(tw, "%s\t%s\n", o.ID, o.Label)
+	}
+	tw.Flush()
+	if count != nil {
+		fmt.Fprintf(output.Stdout(), "\n%d shown of %d total\n", len(options), *count)
+	}
 }
 
 func renderRunsTable(runs []api.ReportRun) {

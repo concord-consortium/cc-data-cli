@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 )
 
@@ -87,4 +88,93 @@ func (c *Client) ReportDownloadEnvelope(ctx context.Context, runID int, jobID *i
 		return nil, err
 	}
 	return &env, nil
+}
+
+// FilterOptionsReq is one page request for a report filter dimension. ReportFilter is passed
+// through as the server emitted it on a run, so the client never has to decode a filter.
+type FilterOptionsReq struct {
+	Dimension    string
+	ReportSlug   string
+	Search       string
+	Limit        int
+	PageToken    string
+	IncludeCount *bool
+	ReportFilter json.RawMessage
+}
+
+func (r FilterOptionsReq) body() map[string]any {
+	body := map[string]any{"dimension": r.Dimension}
+	if r.ReportSlug != "" {
+		body["report_slug"] = r.ReportSlug
+	}
+	if r.Search != "" {
+		body["search"] = r.Search
+	}
+	if r.Limit > 0 {
+		body["limit"] = r.Limit
+	}
+	if r.PageToken != "" {
+		body["page_token"] = r.PageToken
+	}
+	if r.IncludeCount != nil {
+		body["include_count"] = *r.IncludeCount
+	}
+	if len(r.ReportFilter) > 0 {
+		body["report_filter"] = r.ReportFilter
+	}
+	return body
+}
+
+// FilterOptions fetches one page of a filter dimension's options.
+func (c *Client) FilterOptions(ctx context.Context, req FilterOptionsReq) (FilterOptionsPage, error) {
+	var page FilterOptionsPage
+	if err := c.postJSON(ctx, "/api/v1/reports/filter-options", req.body(), &page); err != nil {
+		return FilterOptionsPage{}, err
+	}
+	return page, nil
+}
+
+// FilterOptionsFor returns one page of a dimension's options, or every page when all is set. It is
+// the shape both the CLI and the MCP tool need, so neither has to make the choice itself.
+func (c *Client) FilterOptionsFor(ctx context.Context, req FilterOptionsReq, all bool) ([]FilterOption, *int, error) {
+	if all {
+		return c.DrainFilterOptions(ctx, req)
+	}
+	page, err := c.FilterOptions(ctx, req)
+	if err != nil {
+		return nil, nil, err
+	}
+	return page.Items, page.Count, nil
+}
+
+// DrainFilterOptions walks every page of a dimension and returns the options concatenated, with
+// the count from the first page. Only the first page asks for a count: it costs what a page costs
+// and would not change.
+func (c *Client) DrainFilterOptions(ctx context.Context, req FilterOptionsReq) ([]FilterOption, *int, error) {
+	var all []FilterOption
+	var count *int
+	seen := map[string]bool{}
+
+	for first := true; ; first = false {
+		page, err := c.FilterOptions(ctx, req)
+		if err != nil {
+			return nil, nil, err
+		}
+		all = append(all, page.Items...)
+		if first {
+			count = page.Count
+		}
+		if page.NextPageToken == nil || *page.NextPageToken == "" {
+			return all, count, nil
+		}
+		next := *page.NextPageToken
+		// A trusted server never repeats a token within a walk; a repeat would loop forever.
+		if seen[next] {
+			return nil, nil, fmt.Errorf("pagination stopped: server repeated page token")
+		}
+		seen[next] = true
+		declined := false
+		req.PageToken = next
+		req.IncludeCount = &declined
+	}
 }
