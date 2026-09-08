@@ -1,6 +1,7 @@
 package reportview
 
 import (
+	"encoding/json"
 	"reflect"
 	"testing"
 
@@ -62,5 +63,42 @@ func TestToRunJSON(t *testing.T) {
 	j := ToRunJSON(run)
 	if j.RunID != 216 || j.Slug != "student-answers" || j.State != "succeeded" || j.ReportType != "answers" {
 		t.Fatalf("json = %+v", j)
+	}
+}
+
+func TestFilterOptionsPayload(t *testing.T) {
+	total := 9
+	payload := FilterOptions([]api.FilterOption{{ID: "3", Label: ""}, {ID: "2", Label: "Adams (a)"}}, &total)
+
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	options, ok := got["options"].([]any)
+	if !ok || len(options) != 2 {
+		t.Fatalf("options = %+v", got["options"])
+	}
+	first := options[0].(map[string]any)
+	if first["id"] != "3" || first["label"] != "" {
+		t.Fatalf("a coalesced empty label must keep its row: %+v", first)
+	}
+	if got["count"] != float64(9) {
+		t.Fatalf("count = %v", got["count"])
+	}
+}
+
+func TestFilterOptionsPayloadWithoutACount(t *testing.T) {
+	raw, err := json.Marshal(FilterOptions(nil, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// An absent count is null rather than zero, and no options is [] rather than null, so a
+	// consumer never reads "we did not count" as "there are none" or has to guard a nil list.
+	if string(raw) != `{"options":[],"count":null}` {
+		t.Fatalf("payload = %s", raw)
 	}
 }
