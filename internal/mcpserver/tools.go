@@ -63,11 +63,11 @@ func registerTools(s *mcp.Server, opts Options) {
 				IncludeCount: in.IncludeCount,
 				ReportFilter: in.ReportFilter,
 			}
-			options, count, err := client.FilterOptionsFor(ctx, optReq, in.All)
+			page, err := client.FilterOptionsFor(ctx, optReq, in.All)
 			if err != nil {
 				return nil, reportview.FilterOptionsPayload{}, api.AsCLIError(err)
 			}
-			return nil, reportview.FilterOptions(options, count), nil
+			return nil, reportview.FilterOptions(page), nil
 		})
 
 	addTool(s, &mcp.Tool{Name: "reports_jobs", Description: "List a run's post-processing jobs. The portal may be a hostname or an environment alias (prod / staging / dev).", Annotations: readOnly},

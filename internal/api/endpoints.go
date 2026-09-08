@@ -135,42 +135,41 @@ func (c *Client) FilterOptions(ctx context.Context, req FilterOptionsReq) (Filte
 }
 
 // FilterOptionsFor returns one page of a dimension's options, or every page when all is set. It is
-// the shape both the CLI and the MCP tool need, so neither has to make the choice itself.
-func (c *Client) FilterOptionsFor(ctx context.Context, req FilterOptionsReq, all bool) ([]FilterOption, *int, error) {
+// the shape both the CLI and the MCP tool need, so neither has to make the choice itself. The whole
+// envelope comes back either way: a caller that pages needs the next token, and a caller that asked
+// for a count needs to tell a refused one from a count it never requested.
+func (c *Client) FilterOptionsFor(ctx context.Context, req FilterOptionsReq, all bool) (FilterOptionsPage, error) {
 	if all {
 		return c.DrainFilterOptions(ctx, req)
 	}
-	page, err := c.FilterOptions(ctx, req)
-	if err != nil {
-		return nil, nil, err
-	}
-	return page.Items, page.Count, nil
+	return c.FilterOptions(ctx, req)
 }
 
-// DrainFilterOptions walks every page of a dimension and returns the options concatenated, with
-// the count from the first page. Only the first page asks for a count: it costs what a page costs
-// and would not change.
-func (c *Client) DrainFilterOptions(ctx context.Context, req FilterOptionsReq) ([]FilterOption, *int, error) {
-	var all []FilterOption
-	var count *int
+// DrainFilterOptions walks every page of a dimension and returns one envelope holding every option,
+// the first page's count fields, and no next token, since the walk consumed them all. Only the first
+// page asks for a count: it costs what a page costs and would not change.
+func (c *Client) DrainFilterOptions(ctx context.Context, req FilterOptionsReq) (FilterOptionsPage, error) {
+	var drained FilterOptionsPage
 	seen := map[string]bool{}
 
 	for first := true; ; first = false {
 		page, err := c.FilterOptions(ctx, req)
 		if err != nil {
-			return nil, nil, err
+			return FilterOptionsPage{}, err
 		}
-		all = append(all, page.Items...)
+		drained.Items = append(drained.Items, page.Items...)
 		if first {
-			count = page.Count
+			drained.Count = page.Count
+			drained.CountSkipped = page.CountSkipped
+			drained.CountSkippedReason = page.CountSkippedReason
 		}
 		if page.NextPageToken == nil || *page.NextPageToken == "" {
-			return all, count, nil
+			return drained, nil
 		}
 		next := *page.NextPageToken
 		// A trusted server never repeats a token within a walk; a repeat would loop forever.
 		if seen[next] {
-			return nil, nil, fmt.Errorf("pagination stopped: server repeated page token")
+			return FilterOptionsPage{}, fmt.Errorf("pagination stopped: server repeated page token")
 		}
 		seen[next] = true
 		declined := false

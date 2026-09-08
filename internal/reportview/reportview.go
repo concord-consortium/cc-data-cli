@@ -3,6 +3,7 @@
 package reportview
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -17,6 +18,10 @@ type RunJSON struct {
 	State        string   `json:"state"`
 	ReportType   string   `json:"report_type,omitempty"`
 	FilterLabels []string `json:"filter_labels"`
+	// The run's filter as the server emitted it, which reports_filter_options takes back verbatim
+	// to narrow a dimension by what this run already selected. FilterLabels renders the same
+	// selections for a human and cannot be sent back.
+	ReportFilter json.RawMessage `json:"report_filter,omitempty"`
 }
 
 // RunsPayload is the reports_list payload.
@@ -50,6 +55,7 @@ func ToRunJSON(r api.ReportRun) RunJSON {
 		State:        StateText(r.AthenaQueryState),
 		ReportType:   rt,
 		FilterLabels: FilterLabels(r),
+		ReportFilter: r.ReportFilter,
 	}
 }
 
@@ -117,17 +123,30 @@ func joinLabels(items []any) string {
 	return strings.Join(parts, "/")
 }
 
-// FilterOptionsPayload is the reports_filter_options payload. Count is nil when the server did not
-// produce one, either because it was not asked for or because it refused.
+// FilterOptionsPayload is the reports_filter_options payload.
+//
+// It carries the whole server envelope rather than just the options: next_page_token is how a
+// caller that paged continues, and count_skipped is what separates a count the server refused from
+// one that was never asked for, which a nil Count alone cannot express.
 type FilterOptionsPayload struct {
-	Options []api.FilterOption `json:"options"`
-	Count   *int               `json:"count"`
+	Options            []api.FilterOption `json:"options"`
+	NextPageToken      *string            `json:"next_page_token"`
+	Count              *int               `json:"count"`
+	CountSkipped       bool               `json:"count_skipped"`
+	CountSkippedReason *string            `json:"count_skipped_reason"`
 }
 
-// FilterOptions shapes a list of filter options and the total, when there is one.
-func FilterOptions(options []api.FilterOption, count *int) FilterOptionsPayload {
+// FilterOptions shapes one page of filter options for the CLI and the MCP tool.
+func FilterOptions(page api.FilterOptionsPage) FilterOptionsPayload {
+	options := page.Items
 	if options == nil {
 		options = []api.FilterOption{}
 	}
-	return FilterOptionsPayload{Options: options, Count: count}
+	return FilterOptionsPayload{
+		Options:            options,
+		NextPageToken:      page.NextPageToken,
+		Count:              page.Count,
+		CountSkipped:       page.CountSkipped,
+		CountSkippedReason: page.CountSkippedReason,
+	}
 }

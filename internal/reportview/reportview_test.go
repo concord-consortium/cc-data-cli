@@ -68,7 +68,12 @@ func TestToRunJSON(t *testing.T) {
 
 func TestFilterOptionsPayload(t *testing.T) {
 	total := 9
-	payload := FilterOptions([]api.FilterOption{{ID: "3", Label: ""}, {ID: "2", Label: "Adams (a)"}}, &total)
+	token := "eyJ0b2tlbiI6MX0"
+	payload := FilterOptions(api.FilterOptionsPage{
+		Items:         []api.FilterOption{{ID: "3", Label: ""}, {ID: "2", Label: "Adams (a)"}},
+		NextPageToken: &token,
+		Count:         &total,
+	})
 
 	raw, err := json.Marshal(payload)
 	if err != nil {
@@ -89,16 +94,51 @@ func TestFilterOptionsPayload(t *testing.T) {
 	if got["count"] != float64(9) {
 		t.Fatalf("count = %v", got["count"])
 	}
+	// Without the token a caller that paged has no way to continue.
+	if got["next_page_token"] != "eyJ0b2tlbiI6MX0" {
+		t.Fatalf("next_page_token = %v", got["next_page_token"])
+	}
+}
+
+func TestFilterOptionsPayloadKeepsTheThreeCountStates(t *testing.T) {
+	reason := "counting every student without a narrowing selection is unbounded"
+	total := 9
+
+	for _, tc := range []struct {
+		name        string
+		page        api.FilterOptionsPage
+		wantCount   any
+		wantSkipped bool
+		wantReason  any
+	}{
+		{"produced", api.FilterOptionsPage{Count: &total}, float64(9), false, nil},
+		{"refused", api.FilterOptionsPage{CountSkipped: true, CountSkippedReason: &reason}, nil, true, reason},
+		{"never asked for", api.FilterOptionsPage{}, nil, false, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := json.Marshal(FilterOptions(tc.page))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got map[string]any
+			if err := json.Unmarshal(raw, &got); err != nil {
+				t.Fatal(err)
+			}
+			if got["count"] != tc.wantCount || got["count_skipped"] != tc.wantSkipped || got["count_skipped_reason"] != tc.wantReason {
+				t.Fatalf("%s = %s", tc.name, raw)
+			}
+		})
+	}
 }
 
 func TestFilterOptionsPayloadWithoutACount(t *testing.T) {
-	raw, err := json.Marshal(FilterOptions(nil, nil))
+	raw, err := json.Marshal(FilterOptions(api.FilterOptionsPage{}))
 	if err != nil {
 		t.Fatal(err)
 	}
 	// An absent count is null rather than zero, and no options is [] rather than null, so a
 	// consumer never reads "we did not count" as "there are none" or has to guard a nil list.
-	if string(raw) != `{"options":[],"count":null}` {
+	if string(raw) != `{"options":[],"next_page_token":null,"count":null,"count_skipped":false,"count_skipped_reason":null}` {
 		t.Fatalf("payload = %s", raw)
 	}
 }

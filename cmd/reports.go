@@ -153,14 +153,14 @@ func newReportsFilterOptionsCmd() *cobra.Command {
 				Limit:      limit,
 			}
 
-			options, count, err := client.FilterOptionsFor(context.Background(), req, all)
+			page, err := client.FilterOptionsFor(context.Background(), req, all)
 			if err != nil {
 				return api.AsCLIError(err)
 			}
 			if asJSON {
-				return output.JSONLine(reportview.FilterOptions(options, count))
+				return output.JSONLine(reportview.FilterOptions(page))
 			}
-			renderFilterOptionsTable(options, count)
+			renderFilterOptionsTable(page)
 			return nil
 		},
 	}
@@ -174,15 +174,21 @@ func newReportsFilterOptionsCmd() *cobra.Command {
 	return cmd
 }
 
-func renderFilterOptionsTable(options []api.FilterOption, count *int) {
+func renderFilterOptionsTable(page api.FilterOptionsPage) {
 	tw := tabwriter.NewWriter(output.Stdout(), 0, 2, 2, ' ', 0)
 	fmt.Fprintln(tw, "ID\tLABEL")
-	for _, o := range options {
+	for _, o := range page.Items {
 		fmt.Fprintf(tw, "%s\t%s\n", o.ID, o.Label)
 	}
 	tw.Flush()
-	if count != nil {
-		fmt.Fprintf(output.Stdout(), "\n%d shown of %d total\n", len(options), *count)
+	if page.Count != nil {
+		fmt.Fprintf(output.Stdout(), "\n%d shown of %d total\n", len(page.Items), *page.Count)
+	}
+	if page.CountSkipped && page.CountSkippedReason != nil {
+		fmt.Fprintf(output.Stdout(), "\n%d shown; no total: %s\n", len(page.Items), *page.CountSkippedReason)
+	}
+	if page.NextPageToken != nil && *page.NextPageToken != "" {
+		fmt.Fprintf(output.Stdout(), "more options remain; pass --all to walk them\n")
 	}
 }
 

@@ -154,15 +154,19 @@ func TestDrainFilterOptionsWalksAndCountsOnce(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	options, count, err := testClient(srv.URL).DrainFilterOptions(context.Background(), FilterOptionsReq{Dimension: "class"})
+	drained, err := testClient(srv.URL).DrainFilterOptions(context.Background(), FilterOptionsReq{Dimension: "class"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(options) != 6 || options[5].ID != "5" {
-		t.Fatalf("options = %+v", options)
+	if len(drained.Items) != 6 || drained.Items[5].ID != "5" {
+		t.Fatalf("options = %+v", drained.Items)
 	}
-	if count == nil || *count != 9 {
-		t.Fatalf("count = %v, want the first page's 9", count)
+	if drained.Count == nil || *drained.Count != 9 {
+		t.Fatalf("count = %v, want the first page's 9", drained.Count)
+	}
+	// The walk consumed every page, so there is nothing left to continue from.
+	if drained.NextPageToken != nil {
+		t.Fatalf("a drained walk must not hand back a token, got %q", *drained.NextPageToken)
 	}
 	if len(bodies) != 2 {
 		t.Fatalf("requests = %d, want 2", len(bodies))
@@ -181,8 +185,43 @@ func TestDrainFilterOptionsStopsOnARepeatedToken(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, _, err := testClient(srv.URL).DrainFilterOptions(context.Background(), FilterOptionsReq{Dimension: "class"})
+	_, err := testClient(srv.URL).DrainFilterOptions(context.Background(), FilterOptionsReq{Dimension: "class"})
 	if err == nil {
 		t.Fatal("a server repeating a page token must stop the walk, not loop forever")
+	}
+}
+
+func TestFilterOptionsForKeepsTheWholeEnvelope(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, firstPageWire)
+	}))
+	defer srv.Close()
+
+	// A single page has to carry the token, or a caller that passed page_token cannot continue.
+	page, err := testClient(srv.URL).FilterOptionsFor(context.Background(), FilterOptionsReq{Dimension: "class"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.NextPageToken == nil || *page.NextPageToken != "WyJBZGFtcyAoYSkiLCIyIl0" {
+		t.Fatalf("next_page_token = %v", page.NextPageToken)
+	}
+	if page.Count == nil || *page.Count != 9 || page.CountSkipped {
+		t.Fatalf("count fields = %v / %v", page.Count, page.CountSkipped)
+	}
+}
+
+func TestDrainFilterOptionsKeepsARefusedCountDistinct(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, skippedWire)
+	}))
+	defer srv.Close()
+
+	drained, err := testClient(srv.URL).DrainFilterOptions(context.Background(), FilterOptionsReq{Dimension: "student"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A nil Count alone cannot say whether the server refused or was never asked.
+	if !drained.CountSkipped || drained.CountSkippedReason == nil {
+		t.Fatalf("a refused count must survive the drain: %+v", drained)
 	}
 }

@@ -63,10 +63,10 @@ func TestRenderFilterOptionsTable(t *testing.T) {
 	defer restore()
 
 	total := 9
-	renderFilterOptionsTable([]api.FilterOption{
-		{ID: "3", Label: ""},
-		{ID: "2", Label: "Adams (a)"},
-	}, &total)
+	renderFilterOptionsTable(api.FilterOptionsPage{
+		Items: []api.FilterOption{{ID: "3", Label: ""}, {ID: "2", Label: "Adams (a)"}},
+		Count: &total,
+	})
 
 	got := out.String()
 	for _, want := range []string{"ID", "LABEL", "Adams (a)", "2 shown of 9 total"} {
@@ -85,9 +85,44 @@ func TestRenderFilterOptionsTableWithoutACount(t *testing.T) {
 	restore := output.SetStreams(&out, &errb)
 	defer restore()
 
-	renderFilterOptionsTable([]api.FilterOption{{ID: "2", Label: "Adams (a)"}}, nil)
+	renderFilterOptionsTable(api.FilterOptionsPage{Items: []api.FilterOption{{ID: "2", Label: "Adams (a)"}}})
 
 	if strings.Contains(out.String(), "total") {
 		t.Fatalf("a missing count must not be rendered as a total:\n%s", out.String())
+	}
+}
+
+func TestRenderFilterOptionsTableSaysWhenMoreRemain(t *testing.T) {
+	var out, errb bytes.Buffer
+	restore := output.SetStreams(&out, &errb)
+	defer restore()
+
+	token := "eyJ0b2tlbiI6MX0"
+	renderFilterOptionsTable(api.FilterOptionsPage{
+		Items:         []api.FilterOption{{ID: "2", Label: "Adams (a)"}},
+		NextPageToken: &token,
+	})
+
+	// Without this the table looks complete when it is one page of many.
+	if !strings.Contains(out.String(), "--all") {
+		t.Fatalf("a truncated page must say how to see the rest:\n%s", out.String())
+	}
+}
+
+func TestRenderFilterOptionsTableExplainsARefusedCount(t *testing.T) {
+	var out, errb bytes.Buffer
+	restore := output.SetStreams(&out, &errb)
+	defer restore()
+
+	reason := "counting every student without a narrowing selection is unbounded"
+	renderFilterOptionsTable(api.FilterOptionsPage{
+		Items:              []api.FilterOption{{ID: "71", Label: "Stu One <101>"}},
+		CountSkipped:       true,
+		CountSkippedReason: &reason,
+	})
+
+	got := out.String()
+	if !strings.Contains(got, "no total") || !strings.Contains(got, "unbounded") {
+		t.Fatalf("a refused count must say why rather than showing nothing:\n%s", got)
 	}
 }

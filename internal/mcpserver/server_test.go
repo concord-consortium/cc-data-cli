@@ -183,7 +183,7 @@ func TestMCPUnauthenticatedResponseCarriesTheCodeAndAction(t *testing.T) {
 	if !res.IsError {
 		t.Fatal("expected an error with no stored credential")
 	}
-	text := errorText(t, res)
+	text := errorText(res)
 	for _, want := range []string{"NOT_AUTHENTICATED", "cc-data login"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("response does not carry %q: %s", want, text)
@@ -192,18 +192,6 @@ func TestMCPUnauthenticatedResponseCarriesTheCodeAndAction(t *testing.T) {
 	if !strings.Contains(guidance.Instructions(), "NOT_AUTHENTICATED") {
 		t.Error("the instructions no longer name the code the server returns")
 	}
-}
-
-func errorText(t *testing.T, res *mcp.CallToolResult) string {
-	t.Helper()
-	if len(res.Content) == 0 {
-		t.Fatal("error result carries no content")
-	}
-	tc, ok := res.Content[0].(*mcp.TextContent)
-	if !ok {
-		t.Fatalf("error content is %T, not text", res.Content[0])
-	}
-	return tc.Text
 }
 
 func TestMCPQueryDescriptionCarriesTheQueryRules(t *testing.T) {
@@ -330,4 +318,69 @@ func TestMCPQueryTruncation(t *testing.T) {
 	if !out.Truncated || out.RowCount != 10 || len(out.Rows) != 3 {
 		t.Fatalf("truncation wrong: truncated=%v total=%d rows=%d", out.Truncated, out.RowCount, len(out.Rows))
 	}
+}
+
+// The API tests drive the client directly, which bypasses the SDK's argument schema and its
+// json.RawMessage decoding. These cover the path an MCP client actually takes.
+func TestMCPFilterOptionsAcceptsAFilterObject(t *testing.T) {
+	setupEnv(t)
+	cs := connect(t)
+
+	res, err := cs.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var props map[string]any
+	for _, tool := range res.Tools {
+		if tool.Name != "reports_filter_options" {
+			continue
+		}
+		schema, _ := json.Marshal(tool.InputSchema)
+		var parsed struct {
+			Properties map[string]any `json:"properties"`
+		}
+		json.Unmarshal(schema, &parsed)
+		props = parsed.Properties
+	}
+	if props == nil {
+		t.Fatal("no reports_filter_options tool")
+	}
+	for _, arg := range []string{"dimension", "report_filter", "page_token", "include_count", "all"} {
+		if _, ok := props[arg]; !ok {
+			t.Fatalf("the tool does not expose %q", arg)
+		}
+	}
+	// A schema that types the filter as a string would make the advertised round trip impossible,
+	// since reports_list hands the caller an object.
+	filter, _ := props["report_filter"].(map[string]any)
+	if filter["type"] == "string" {
+		t.Fatalf("report_filter must accept an object, schema = %v", filter)
+	}
+
+	// No stored credential, so this cannot reach the network; what it proves is that an object
+	// argument survives schema validation and json.RawMessage decoding to reach the portal lookup.
+	callRes, _ := callJSON(t, cs, "reports_filter_options", map[string]any{
+		"portal":        "learn.concord.org",
+		"dimension":     "student",
+		"report_filter": map[string]any{"class": []any{601}, "cohort": nil},
+		"include_count": true,
+	})
+	if !callRes.IsError {
+		t.Fatal("without a credential the call cannot succeed")
+	}
+	if text := errorText(callRes); strings.Contains(strings.ToLower(text), "schema") ||
+		strings.Contains(strings.ToLower(text), "unmarshal") ||
+		strings.Contains(strings.ToLower(text), "cannot decode") {
+		t.Fatalf("the filter object failed argument decoding rather than reaching the portal lookup: %s", text)
+	}
+}
+
+func errorText(res *mcp.CallToolResult) string {
+	if len(res.Content) == 0 {
+		return ""
+	}
+	if tc, ok := res.Content[0].(*mcp.TextContent); ok {
+		return tc.Text
+	}
+	return ""
 }
