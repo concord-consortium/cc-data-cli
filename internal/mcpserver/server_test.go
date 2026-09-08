@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/concord-consortium/cc-data-cli/internal/config"
 	"github.com/concord-consortium/cc-data-cli/internal/dataset"
+	"github.com/concord-consortium/cc-data-cli/internal/duck"
+	"github.com/concord-consortium/cc-data-cli/internal/guidance"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/zalando/go-keyring"
 )
@@ -40,6 +43,25 @@ func connect(t *testing.T) *mcp.ClientSession {
 	}
 	t.Cleanup(func() { cs.Close() })
 	return cs
+}
+
+func TestMCPInstructionsArriveInInitialize(t *testing.T) {
+	setupEnv(t)
+	got := connect(t).InitializeResult().Instructions
+	if got == "" {
+		t.Fatal("no instructions in the initialize response")
+	}
+	for _, want := range []string{"run_membership", "NOT_AUTHENTICATED", "auth_status"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("instructions do not carry %q", want)
+		}
+	}
+	if strings.HasPrefix(got, "---") {
+		t.Error("instructions open with frontmatter, which is meaningless to an MCP client")
+	}
+	if strings.Contains(got, "--help") {
+		t.Error("instructions point at --help, which an MCP client cannot read")
+	}
 }
 
 func callJSON(t *testing.T, cs *mcp.ClientSession, name string, args any) (*mcp.CallToolResult, map[string]any) {
@@ -131,7 +153,7 @@ func TestMCPDeletePurgeRequireConfirm(t *testing.T) {
 	setupEnv(t)
 	cs := connect(t)
 	// Create a dataset first.
-	callJSON(t, cs, "dataset_create", map[string]any{"ref": "learn.concord.org/ds"})
+	callJSON(t, cs, "dataset_create", map[string]any{"portal": "learn.concord.org", "name": "ds"})
 
 	res, _ := callJSON(t, cs, "dataset_delete", map[string]any{"ref": "learn.concord.org/ds"})
 	if !res.IsError {
@@ -148,10 +170,124 @@ func TestMCPDeletePurgeRequireConfirm(t *testing.T) {
 	}
 }
 
+// The guidance tells the model what to do when a tool reports NOT_AUTHENTICATED, so the
+// server has to actually say it. Error() on a CLIError is the message alone, which drops
+// both the code and the action, leaving that guidance with no trigger.
+func TestMCPUnauthenticatedResponseCarriesTheCodeAndAction(t *testing.T) {
+	setupEnv(t)
+	cs := connect(t)
+	res, _ := callJSON(t, cs, "reports_list", map[string]any{"portal": "learn.concord.org"})
+	if !res.IsError {
+		t.Fatal("expected an error with no stored credential")
+	}
+	text := errorText(t, res)
+	for _, want := range []string{"NOT_AUTHENTICATED", "cc-data login"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("response does not carry %q: %s", want, text)
+		}
+	}
+	if !strings.Contains(guidance.Instructions(), "NOT_AUTHENTICATED") {
+		t.Error("the instructions no longer name the code the server returns")
+	}
+}
+
+func errorText(t *testing.T, res *mcp.CallToolResult) string {
+	t.Helper()
+	if len(res.Content) == 0 {
+		t.Fatal("error result carries no content")
+	}
+	tc, ok := res.Content[0].(*mcp.TextContent)
+	if !ok {
+		t.Fatalf("error content is %T, not text", res.Content[0])
+	}
+	return tc.Text
+}
+
+func TestMCPQueryDescriptionCarriesTheQueryRules(t *testing.T) {
+	setupEnv(t)
+	res, err := connect(t).ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var desc string
+	for _, tool := range res.Tools {
+		if tool.Name == "query" {
+			desc = tool.Description
+		}
+	}
+	if desc == "" {
+		t.Fatal("no query tool")
+	}
+	for _, want := range append(duck.StaticViewNames(), "TRY_CAST", "UNION ALL BY NAME") {
+		if !strings.Contains(desc, want) {
+			t.Errorf("query description does not mention %q", want)
+		}
+	}
+}
+
+func TestMCPDatasetCreateArguments(t *testing.T) {
+	setupEnv(t)
+	cs := connect(t)
+
+	res, out := callJSON(t, cs, "dataset_create", map[string]any{"portal": "ngss-assessment.portal.concord.org", "name": "wf"})
+	if res.IsError {
+		t.Fatalf("explicit portal should create: %v", out)
+	}
+	if out["ref"] != "ngss-assessment.portal.concord.org/wf" {
+		t.Errorf("created under the wrong portal: %v", out["ref"])
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.DefaultPortal = "learn.concord.org"
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	res, out = callJSON(t, cs, "dataset_create", map[string]any{"name": "fallback"})
+	if res.IsError {
+		t.Fatalf("an omitted portal should fall back to the default: %v", out)
+	}
+	if out["ref"] != "learn.concord.org/fallback" {
+		t.Errorf("fallback resolved to %v", out["ref"])
+	}
+
+	res, out = callJSON(t, cs, "dataset_create", map[string]any{"portal": "https://learn.concord.org", "name": "urlform"})
+	if res.IsError {
+		t.Fatalf("a URL-shaped portal is normalized to its hostname, not refused: %v", out)
+	}
+	if out["ref"] != "learn.concord.org/urlform" {
+		t.Errorf("URL-shaped portal resolved to %v", out["ref"])
+	}
+
+	for _, tc := range []struct {
+		label string
+		args  map[string]any
+		want  string
+	}{
+		{"environment alias", map[string]any{"portal": "staging", "name": "wf"}, "environment alias"},
+		{"slash in name", map[string]any{"portal": "learn.concord.org", "name": "a/b"}, "must not contain a slash"},
+		{"ref in name", map[string]any{"name": "learn.concord.org/wf"}, "must not contain a slash"},
+		{"path in portal", map[string]any{"portal": "learn.concord.org/x", "name": "y"}, `portal "learn.concord.org/x" must be a hostname`},
+		{"trailing slash in portal", map[string]any{"portal": "learn.concord.org/", "name": "c"}, "must be a hostname"},
+		{"empty name", map[string]any{"portal": "learn.concord.org", "name": ""}, "name is required"},
+	} {
+		res, _ := callJSON(t, cs, "dataset_create", tc.args)
+		if !res.IsError {
+			t.Errorf("%s should be refused", tc.label)
+			continue
+		}
+		if text, ok := res.Content[0].(*mcp.TextContent); !ok || !strings.Contains(text.Text, tc.want) {
+			t.Errorf("%s: error should mention %q, got %v", tc.label, tc.want, res.Content[0])
+		}
+	}
+}
+
 func TestMCPDatasetShowParity(t *testing.T) {
 	root := setupEnv(t)
 	cs := connect(t)
-	callJSON(t, cs, "dataset_create", map[string]any{"ref": "learn.concord.org/ds", "description": "hi"})
+	callJSON(t, cs, "dataset_create", map[string]any{"portal": "learn.concord.org", "name": "ds", "description": "hi"})
 
 	_, out := callJSON(t, cs, "dataset_show", map[string]any{"ref": "learn.concord.org/ds"})
 

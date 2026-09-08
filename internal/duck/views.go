@@ -435,3 +435,28 @@ func sqlStr(s string) string {
 func sqlIdent(s string) string {
 	return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
 }
+
+// StaticViewNames returns the names of the views every dataset gets, derived by building
+// the statement set over an empty manifest so the per-run and per-job views (which come
+// from manifest entries) are excluded. Deriving it keeps the drift guard's inventory side
+// from becoming a second hand-maintained list.
+func StaticViewNames() []string {
+	vs := viewSet{m: &dataset.Manifest{}}
+	var names []string
+	for _, st := range vs.statements() {
+		names = append(names, strings.Trim(st.name, `"`))
+	}
+	return names
+}
+
+// IdentityColumnNames returns the columns that identify a record across the stores, derived
+// from the membership key so the drift guard's inventory side stays code-derived. Deliberately
+// not contractStoreColumns, which also carries the internal _fetched_at/_run_id bookkeeping.
+func IdentityColumnNames() []string {
+	names := make([]string, 0, len(membershipColumns))
+	for name := range membershipColumns {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}

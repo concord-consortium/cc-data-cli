@@ -1,55 +1,32 @@
----
-name: cc-data
-description: Download and query Concord Consortium researcher data (report CSVs, student answers, interactive state history, file attachments) into local datasets and analyze them with SQL via cc-data. Use whenever a researcher asks to pull, join, or analyze student report/answer/history data, or asks a plain-English question that maps to that data.
----
+## Datasets and portals
 
-# cc-data
+- Auth, datasets and downloaded data are all per portal, and a portal is always a
+  full hostname.
+- A dataset is identified by its portal and its name, spelled as a ref,
+  `<portal>/<name>` (e.g. `learn.concord.org/wildfire`), where a bare `<name>`
+  resolves under the configured default portal. That is the spelling everywhere a
+  dataset is identified, on the command line included. `dataset_create` is the
+  exception: it takes the two as separate arguments, with the portal optional and
+  the same fallback, and its `name` must not contain a slash. A bare name is also
+  what `dataset_rename` takes as `new_name`, which renames within the same portal.
+- A dataset's portal is always a hostname and never an environment alias, because
+  it also names the folder the data lives in. `prod`, `staging` and `dev` are
+  **refused** when naming a dataset, and the error names the hostname to use.
+- An environment alias is accepted, and expanded, wherever a `portal` selects a
+  server to read from rather than a folder to write into.
+- If a fetch returns `NOT_AUTHENTICATED`, check the dataset's portal is a
+  hostname before relaying a login.
 
-`cc-data` downloads a researcher's report data into local, duplicate-free datasets
-and queries across them with SQL (embedded DuckDB). Command detail lives in
-`cc-data <cmd> --help` — treat help as the source of truth and read it before
-guessing flags.
+## Runs and their data
 
-## Orientation
-
-- Orient on a dataset with `cc-data dataset show <ref> --json` — never read
-  `manifest.json` directly. It reports per-type totals, the download table, and
-  warnings.
-- List datasets with `cc-data dataset list --json`.
-- A dataset ref is `<portal>/<name>` (e.g. `learn.concord.org/wildfire`); a bare
-  `<name>` resolves under the configured default portal. Dataset refs take a
-  hostname only: the environment aliases below are **refused** here rather than
-  expanded, so `staging/wildfire` is an error naming the hostname to use. If a
-  `get` returns `NOT_AUTHENTICATED`, check the ref's portal is a hostname before
-  relaying a login.
-
-## Auth
-
-- If a command fails with `{"error":"NOT_AUTHENTICATED",...}`, relay to the user:
-  run `cc-data login --portal <portal>`, or `cc-data login <environment>` for one
-  of the environments (`prod`, `staging`, `dev`), which sets the portal and its
-  paired report server together. Never drive the browser login yourself.
-- Auth is per portal. `cc-data auth status --check` shows validity and metadata.
-- The environment names also work wherever a `portal` is passed: the `--portal`
-  flag on `logout`/`reports list`/`reports jobs`, and the `portal` argument of
-  the `reports_list` / `reports_jobs` MCP tools.
-
-## Fetching data
-
-- `cc-data get report <run-id> --dataset <ref>` — the report CSV.
-- `cc-data get answers <run-id> --dataset <ref>` — student answers.
-- `cc-data get history <run-id> --dataset <ref>` — full interactive state history.
-- `cc-data get attachments <run-id> --dataset <ref>` — file attachments (requires
-  answers or history fetched first). Prefer downloading into the dataset over
-  `--url`; a presigned URL is a credential-free capability to a student's file.
 - Datasets are duplicate-free by construction: re-fetching a run replaces its
   records. Create a dataset per point-in-time pull to compare over time.
 - Report runs have a `report_type` (`answers`, `log`, `usage`). Log runs (slug
-  `student-actions`) are fetchable with `get report` too and yield a clickstream
+  `student-actions`) are fetchable as a report too and yield a clickstream
   event log (columns include `session`, `application`, `activity`, `event`,
   `event_value`, `time`, `parameters`, `extras`, `run_remote_endpoint`,
   `timestamp`, `user_id`, `primary_user_id`): process, timing, and sequence data.
-  `dataset show --json` lists each download's `report_type` so the run kind is
+  A dataset's summary lists each download's `report_type`, so the run kind is
   obvious.
   - The two time columns are in different units: `time` is epoch **seconds**
     (`to_timestamp(time)`), `timestamp` is epoch **milliseconds**
@@ -107,7 +84,8 @@ like `wildfire_2026.answers`):
   of a doc across a session's history. Binary attachments (audio, images) are
   excluded here (not UTF-8 text) but remain downloadable via `attachment_files`.
 - `downloads` — a manifest dimension table.
-- Per-run views: `report_<run>`, `answers_<run>`, `history_<run>`.
+- Per-run views: `report_<run>`, `answers_<run>`, `history_<run>`, and
+  `report_<run>_job_<job>` for a run that has post-processing jobs.
 
 Learner identity (within a portal): in `answers`/`history`, a learner-run is keyed
 by `remote_endpoint` (one per student per offering-run); `platform_user_id` can
@@ -117,16 +95,27 @@ to attach the person: `user_id` is the Portal user (the learner) and `learner_id
 is that user in one offering. Count distinct learners by `user_id` (or `learner_id`);
 cross-portal identity is out of scope.
 
+## Identity columns
+
+A record is identified across the stores by these columns, which are also the
+`USING` key when joining a store to `run_membership`:
+
+- `source_key` — the data-source host the record came from.
+- `remote_endpoint` — one per student per offering-run, the learner-run key.
+- `question_id` — the question within the resource.
+- `history_id` — one snapshot within an answer's history. Only history joins
+  need it; answers joins use the other three.
+
 ## Multi-dataset (longitudinal)
 
-`--dataset` is repeatable on `query`/`repl`; each dataset registers under its own
-schema. There are no implicit cross-dataset unions — write them explicitly with
-provenance, e.g.
+More than one dataset can be registered for a single query; each registers under
+its own schema. There are no implicit cross-dataset unions — write them
+explicitly with provenance, e.g.
 `SELECT * FROM fall_2026.answers UNION ALL BY NAME SELECT * FROM spring_2027.answers`.
 
 ## Sensitive data
 
-Datasets hold sensitive student data. You may auto-read the
-`dataset show --json` summary; do not dump raw JSONL stores into the
-conversation by default. Suggest `cc-data dataset purge <ref>` when data is no
-longer needed rather than archiving it to shared drives.
+Datasets hold sensitive student data. You may auto-read a dataset's summary; do
+not dump raw JSONL stores into the conversation by default. Suggest purging a
+dataset when its data is no longer needed rather than archiving it to shared
+drives.

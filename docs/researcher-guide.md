@@ -302,6 +302,11 @@ dataset named `wildfire` on `learn.concord.org` lives in
 When you (or Claude) query a dataset, the data is exposed as a set of SQL
 **views** you can ask questions of:
 
+<!-- A test parses this table (internal/guidance/guard_test.go) to check it lists every view
+     the code registers. Keep one view per row with its name first, in backticks. The parser
+     reads this whole section, not just the table, so any bullet here that opens with a
+     backticked name is read as a view too. -->
+
 | View | What it holds |
 |---|---|
 | `reports` | Report CSV rows across all runs, with a `run_id` column. Covers both answer reports and log/action reports. |
@@ -309,6 +314,7 @@ When you (or Claude) query a dataset, the data is exposed as a set of SQL
 | `history` | Every interactive-state snapshot, how each answer evolved over time. |
 | `report_prompts` | The prompt and correct-answer text for each question. |
 | `attachment_files` | One row per downloaded file (audio, saved docs) with its type and local path. |
+| `attachment_states` | The saved CODAP/SageModeler state the current answer points at. |
 | `attachment_content` | The text/JSON content of every saved CODAP/SageModeler snapshot, queryable and diffable. |
 | `run_membership`, `downloads` | Provenance, which run's fetch covered which records, and what each download was. |
 
