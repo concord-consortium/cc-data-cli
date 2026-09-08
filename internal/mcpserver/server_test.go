@@ -233,6 +233,44 @@ func TestMCPReportsListCarriesARunFilterObject(t *testing.T) {
 	}
 }
 
+// Stopping at NOT_AUTHENTICATED proves the argument decoded, not that it was sent. This drives
+// the whole path and asserts the filter arrives in the request body.
+func TestMCPFilterOptionsSendsTheFilterToTheServer(t *testing.T) {
+	setupEnv(t)
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&body)
+		fmt.Fprint(w, `{"items":[{"id":"601","label":"Class 601"}],"next_page_token":null,"count":null,"count_skipped":false,"count_skipped_reason":null}`)
+	}))
+	defer srv.Close()
+	if err := (creds.Store{}).Save(config.MustPortal("learn.concord.org"), "test-token", srv.URL); err != nil {
+		t.Fatal(err)
+	}
+
+	res, out := callJSON(t, connect(t), "reports_filter_options", map[string]any{
+		"portal":        "learn.concord.org",
+		"dimension":     "student",
+		"report_filter": map[string]any{"class": []any{601}, "cohort": nil},
+	})
+	if res.IsError {
+		t.Fatalf("call failed: %s", errorText(res))
+	}
+	filter, ok := body["report_filter"].(map[string]any)
+	if !ok {
+		t.Fatalf("report_filter did not reach the request body: %v", body)
+	}
+	class, _ := filter["class"].([]any)
+	if len(class) != 1 || class[0] != float64(601) {
+		t.Errorf("the class selection did not reach the server: %v", filter["class"])
+	}
+	if _, present := filter["cohort"]; !present {
+		t.Error("an explicit null was dropped on the way out")
+	}
+	if options, _ := out["options"].([]any); len(options) != 1 {
+		t.Errorf("options = %v", out["options"])
+	}
+}
+
 func TestMCPQueryDescriptionCarriesTheQueryRules(t *testing.T) {
 	setupEnv(t)
 	res, err := connect(t).ListTools(context.Background(), nil)

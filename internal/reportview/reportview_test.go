@@ -56,6 +56,26 @@ func TestStateText(t *testing.T) {
 	}
 }
 
+// The hand-copy into the payload is deliberate, so each field it carries needs an assertion:
+// truncated is what tells a caller the list is partial.
+func TestFilterOptionsPayloadCarriesTruncated(t *testing.T) {
+	token := "next"
+	got := FilterOptions(api.FilterOptionsPage{
+		Items:         []api.FilterOption{{ID: "1", Label: "Ada"}},
+		NextPageToken: &token,
+		Truncated:     true,
+	})
+	if !got.Truncated {
+		t.Error("truncated did not survive the copy into the payload")
+	}
+	if got.NextPageToken == nil || *got.NextPageToken != token {
+		t.Errorf("next_page_token did not survive: %v", got.NextPageToken)
+	}
+	if plain := FilterOptions(api.FilterOptionsPage{}); plain.Truncated {
+		t.Error("a complete walk must not report truncation")
+	}
+}
+
 func TestToRunJSON(t *testing.T) {
 	rt := "answers"
 	state := "succeeded"

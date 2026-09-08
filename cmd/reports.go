@@ -124,9 +124,9 @@ func newReportsJobsCmd() *cobra.Command {
 // it can be exercised without a server; reached only through RunE, every flag but --dimension
 // was unverifiable.
 type filterOptionsFlags struct {
-	portal, dimension, slug, search string
-	limit                           int
-	all, asJSON                     bool
+	portal, dimension, slug, search, pageToken string
+	limit                                      int
+	all, asJSON                                bool
 }
 
 func (f filterOptionsFlags) request() (api.FilterOptionsReq, error) {
@@ -138,6 +138,7 @@ func (f filterOptionsFlags) request() (api.FilterOptionsReq, error) {
 		ReportSlug: f.slug,
 		Search:     f.search,
 		Limit:      f.limit,
+		PageToken:  f.pageToken,
 	}, nil
 }
 
@@ -195,7 +196,8 @@ func newReportsFilterOptionsCmd() *cobra.Command {
 	cmd.Flags().StringVar(&f.slug, "report-slug", "", "restrict to a report that offers the dimension")
 	cmd.Flags().StringVar(&f.search, "search", "", "narrow the options by a substring of the label")
 	cmd.Flags().IntVar(&f.limit, "limit", 0, "options per page (server default when unset)")
-	cmd.Flags().BoolVar(&f.all, "all", false, "walk every page instead of returning the first")
+	cmd.Flags().StringVar(&f.pageToken, "page-token", "", "continue from a token a previous run reported")
+	cmd.Flags().BoolVar(&f.all, "all", false, fmt.Sprintf("walk the pages instead of returning the first, stopping after %d options", api.FilterOptionsDrainMax))
 	cmd.Flags().BoolVar(&f.asJSON, "json", false, "emit JSON instead of a table")
 	return cmd
 }
@@ -216,9 +218,17 @@ func renderFilterOptionsTable(page api.FilterOptionsPage) {
 	if page.CountSkipped && page.CountSkippedReason != nil {
 		fmt.Fprintf(output.Stdout(), "\n%d shown; no total: %s\n", len(page.Items), *page.CountSkippedReason)
 	}
-	if page.NextPageToken != nil && *page.NextPageToken != "" {
-		fmt.Fprintf(output.Stdout(), "more options remain; pass --all to walk them\n")
+	if page.NextPageToken == nil || *page.NextPageToken == "" {
+		return
 	}
+	if page.Truncated {
+		// The walk already ran, so telling the user to pass --all would name what they just did.
+		fmt.Fprintf(output.Stdout(), "stopped at the %d-option cap; continue with --page-token %s\n",
+			api.FilterOptionsDrainMax, *page.NextPageToken)
+		return
+	}
+	fmt.Fprintf(output.Stdout(), "more options remain; pass --all to walk them, or --page-token %s for the next page\n",
+		*page.NextPageToken)
 }
 
 func renderRunsTable(runs []api.ReportRun) {

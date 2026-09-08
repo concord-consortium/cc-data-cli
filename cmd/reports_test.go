@@ -148,6 +148,40 @@ func TestRenderFilterOptionsTableSaysWhenNoTotalIsAvailable(t *testing.T) {
 	}
 }
 
+// After the cap, --all can return a next token, and the old message told the user to pass the
+// flag they had just passed, with no way to continue.
+func TestRenderFilterOptionsTableSaysHowToResumeAfterTheCap(t *testing.T) {
+	var out, errb bytes.Buffer
+	restore := output.SetStreams(&out, &errb)
+	defer restore()
+
+	token := "next-page-token"
+	renderFilterOptionsTable(api.FilterOptionsPage{
+		Items:         []api.FilterOption{{ID: "1", Label: "Ada"}},
+		NextPageToken: &token,
+		Truncated:     true,
+	})
+	got := out.String()
+	if strings.Contains(got, "pass --all") {
+		t.Errorf("a walk that already ran must not tell the user to pass --all:\n%s", got)
+	}
+	for _, want := range []string{"--page-token", token} {
+		if !strings.Contains(got, want) {
+			t.Errorf("no way to continue past the cap, missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestFilterOptionsFlagsSendThePageToken(t *testing.T) {
+	req, err := filterOptionsFlags{dimension: "class", pageToken: "abc"}.request()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.PageToken != "abc" {
+		t.Fatalf("--page-token did not reach the request: %q", req.PageToken)
+	}
+}
+
 func TestRenderFilterOptionsTable(t *testing.T) {
 	var out, errb bytes.Buffer
 	restore := output.SetStreams(&out, &errb)
