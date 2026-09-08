@@ -18,10 +18,12 @@ type RunJSON struct {
 	State        string   `json:"state"`
 	ReportType   string   `json:"report_type,omitempty"`
 	FilterLabels []string `json:"filter_labels"`
-	// The run's filter as the server emitted it, which reports_filter_options takes back verbatim
-	// to narrow a dimension by what this run already selected. FilterLabels renders the same
-	// selections for a human and cannot be sent back.
-	ReportFilter json.RawMessage `json:"report_filter,omitempty"`
+	// The run's filter as the server emitted it, which reports_filter_options takes back to
+	// narrow a dimension by what this run already selected. FilterLabels renders the same
+	// selections for a human and cannot be sent back. Decoded rather than held as
+	// json.RawMessage, which reflects to a byte array in the MCP output schema and fails
+	// validation for every run that has a filter.
+	ReportFilter map[string]any `json:"report_filter,omitempty"`
 }
 
 // RunsPayload is the reports_list payload.
@@ -49,13 +51,19 @@ func ToRunJSON(r api.ReportRun) RunJSON {
 	if r.ReportType != nil {
 		rt = *r.ReportType
 	}
+	var filter map[string]any
+	if len(r.ReportFilter) > 0 {
+		// A filter the server sends as anything but an object is left out rather than
+		// reshaped; every documented filter is an object.
+		_ = json.Unmarshal(r.ReportFilter, &filter)
+	}
 	return RunJSON{
 		RunID:        r.ID,
 		Slug:         r.ReportSlug,
 		State:        StateText(r.AthenaQueryState),
 		ReportType:   rt,
 		FilterLabels: FilterLabels(r),
-		ReportFilter: r.ReportFilter,
+		ReportFilter: filter,
 	}
 }
 
@@ -134,6 +142,8 @@ type FilterOptionsPayload struct {
 	Count              *int               `json:"count"`
 	CountSkipped       bool               `json:"count_skipped"`
 	CountSkippedReason *string            `json:"count_skipped_reason"`
+	// Truncated says the walk stopped at its cap; next_page_token then continues it.
+	Truncated bool `json:"truncated,omitempty"`
 }
 
 // FilterOptions shapes one page of filter options for the CLI and the MCP tool.
@@ -148,5 +158,6 @@ func FilterOptions(page api.FilterOptionsPage) FilterOptionsPayload {
 		Count:              page.Count,
 		CountSkipped:       page.CountSkipped,
 		CountSkippedReason: page.CountSkippedReason,
+		Truncated:          page.Truncated,
 	}
 }

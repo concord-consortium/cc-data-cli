@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -18,15 +19,19 @@ const (
 	skippedWire   = `{"count":null,"count_skipped":true,"count_skipped_reason":"counting every student without a narrowing selection is unbounded","items":[{"id":"74","label":"Stu Four <104>"}],"next_page_token":null}`
 )
 
+// decodeBody runs on the server's goroutine, where FailNow is not allowed, so a bad body is
+// reported with Errorf and returned as nil rather than stopping the test from the wrong place.
 func decodeBody(t *testing.T, r *http.Request) map[string]any {
 	t.Helper()
 	raw, err := io.ReadAll(r.Body)
 	if err != nil {
-		t.Fatal(err)
+		t.Errorf("reading request body: %v", err)
+		return nil
 	}
 	var body map[string]any
 	if err := json.Unmarshal(raw, &body); err != nil {
-		t.Fatal(err)
+		t.Errorf("decoding request body %q: %v", raw, err)
+		return nil
 	}
 	return body
 }
@@ -177,6 +182,11 @@ func TestDrainFilterOptionsWalksAndCountsOnce(t *testing.T) {
 	if bodies[1]["include_count"] != false {
 		t.Fatalf("later pages must decline the count, got %v", bodies[1]["include_count"])
 	}
+	// Routing the stub on whether a token is present, not on its value, would pass for a walk
+	// that asked for the wrong page.
+	if bodies[1]["page_token"] != "WyJBZGFtcyAoYSkiLCIyIl0" {
+		t.Fatalf("second request asked for page %v, want the first page's next_page_token", bodies[1]["page_token"])
+	}
 }
 
 func TestDrainFilterOptionsStopsOnARepeatedToken(t *testing.T) {
@@ -188,6 +198,42 @@ func TestDrainFilterOptionsStopsOnARepeatedToken(t *testing.T) {
 	_, err := testClient(srv.URL).DrainFilterOptions(context.Background(), FilterOptionsReq{Dimension: "class"})
 	if err == nil {
 		t.Fatal("a server repeating a page token must stop the walk, not loop forever")
+	}
+	if !strings.Contains(err.Error(), "repeated page token") {
+		t.Fatalf("stopped for the wrong reason: %v", err)
+	}
+}
+
+// A dimension bounded by the size of a portal rather than by one researcher's work must not walk
+// without end. The cap stops at a page boundary and says where it stopped.
+func TestDrainFilterOptionsStopsAtTheCap(t *testing.T) {
+	page := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page++
+		items := make([]string, 0, 400)
+		for i := 0; i < 400; i++ {
+			items = append(items, fmt.Sprintf(`{"id":"%d","label":"Student %d"}`, page*1000+i, i))
+		}
+		fmt.Fprintf(w, `{"count":null,"count_skipped":false,"count_skipped_reason":null,"items":[%s],"next_page_token":"page-%d"}`,
+			strings.Join(items, ","), page+1)
+	}))
+	defer srv.Close()
+
+	drained, err := testClient(srv.URL).DrainFilterOptions(context.Background(), FilterOptionsReq{Dimension: "student"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !drained.Truncated {
+		t.Error("a walk that stopped at the cap must say so")
+	}
+	if drained.NextPageToken == nil || *drained.NextPageToken == "" {
+		t.Fatal("a truncated walk must hand back the token it stopped on")
+	}
+	if len(drained.Items) < FilterOptionsDrainMax {
+		t.Errorf("stopped early at %d items, cap is %d", len(drained.Items), FilterOptionsDrainMax)
+	}
+	if page > (FilterOptionsDrainMax/400)+1 {
+		t.Errorf("kept walking past the cap: %d pages", page)
 	}
 }
 

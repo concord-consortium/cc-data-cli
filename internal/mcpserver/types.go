@@ -2,7 +2,6 @@ package mcpserver
 
 import (
 	"context"
-	"encoding/json"
 
 	"github.com/concord-consortium/cc-data-cli/internal/duck"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -28,15 +27,17 @@ type reportsJobsIn struct {
 }
 
 type reportsFilterOptionsIn struct {
-	Portal       string          `json:"portal"`
-	Dimension    string          `json:"dimension"`
-	ReportSlug   string          `json:"report_slug,omitempty"`
-	Search       string          `json:"search,omitempty"`
-	Limit        int             `json:"limit,omitempty"`
-	PageToken    string          `json:"page_token,omitempty"`
-	IncludeCount *bool           `json:"include_count,omitempty"`
-	All          bool            `json:"all,omitempty"`
-	ReportFilter json.RawMessage `json:"report_filter,omitempty"`
+	Portal       string `json:"portal"`
+	Dimension    string `json:"dimension"`
+	ReportSlug   string `json:"report_slug,omitempty"`
+	Search       string `json:"search,omitempty"`
+	Limit        int    `json:"limit,omitempty"`
+	PageToken    string `json:"page_token,omitempty"`
+	IncludeCount *bool  `json:"include_count,omitempty"`
+	All          bool   `json:"all,omitempty"`
+	// Decoded rather than json.RawMessage, which reflects to a byte array in the argument
+	// schema and refuses the object reports_list hands back.
+	ReportFilter map[string]any `json:"report_filter,omitempty"`
 }
 
 type getReportIn struct {

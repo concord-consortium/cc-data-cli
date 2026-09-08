@@ -30,7 +30,7 @@ guessing flags.
   paired report server together. Never drive the browser login yourself.
 - `cc-data auth status --check` shows validity and metadata.
 - The environment names also work wherever a `portal` is passed: the `--portal`
-  flag on `logout`/`reports list`/`reports jobs`.
+  flag on `logout`/`reports list`/`reports jobs`/`reports filter-options`.
 
 ## Fetching data
 

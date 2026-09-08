@@ -120,24 +120,62 @@ func newReportsJobsCmd() *cobra.Command {
 	return cmd
 }
 
+// filterOptionsFlags is the filter-options flag set. The flags-to-request step lives on it so
+// it can be exercised without a server; reached only through RunE, every flag but --dimension
+// was unverifiable.
+type filterOptionsFlags struct {
+	portal, dimension, slug, search string
+	limit                           int
+	all, asJSON                     bool
+}
+
+func (f filterOptionsFlags) request() (api.FilterOptionsReq, error) {
+	if f.dimension == "" {
+		return api.FilterOptionsReq{}, output.Usagef("--dimension is required")
+	}
+	return api.FilterOptionsReq{
+		Dimension:  f.dimension,
+		ReportSlug: f.slug,
+		Search:     f.search,
+		Limit:      f.limit,
+	}, nil
+}
+
+// fetch runs the request the flags describe, walking the pages when --all is set. The walk
+// decision lives here rather than at the call site so a test can reach it.
+func (f filterOptionsFlags) fetch(ctx context.Context, client *api.Client) (api.FilterOptionsPage, error) {
+	req, err := f.request()
+	if err != nil {
+		return api.FilterOptionsPage{}, err
+	}
+	return client.FilterOptionsFor(ctx, req, f.all)
+}
+
+// render writes a page in the form the flags asked for.
+func (f filterOptionsFlags) render(page api.FilterOptionsPage) error {
+	if f.asJSON {
+		return output.JSONLine(reportview.FilterOptions(page))
+	}
+	renderFilterOptionsTable(page)
+	return nil
+}
+
 func newReportsFilterOptionsCmd() *cobra.Command {
-	var portal, dimension, slug, search string
-	var limit int
-	var all, asJSON bool
+	var f filterOptionsFlags
 
 	cmd := &cobra.Command{
 		Use:   "filter-options --dimension <dimension> --portal <portal|env>",
 		Short: "Browse the values a report filter dimension offers",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if dimension == "" {
-				return output.Usagef("--dimension is required")
+			if _, err := f.request(); err != nil {
+				return err
 			}
 			cfg, _, err := loadRuntime()
 			if err != nil {
 				return err
 			}
-			host, err := resolvePortal(cfg, portal)
+			host, err := resolvePortal(cfg, f.portal)
 			if err != nil {
 				return err
 			}
@@ -145,32 +183,20 @@ func newReportsFilterOptionsCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-
-			req := api.FilterOptionsReq{
-				Dimension:  dimension,
-				ReportSlug: slug,
-				Search:     search,
-				Limit:      limit,
-			}
-
-			page, err := client.FilterOptionsFor(context.Background(), req, all)
+			page, err := f.fetch(context.Background(), client)
 			if err != nil {
 				return api.AsCLIError(err)
 			}
-			if asJSON {
-				return output.JSONLine(reportview.FilterOptions(page))
-			}
-			renderFilterOptionsTable(page)
-			return nil
+			return f.render(page)
 		},
 	}
-	cmd.Flags().StringVar(&portal, "portal", "", "portal to browse: an environment alias or a hostname")
-	cmd.Flags().StringVar(&dimension, "dimension", "", "the dimension to list options for")
-	cmd.Flags().StringVar(&slug, "report-slug", "", "restrict to a report that offers the dimension")
-	cmd.Flags().StringVar(&search, "search", "", "narrow the options by a substring of the label")
-	cmd.Flags().IntVar(&limit, "limit", 0, "options per page (server default when unset)")
-	cmd.Flags().BoolVar(&all, "all", false, "walk every page instead of returning the first")
-	cmd.Flags().BoolVar(&asJSON, "json", false, "emit JSON instead of a table")
+	cmd.Flags().StringVar(&f.portal, "portal", "", "portal to browse: an environment alias or a hostname")
+	cmd.Flags().StringVar(&f.dimension, "dimension", "", "the dimension to list options for")
+	cmd.Flags().StringVar(&f.slug, "report-slug", "", "restrict to a report that offers the dimension")
+	cmd.Flags().StringVar(&f.search, "search", "", "narrow the options by a substring of the label")
+	cmd.Flags().IntVar(&f.limit, "limit", 0, "options per page (server default when unset)")
+	cmd.Flags().BoolVar(&f.all, "all", false, "walk every page instead of returning the first")
+	cmd.Flags().BoolVar(&f.asJSON, "json", false, "emit JSON instead of a table")
 	return cmd
 }
 
@@ -183,6 +209,9 @@ func renderFilterOptionsTable(page api.FilterOptionsPage) {
 	tw.Flush()
 	if page.Count != nil {
 		fmt.Fprintf(output.Stdout(), "\n%d shown of %d total\n", len(page.Items), *page.Count)
+	}
+	if page.CountSkipped && page.CountSkippedReason == nil {
+		fmt.Fprintf(output.Stdout(), "\nno total available\n")
 	}
 	if page.CountSkipped && page.CountSkippedReason != nil {
 		fmt.Fprintf(output.Stdout(), "\n%d shown; no total: %s\n", len(page.Items), *page.CountSkippedReason)

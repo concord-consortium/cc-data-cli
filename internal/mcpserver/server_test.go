@@ -3,11 +3,15 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/concord-consortium/cc-data-cli/internal/config"
+	"github.com/concord-consortium/cc-data-cli/internal/creds"
 	"github.com/concord-consortium/cc-data-cli/internal/dataset"
 	"github.com/concord-consortium/cc-data-cli/internal/duck"
 	"github.com/concord-consortium/cc-data-cli/internal/guidance"
@@ -194,6 +198,41 @@ func TestMCPUnauthenticatedResponseCarriesTheCodeAndAction(t *testing.T) {
 	}
 }
 
+// A run whose report_filter is a real object has to survive the library's output-schema
+// validation. Held as json.RawMessage it typed as an array of bytes, so the call failed at the
+// protocol level and the model got no runs at all, from the tool a run_id comes from.
+func TestMCPReportsListCarriesARunFilterObject(t *testing.T) {
+	setupEnv(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"items":[{"id":601,"report_slug":"student-answers","athena_query_state":"succeeded","report_filter":{"class":[601],"cohort":null}}],"next_page_token":null}`)
+	}))
+	defer srv.Close()
+	if err := (creds.Store{}).Save(config.MustPortal("learn.concord.org"), "test-token", srv.URL); err != nil {
+		t.Fatal(err)
+	}
+
+	res, out := callJSON(t, connect(t), "reports_list", map[string]any{"portal": "learn.concord.org"})
+	if res.IsError {
+		t.Fatalf("reports_list failed: %s", errorText(res))
+	}
+	runs, _ := out["runs"].([]any)
+	if len(runs) != 1 {
+		t.Fatalf("runs = %v", out["runs"])
+	}
+	run, _ := runs[0].(map[string]any)
+	filter, ok := run["report_filter"].(map[string]any)
+	if !ok {
+		t.Fatalf("report_filter did not arrive as an object: %v", run["report_filter"])
+	}
+	if _, present := filter["cohort"]; !present {
+		t.Error("an explicit null inside the filter did not survive the round trip")
+	}
+	class, _ := filter["class"].([]any)
+	if len(class) != 1 || class[0] != float64(601) {
+		t.Errorf("the class selection did not survive: %v", filter["class"])
+	}
+}
+
 func TestMCPQueryDescriptionCarriesTheQueryRules(t *testing.T) {
 	setupEnv(t)
 	res, err := connect(t).ListTools(context.Background(), nil)
@@ -350,15 +389,17 @@ func TestMCPFilterOptionsAcceptsAFilterObject(t *testing.T) {
 			t.Fatalf("the tool does not expose %q", arg)
 		}
 	}
-	// A schema that types the filter as a string would make the advertised round trip impossible,
-	// since reports_list hands the caller an object.
+	// The advertised round trip needs the schema to permit the object reports_list hands back.
+	// Asserting that directly, rather than ruling out one wrong type: held as json.RawMessage
+	// this typed as an array of bytes, which a denylist of wrong shapes would have passed.
 	filter, _ := props["report_filter"].(map[string]any)
-	if filter["type"] == "string" {
+	if !schemaPermitsObject(filter) {
 		t.Fatalf("report_filter must accept an object, schema = %v", filter)
 	}
 
-	// No stored credential, so this cannot reach the network; what it proves is that an object
-	// argument survives schema validation and json.RawMessage decoding to reach the portal lookup.
+	// No stored credential, so this cannot reach the network. Reaching the portal lookup is
+	// proved by the error being NOT_AUTHENTICATED: an argument the library refuses never gets
+	// that far, and naming the error we want beats ruling out three words we do not.
 	callRes, _ := callJSON(t, cs, "reports_filter_options", map[string]any{
 		"portal":        "learn.concord.org",
 		"dimension":     "student",
@@ -368,11 +409,25 @@ func TestMCPFilterOptionsAcceptsAFilterObject(t *testing.T) {
 	if !callRes.IsError {
 		t.Fatal("without a credential the call cannot succeed")
 	}
-	if text := errorText(callRes); strings.Contains(strings.ToLower(text), "schema") ||
-		strings.Contains(strings.ToLower(text), "unmarshal") ||
-		strings.Contains(strings.ToLower(text), "cannot decode") {
-		t.Fatalf("the filter object failed argument decoding rather than reaching the portal lookup: %s", text)
+	if text := errorText(callRes); !strings.Contains(text, "NOT_AUTHENTICATED") {
+		t.Fatalf("the filter object did not reach the portal lookup: %s", text)
 	}
+}
+
+// schemaPermitsObject reports whether a JSON Schema fragment allows an object, covering both
+// a bare "type" and the list form the library emits for nullable fields.
+func schemaPermitsObject(schema map[string]any) bool {
+	switch t := schema["type"].(type) {
+	case string:
+		return t == "object"
+	case []any:
+		for _, v := range t {
+			if v == "object" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func errorText(res *mcp.CallToolResult) string {

@@ -145,9 +145,16 @@ func (c *Client) FilterOptionsFor(ctx context.Context, req FilterOptionsReq, all
 	return c.FilterOptions(ctx, req)
 }
 
-// DrainFilterOptions walks every page of a dimension and returns one envelope holding every option,
-// the first page's count fields, and no next token, since the walk consumed them all. Only the first
-// page asks for a count: it costs what a page costs and would not change.
+// FilterOptionsDrainMax bounds an all=true walk. A dimension such as student is bounded by the size
+// of the portal rather than by one researcher's work, so an uncapped walk pulls a whole portal into
+// the caller's context. It matches the row cap the query tool applies for the same reason.
+const FilterOptionsDrainMax = 1000
+
+// DrainFilterOptions walks a dimension's pages and returns one envelope holding the options, the
+// first page's count fields, and no next token, since the walk consumed them all. Only the first
+// page asks for a count: it costs what a page costs and would not change. A walk that reaches
+// FilterOptionsDrainMax stops at the page boundary, sets Truncated and hands back the token of the
+// page it did not fetch, so the result says it is partial and where to continue.
 func (c *Client) DrainFilterOptions(ctx context.Context, req FilterOptionsReq) (FilterOptionsPage, error) {
 	var drained FilterOptionsPage
 	seen := map[string]bool{}
@@ -172,6 +179,11 @@ func (c *Client) DrainFilterOptions(ctx context.Context, req FilterOptionsReq) (
 			return FilterOptionsPage{}, fmt.Errorf("pagination stopped: server repeated page token")
 		}
 		seen[next] = true
+		if len(drained.Items) >= FilterOptionsDrainMax {
+			drained.Truncated = true
+			drained.NextPageToken = &next
+			return drained, nil
+		}
 		declined := false
 		req.PageToken = next
 		req.IncludeCount = &declined

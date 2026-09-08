@@ -49,6 +49,10 @@ type FilterOptionsPage struct {
 	Count              *int           `json:"count"`
 	CountSkipped       bool           `json:"count_skipped"`
 	CountSkippedReason *string        `json:"count_skipped_reason"`
+	// Truncated is set by DrainFilterOptions when it stopped at its cap rather than at the end
+	// of the dimension. NextPageToken then holds the page it stopped before, so a caller can
+	// carry on from exactly there.
+	Truncated bool `json:"truncated,omitempty"`
 }
 
 // DownloadEnvelope is the presigned-URL envelope for a CSV download.
