@@ -12,6 +12,7 @@ A command-line tool for [Concord Consortium](https://concord.org) researchers to
 
 - **Authenticate once** against a report-server portal via a browser loopback login (`cc-data login`). Tokens are stored per portal in your OS keychain (macOS Keychain / Linux Secret Service / Windows Credential Manager), with a `0600` `~/.config/cc-data/credentials.json` fallback.
 - **List your report runs** (`cc-data reports list`): the runs you authored on the report server.
+- **Browse a report filter's options** (`cc-data reports filter-options`): the cohorts, schools, teachers, assignments, classes, students, permission forms and applications you are allowed to see, so you can find out what data is available to you without opening the web form.
 - **Download a run's data** into a dataset:
   - `get report <run-id>`: the report CSV (polls until the Athena query succeeds; never writes a partial file).
   - `get answers <run-id>`: raw answer JSON for the run's learners, as JSONL.
@@ -56,6 +57,7 @@ cc-data logout --portal <portal|env>          # revoke and remove that portal's 
 cc-data auth status                           # stored credentials per portal + default_portal
 cc-data reports list --portal <portal|env>
 cc-data reports jobs <run-id> --portal <portal|env>   # list a run's post-processing outputs
+cc-data reports filter-options --dimension <dimension> --portal <portal|env>   # values a filter offers; --search, --all, --json
 cc-data dataset create|list|show|rename|edit|delete|purge|reindex ...   # list/show take --json (and show --full)
 cc-data get report      <run-id> --dataset <portal>/<name> [--job <id>]
 cc-data get answers     <run-id> --dataset <portal>/<name>
