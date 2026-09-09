@@ -479,3 +479,24 @@ func TestDimensionViewsAreEmptyAfterAManifestLessReindex(t *testing.T) {
 		t.Fatalf("nothing says which run lost its dimension view: %v", s.Warnings)
 	}
 }
+
+// perDownloadViews builds report_<run_id> for every download of type report, with no report-type
+// or allowlist condition on it. That is why no per-run dimension views are built, and it holds by
+// omission, so one added condition would remove it silently.
+func TestAPortalRunIsQueryablePerRun(t *testing.T) {
+	d := newDS(t, "ds")
+	addDimensionCSV(t, d, dimFixture{run: 100, slug: "student-id-mapping", fetchedAt: at(1), csv: mappingCSV(
+		mappingRow(901, 10, endpointAAA),
+		mappingRow(902, 10, endpointBBB),
+	)})
+
+	e, _ := openWithWarnings(t, d)
+	if n := queryInt(t, e, "SELECT count(*) FROM report_100"); n != 2 {
+		t.Fatalf("report_100 has %d rows, want the run's 2", n)
+	}
+	// Deduplicated by nothing, which is what makes it the answer to "what did this run contain"
+	// where the dimension view answers "what is currently true of these learners".
+	if n := queryInt(t, e, "SELECT count(*) FROM report_100 WHERE run_remote_endpoint = '"+endpointBBB+"'"); n != 1 {
+		t.Fatal("the per-run view rewrote the run's own columns")
+	}
+}
