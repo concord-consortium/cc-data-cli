@@ -31,6 +31,20 @@ func TestAsWriteCLIErrorKeepsTheAuthAction(t *testing.T) {
 	}
 }
 
+// Exit 6 tells a caller that retrying is the right move, which is true of a read and exactly wrong
+// of a write the server may have taken: retrying that creates a second run. The unknown outcome is
+// carried by the action field instead, which is why an unanswered write stays in the catch-all class.
+func TestAsWriteCLIErrorDoesNotClassifyAnUnansweredWriteAsRetryable(t *testing.T) {
+	got := AsWriteCLIError(errors.New("dial tcp: connection reset"), RunMayExistAction)
+
+	if got.ExitCode == output.ExitTransient {
+		t.Fatal("an unanswered write must not exit as transient; a script that retries it duplicates the run")
+	}
+	if got.ExitCode != output.ExitInternal {
+		t.Fatalf("exit = %d, want %d", got.ExitCode, output.ExitInternal)
+	}
+}
+
 func TestAsWriteCLIErrorSaysWhatAnUnansweredWriteMayHaveDone(t *testing.T) {
 	unanswered := []error{
 		errors.New("dial tcp: connection reset"),
