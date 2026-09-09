@@ -315,8 +315,12 @@ func (d *Dataset) reindexCSV(name string, prior map[dlKey]Download) (Download, e
 }
 
 // recoverReportType recovers the report type from CSV shape only partially:
-// no student_id column -> log; student_id plus pseudo-header rows -> answers;
-// the ambiguous remainder -> the distinguished recovered value.
+// a log schema -> log; student_id plus pseudo-header rows -> answers; the
+// ambiguous remainder -> the distinguished recovered value.
+//
+// A log CSV is identified by columns only a log report has. The absence of student_id is not
+// enough on its own, because every Portal aggregate report lacks it too, and a wrong type returned
+// as a confident answer suppresses the warning that would otherwise say to re-fetch the run.
 func recoverReportType(path string) (reportType string, recovered bool) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -329,9 +333,12 @@ func recoverReportType(path string) (reportType string, recovered bool) {
 	if err != nil {
 		return ReportTypeRecovered, true
 	}
+	if indexOf(header, "event") >= 0 && indexOf(header, "time") >= 0 {
+		return ReportTypeLog, false
+	}
 	studentIDCol := indexOf(header, "student_id")
 	if studentIDCol < 0 {
-		return ReportTypeLog, false
+		return ReportTypeRecovered, true
 	}
 	for {
 		row, rerr := r.Read()
