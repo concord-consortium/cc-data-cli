@@ -232,6 +232,12 @@ func (d *Dataset) priorDownloadIndex() map[dlKey]Download {
 // dialect) are left as reindex computed them. An authoritative prior entry (a real
 // fetch, not a previous recovery) also restores the exact report_type and clears
 // the recovered flag.
+//
+// The prior fetch time is restored whenever there is one, so a reindex is idempotent for it.
+// Reindex rebuilds CSV downloads in filename order and stamps each with the current clock, which
+// would otherwise reorder downloads by filename: that is what dataset show reports as the fetch
+// date, and what the deduplicated dimension views order by when the same learner appears in more
+// than one run.
 func carryProvenance(dl *Download, prior Download) {
 	if prior.Type == "" {
 		return // no matching prior entry
@@ -256,6 +262,9 @@ func carryProvenance(dl *Download, prior Download) {
 	}
 	if prior.MergeCounts != nil {
 		dl.MergeCounts = prior.MergeCounts
+	}
+	if !prior.FetchedAt.IsZero() {
+		dl.FetchedAt = prior.FetchedAt
 	}
 	if !prior.Recovered {
 		if prior.ReportType != "" {

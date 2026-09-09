@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/concord-consortium/cc-data-cli/internal/store"
 )
@@ -314,5 +315,53 @@ func TestReindexBusyWhenActivityHeld(t *testing.T) {
 	defer d.Activity().RUnlock()
 	if err := d.Reindex(); err != ErrBusy {
 		t.Fatalf("reindex under fetch should be busy, got %v", err)
+	}
+}
+
+// Reindex rebuilds CSV downloads from the filesystem and stamps each with the current clock, so
+// without carrying the prior value the fetch date a dataset reports moves to today on every
+// reindex, and the dimension views reorder overlapping runs by filename.
+func TestReindexKeepsThePriorFetchTime(t *testing.T) {
+	d := newDataset(t)
+	fetched := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
+	os.WriteFile(d.Path("report_584.csv"), []byte("student_id,x\n1,a\n"), 0o600)
+	if err := d.UpsertDownload(Download{
+		Type: "report", RunID: 584, Slug: "student-answers", ReportType: ReportTypeAnswers,
+		Files: []string{"report_584.csv"}, Complete: true, FetchedAt: fetched,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := d.Reindex(); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := d.ReadManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Downloads) != 1 {
+		t.Fatalf("expected 1 download, got %d", len(m.Downloads))
+	}
+	if got := m.Downloads[0].FetchedAt.UTC(); !got.Equal(fetched) {
+		t.Fatalf("reindex restamped the fetch time as %s, want %s", got, fetched)
+	}
+}
+
+// The disaster path has no prior entry to carry, so the generated value stands.
+func TestReindexStampsAFetchTimeWithNoPriorManifest(t *testing.T) {
+	d := newDataset(t)
+	os.WriteFile(d.Path("report_584.csv"), []byte("student_id,x\n1,a\n"), 0o600)
+	os.Remove(d.Path(ManifestFile))
+
+	if err := d.Reindex(); err != nil {
+		t.Fatal(err)
+	}
+	m, err := d.ReadManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Downloads[0].FetchedAt.IsZero() {
+		t.Fatal("a recovered download has no fetch time at all")
 	}
 }

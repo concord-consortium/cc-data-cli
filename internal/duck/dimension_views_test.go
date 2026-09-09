@@ -602,3 +602,75 @@ func TestStudentMetadataUnionsBothNameTypes(t *testing.T) {
 		t.Fatalf("the shown name did not survive the union: %q", got)
 	}
 }
+
+// An ordinary reindex must not change which overlapping run wins. It rebuilds every CSV download
+// from the filesystem in filename order, so without carrying the prior fetch time the dedupe would
+// order by lexicographic filename instead of by when each run was actually pulled.
+func TestDimensionViewSurvivesAReindexWithoutChangingTheWinner(t *testing.T) {
+	d := newDS(t, "ds")
+	// The later fetch is the lower run id, and report_100.csv sorts before report_200.csv, so a
+	// reindex that restamps fetch times reverses the answer.
+	addDimensionCSV(t, d, dimFixture{run: 200, slug: "student-id-mapping", fetchedAt: at(1), csv: mappingCSV(
+		mappingRow(901, 10, endpointAAA),
+	)})
+	addDimensionCSV(t, d, dimFixture{run: 100, slug: "student-id-mapping", fetchedAt: at(2), csv: mappingCSV(
+		mappingRow(901, 99, endpointAAA),
+	)})
+
+	before := func() (string, string) {
+		e, _ := openWithWarnings(t, d)
+		return queryString(t, e, "SELECT run_id::VARCHAR FROM student_id_mapping WHERE learner_id = 901"),
+			queryString(t, e, "SELECT class_id::VARCHAR FROM student_id_mapping WHERE learner_id = 901")
+	}
+	wantRun, wantClass := before()
+	if wantRun != "100" {
+		t.Fatalf("fixture wrong: the later fetch is run %s, want 100", wantRun)
+	}
+
+	if err := d.Reindex(); err != nil {
+		t.Fatal(err)
+	}
+
+	gotRun, gotClass := before()
+	if gotRun != wantRun || gotClass != wantClass {
+		t.Fatalf("a reindex changed the winning row: run %s class %s, want run %s class %s",
+			gotRun, gotClass, wantRun, wantClass)
+	}
+}
+
+// The check the guidance documents for "did this run repeat a learner" has to answer within one
+// run. Comparing against the dimension view instead reports a repeat whenever a later run holds
+// the same learner, because that view deduplicates across runs.
+func TestPerRunDuplicateCheckIsNotConfusedByLaterRuns(t *testing.T) {
+	d := newDS(t, "ds")
+	// Run 100 repeats no learner; run 200 holds one of them again, and is the later fetch.
+	addDimensionCSV(t, d, dimFixture{run: 100, slug: "student-id-mapping", fetchedAt: at(1), csv: mappingCSV(
+		mappingRow(901, 10, endpointAAA), mappingRow(902, 10, endpointBBB),
+	)})
+	addDimensionCSV(t, d, dimFixture{run: 200, slug: "student-id-mapping", fetchedAt: at(2), csv: mappingCSV(
+		mappingRow(901, 20, endpointAAA),
+	)})
+
+	e, _ := openWithWarnings(t, d)
+
+	rows := queryInt(t, e, "SELECT count(*) FROM report_100")
+	learners := queryInt(t, e, "SELECT count(DISTINCT learner_id) FROM report_100")
+	if rows != learners {
+		t.Errorf("the documented check reports a repeat in a run that has none: %d rows, %d learners", rows, learners)
+	}
+	// The comparison this replaced, kept as the reason it was replaced: it differs here even
+	// though run 100 repeated nothing.
+	if viaView := queryInt(t, e, "SELECT count(*) FROM student_id_mapping WHERE run_id = 100"); viaView == rows {
+		t.Error("the cross-run view no longer differs, so this test no longer explains the change")
+	}
+
+	// And the check still fires when a run really does repeat a learner.
+	d2 := newDS(t, "ds2")
+	addDimensionCSV(t, d2, dimFixture{run: 100, slug: "student-id-mapping", fetchedAt: at(1), csv: mappingCSV(
+		mappingRow(901, 77, endpointAAA), mappingRow(901, 22, endpointAAA),
+	)})
+	e2, _ := openWithWarnings(t, d2)
+	if queryInt(t, e2, "SELECT count(*) FROM report_100") == queryInt(t, e2, "SELECT count(DISTINCT learner_id) FROM report_100") {
+		t.Error("a genuine within-run repeat went undetected")
+	}
+}

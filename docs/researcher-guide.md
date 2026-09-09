@@ -385,16 +385,19 @@ The three `log` reports share the same clickstream columns; `student-answers` an
 what you use to pull those learners' answers, history and attachments without
 authoring an Athena report first:
 
-- **Student ID Mapping** (slug `student-id-mapping`): one row per learner with
-  the portal ids and the `run_remote_endpoint` that joins them to stored
-  records, and no names. A run of this report is a valid run id for `get
-  answers`, `get history` and `get attachments`. It also becomes the
-  `student_id_mapping` view.
-- **Student Metadata** (slug `student-metadata`): one row per learner with the
-  human-readable context (name, username, class, school, teachers, permission
-  forms), joining 1:1 to Student ID Mapping on `learner_id`. Names are hidden
-  unless you are an admin who cleared the hide-names option. It becomes the
-  `student_metadata` view.
+- **Student ID Mapping** (slug `student-id-mapping`): the portal ids and the
+  `run_remote_endpoint` that joins each learner to their stored records, and no
+  names. A run of this report is a valid run id for `get answers`, `get history`
+  and `get attachments`. It also becomes the `student_id_mapping` view.
+- **Student Metadata** (slug `student-metadata`): the human-readable context
+  (name, username, class, school, teachers, permission forms), joining to
+  Student ID Mapping on `learner_id`. Names are hidden unless you are an admin
+  who cleared the hide-names option. It becomes the `student_metadata` view.
+
+One row per learner is a property of the two **views**, not of the CSVs behind
+them. The portal groups these reports by the learner's enrollment row rather
+than by the learner, so a downloaded CSV can in principle list a learner twice;
+the views resolve that to a single row, and pick the same one every time.
 
 **A warning about names.** When a run hides names, `student_name` holds the
 student's id number and `username` holds a hash, under those same column names.

@@ -102,8 +102,11 @@ like `wildfire_2026.answers`):
   `run_remote_endpoint` is a learner with no secure key, not missing data: every
   such learner carries the same endpoint string, so the join key is withheld
   rather than attributing one learner's answers to all of them. To check whether
-  one run repeated a learner, compare `SELECT count(*) FROM report_<run_id>`
-  with `SELECT count(*) FROM student_id_mapping WHERE run_id = <run_id>`.
+  one run repeated a learner, compare that run's own row count with its distinct
+  learner count: `SELECT count(*), count(DISTINCT learner_id) FROM
+  report_<run_id>`. Do not compare against this view's rows for that run: it
+  deduplicates **across** runs, so a learner a later run also holds is absent
+  here without the earlier run having repeated anything.
 - `student_metadata` — one row per `learner_id` from Student Metadata runs, same
   dedupe and the same `run_remote_endpoint` rule, carrying the names and roster
   labels the mapping view deliberately has none of. Join to
