@@ -439,3 +439,43 @@ func TestDimensionViewFallbackKeepsTheColumnShape(t *testing.T) {
 		t.Fatalf("the metadata fallback lost hide_names: %v", err)
 	}
 }
+
+// The manifest is the provenance record and it survives an ordinary reindex, so the only case the
+// views cannot cover is its own loss. Nothing is recovered from CSV shape there: the mapping
+// report's columns are a strict subset of the log report's, so a positive column rule would
+// resolve a log row as a learner's mapping. The views come back empty and the warning says why.
+func TestDimensionViewsAreEmptyAfterAManifestLessReindex(t *testing.T) {
+	d := newDS(t, "ds")
+	addDimensionCSV(t, d, dimFixture{run: 100, slug: "student-id-mapping", fetchedAt: at(1), csv: mappingCSV(
+		mappingRow(901, 10, endpointAAA),
+	)})
+	if err := os.Remove(d.Path(dataset.ManifestFile)); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Reindex(); err != nil {
+		t.Fatal(err)
+	}
+
+	e, _ := openWithWarnings(t, d)
+	if n := queryInt(t, e, "SELECT count(*) FROM student_id_mapping"); n != 0 {
+		t.Fatalf("a slug was recovered from CSV shape, giving the view %d rows", n)
+	}
+	// The CSV is still on disk and still queryable per run; only its provenance is gone.
+	if n := queryInt(t, e, "SELECT count(*) FROM report_100"); n != 1 {
+		t.Fatalf("the CSV itself was lost, not just its provenance: %d rows", n)
+	}
+
+	s, err := d.BuildShowJSON(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var named bool
+	for _, w := range s.Warnings {
+		if strings.HasPrefix(w, "RECOVERED_PROVENANCE:") && strings.Contains(w, "100") && strings.Contains(w, "dimension view") {
+			named = true
+		}
+	}
+	if !named {
+		t.Fatalf("nothing says which run lost its dimension view: %v", s.Warnings)
+	}
+}

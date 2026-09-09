@@ -91,3 +91,53 @@ func TestListJSON(t *testing.T) {
 		t.Fatalf("port-bearing portal should decode: %+v", list.Datasets)
 	}
 }
+
+func warningsWithPrefix(warnings []string, prefix string) []string {
+	var out []string
+	for _, w := range warnings {
+		if strings.HasPrefix(w, prefix) {
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
+// A lost provenance record now costs the run's filter and any dimension view it feeds as well as
+// its exact report type, and the warning is the only thing that says so.
+func TestShowWarnsWhatARecoveredDownloadLost(t *testing.T) {
+	d := newDataset(t)
+	rc := 1
+	if err := d.UpsertDownload(Download{
+		Type: "report", RunID: 584, ReportType: ReportTypeRecovered, Files: []string{"report_584.csv"},
+		RowCount: &rc, Columns: map[string]string{"learner_id": TypeBIGINT}, Complete: true, Recovered: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	s, _ := d.BuildShowJSON(false)
+	got := warningsWithPrefix(s.Warnings, "RECOVERED_PROVENANCE:")
+	if len(got) != 1 {
+		t.Fatalf("expected one recovered-provenance warning, got %v", s.Warnings)
+	}
+	for _, want := range []string{"584", "re-fetch", "report_type", "filter", "dimension view"} {
+		if !strings.Contains(got[0], want) {
+			t.Errorf("the warning does not name %q: %q", want, got[0])
+		}
+	}
+}
+
+// Store downloads carry no provenance, so the recovered flag there is not a gap. Widening the
+// condition while editing the string next to it is the mutation this catches.
+func TestShowDoesNotWarnForARecoveredStoreDownload(t *testing.T) {
+	d := newDataset(t)
+	if err := d.UpsertDownload(Download{
+		Type: "answers", RunID: 584, Complete: true, Recovered: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	s, _ := d.BuildShowJSON(false)
+	if got := warningsWithPrefix(s.Warnings, "RECOVERED_PROVENANCE:"); len(got) != 0 {
+		t.Fatalf("a store download raised a provenance warning: %v", got)
+	}
+}
