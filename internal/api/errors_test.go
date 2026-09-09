@@ -70,3 +70,40 @@ func TestAsWriteCLIErrorSaysWhatAnUnansweredWriteMayHaveDone(t *testing.T) {
 		}
 	}
 }
+
+// AsCLIError hands back the caller's own *output.CLIError when the error already is one, so
+// AsWriteCLIError must not set Action on it in place. Nothing reachable returns one from a write
+// today; this pins the copy so that stays true when something does.
+func TestAsWriteCLIErrorDoesNotMutateTheCallersError(t *testing.T) {
+	original := &output.CLIError{ExitCode: output.ExitInternal, Code: "INTERNAL", Message: "boom"}
+
+	got := AsWriteCLIError(original, "check with: cc-data reports list")
+
+	if original.Action != "" {
+		t.Errorf("the caller's error was mutated: Action = %q", original.Action)
+	}
+	if got == original {
+		t.Error("AsWriteCLIError returned the caller's own error rather than a copy")
+	}
+	if got.Action != "check with: cc-data reports list" {
+		t.Errorf("Action = %q", got.Action)
+	}
+	if got.Code != original.Code || got.ExitCode != original.ExitCode || got.Message != original.Message {
+		t.Errorf("the copy lost a field: %+v", got)
+	}
+}
+
+func TestRunMayExistToolActionNamesTheToolNotTheCLI(t *testing.T) {
+	withPortal := RunMayExistToolAction("staging")
+	if !strings.Contains(withPortal, "reports_list") || !strings.Contains(withPortal, "staging") {
+		t.Errorf("action = %q", withPortal)
+	}
+	// An agent has reports_list and can take this step itself, so naming the CLI would hand it an
+	// instruction it cannot follow.
+	if strings.Contains(withPortal, "cc-data") {
+		t.Errorf("tool advice names a CLI command: %q", withPortal)
+	}
+	if bare := RunMayExistToolAction(""); strings.Contains(bare, "portal ") {
+		t.Errorf("an unqualified caller must get unqualified advice, got %q", bare)
+	}
+}

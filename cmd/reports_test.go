@@ -406,7 +406,11 @@ func TestReportsCreateSendsTheSlugAndFilterAndRendersTheRun(t *testing.T) {
 	defer srv.Close()
 
 	f := reportCreateFlags{slug: "student-answers", filter: reportFilterFlags{inline: `{"cohort":[1]}`}, asJSON: true}
-	if err := f.run(context.Background(), api.New(srv.URL, "token")); err != nil {
+	req, err := f.request()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.run(context.Background(), api.New(srv.URL, "token"), req); err != nil {
 		t.Fatal(err)
 	}
 
@@ -427,9 +431,65 @@ func TestReportsCreateRefusesAMalformedFilterBeforeCallingTheServer(t *testing.T
 	}))
 	defer srv.Close()
 
+	// request() is where the refusal lives, and RunE calls it before looking up a credential, so
+	// a malformed filter never reaches a client at all.
 	f := reportCreateFlags{slug: "student-answers", filter: reportFilterFlags{inline: "{"}}
-	if err := f.run(context.Background(), api.New(srv.URL, "token")); err == nil {
+	if _, err := f.request(); err == nil {
 		t.Fatal("a malformed --report-filter must be an error")
+	}
+}
+
+func TestReportsCreateBlamesTheFileAMalformedFilterCameFrom(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "filter.json")
+	if err := os.WriteFile(path, []byte(`{"cohort":[1`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	f := reportCreateFlags{slug: "student-answers", filter: reportFilterFlags{file: path, fileSet: true}}
+	_, err := f.request()
+	if err == nil {
+		t.Fatal("a malformed --report-filter-file must be an error")
+	}
+	// Naming --report-filter here would point the caller at a flag they never passed, and the path
+	// is what tells them which file to fix.
+	if !strings.Contains(err.Error(), "--report-filter-file") || !strings.Contains(err.Error(), path) {
+		t.Fatalf("error must name the file flag and the path, got %q", err.Error())
+	}
+	if strings.Contains(err.Error(), "--report-filter must") {
+		t.Fatalf("error blames the inline flag: %q", err.Error())
+	}
+}
+
+func TestReportsCreateReadsTheFilterFileOnce(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "filter.json")
+	if err := os.WriteFile(path, []byte(`{"cohort":[1]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&body)
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprint(w, `{"id":90070,"report_slug":"student-answers","athena_query_state":null}`)
+	}))
+	defer srv.Close()
+
+	f := reportCreateFlags{slug: "student-answers", filter: reportFilterFlags{file: path, fileSet: true}}
+	req, err := f.request()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The request is built once and handed to run, so replacing the file afterwards cannot change
+	// what is sent. Reading it again inside run would send the second version.
+	if err := os.WriteFile(path, []byte(`{"cohort":[999]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.run(context.Background(), api.New(srv.URL, "token"), req); err != nil {
+		t.Fatal(err)
+	}
+	filter, _ := body["report_filter"].(map[string]any)
+	if filter == nil || fmt.Sprint(filter["cohort"]) != "[1]" {
+		t.Fatalf("the body must carry the filter read at request time, got %v", body["report_filter"])
 	}
 }
 
@@ -499,7 +559,11 @@ func TestReportsCreateSaysAnUnansweredWriteMayHaveCreatedTheRun(t *testing.T) {
 	// the advice has to name the portal the write went to: `reports list` without one reads the
 	// configured default, where the run would look absent and invite the retry this prevents
 	f := reportCreateFlags{slug: "student-answers", portal: "staging"}
-	err := f.run(context.Background(), api.New(srv.URL, "token"))
+	req, reqErr := f.request()
+	if reqErr != nil {
+		t.Fatal(reqErr)
+	}
+	err := f.run(context.Background(), api.New(srv.URL, "token"), req)
 
 	var cliErr *output.CLIError
 	if !errors.As(err, &cliErr) {

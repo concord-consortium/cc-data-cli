@@ -113,8 +113,10 @@ func newReportsJobsCmd() *cobra.Command {
 type reportFilterFlags struct {
 	inline string
 	file   string
-	// Whether each flag was named, which is the only way to tell `--report-filter ""` from an
-	// omitted flag. A caller who passed an empty shell variable believes they filtered.
+	// Whether each flag was given, which is the only way to tell `--report-filter ""` from an
+	// omitted flag. The two must not be treated alike. Someone writing `--report-filter "$FILTER"`
+	// with an empty variable believes they filtered, so silently creating a run over everything
+	// they can see would be wrong. raw() refuses it.
 	inlineSet bool
 	fileSet   bool
 }
@@ -148,24 +150,26 @@ func (f reportFilterFlags) raw() (json.RawMessage, error) {
 		if strings.TrimSpace(string(data)) == "" {
 			return nil, output.Usagef("--report-filter-file %s holds no filter", f.file)
 		}
-		return decodeReportFilter(string(data))
+		return decodeReportFilter(string(data), fmt.Sprintf("--report-filter-file %s", f.file))
 	}
 	if strings.TrimSpace(f.inline) == "" {
 		return nil, nil
 	}
-	return decodeReportFilter(f.inline)
+	return decodeReportFilter(f.inline, "--report-filter")
 }
 
 // The filter is validated as JSON locally so a typo is a usage error rather than a server round
 // trip, and is otherwise passed through untouched: the server owns what a valid filter is, and a
 // client-side schema could only disagree with it.
-func decodeReportFilter(text string) (json.RawMessage, error) {
+// source names where the text came from, so a malformed file blames the file and its path rather
+// than a flag the caller never passed.
+func decodeReportFilter(text, source string) (json.RawMessage, error) {
 	var probe map[string]any
 	if err := json.Unmarshal([]byte(text), &probe); err != nil {
-		return nil, output.Usagef("--report-filter must be a JSON object: %v", err)
+		return nil, output.Usagef("%s must be a JSON object: %v", source, err)
 	}
 	if probe == nil {
-		return nil, output.Usagef("--report-filter must be a JSON object, not null")
+		return nil, output.Usagef("%s must be a JSON object, not null", source)
 	}
 	return json.RawMessage(text), nil
 }
@@ -197,11 +201,7 @@ func (f reportCreateFlags) request() (api.CreateReportReq, error) {
 	return api.CreateReportReq{ReportSlug: f.slug, ReportFilter: raw}, nil
 }
 
-func (f reportCreateFlags) run(ctx context.Context, client *api.Client) error {
-	req, err := f.request()
-	if err != nil {
-		return err
-	}
+func (f reportCreateFlags) run(ctx context.Context, client *api.Client, req api.CreateReportReq) error {
 	run, err := client.CreateReport(ctx, req)
 	if err != nil {
 		return api.AsWriteCLIError(err, api.RunMayExistAction(f.portal))
@@ -235,14 +235,17 @@ func newReportsCreateCmd() *cobra.Command {
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			f.filter.bind(cmd)
-			if _, err := f.request(); err != nil {
+			// Built once, before the credential lookup, so a usage error needs no stored token and
+			// --report-filter-file is read exactly once rather than re-read for the request.
+			req, err := f.request()
+			if err != nil {
 				return err
 			}
 			client, err := reportsClient(f.portal)
 			if err != nil {
 				return err
 			}
-			return f.run(context.Background(), client)
+			return f.run(context.Background(), client, req)
 		},
 	}
 	cmd.Flags().StringVar(&f.portal, "portal", "", "portal to create the run on: an environment alias or a hostname")

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
@@ -570,4 +571,112 @@ func errorText(res *mcp.CallToolResult) string {
 		return tc.Text
 	}
 	return ""
+}
+
+// A write the server never answers must carry recovery advice an MCP caller can act on. The
+// mutation this catches is swapping api.AsWriteCLIError for api.AsCLIError in either handler,
+// which the create/duplicate tests above cannot see: they exercise a success and a 409, and a
+// 409 is a server answer, so both functions return the same thing for it.
+func TestMCPWritesSayAnUnansweredWriteMayHaveCreatedTheRun(t *testing.T) {
+	setupEnv(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	srv.Close()
+	if err := (creds.Store{}).Save(config.MustPortal("learn.concord.org"), "test-token", srv.URL); err != nil {
+		t.Fatal(err)
+	}
+	session := connect(t)
+
+	for _, tc := range []struct {
+		tool string
+		args map[string]any
+	}{
+		{"reports_create", map[string]any{"portal": "learn.concord.org", "report_slug": "student-answers"}},
+		{"reports_duplicate", map[string]any{"portal": "learn.concord.org", "run_id": 90070}},
+	} {
+		res, _ := callJSON(t, session, tc.tool, tc.args)
+		if !res.IsError {
+			t.Fatalf("%s: an unanswered write must be an error", tc.tool)
+		}
+		text := errorText(res)
+		// reports_list, not `cc-data reports list`: the caller here has the tool and can take
+		// this step itself, so naming the CLI would be an instruction it cannot follow.
+		if !strings.Contains(text, "reports_list") {
+			t.Errorf("%s: advice must name reports_list, got %q", tc.tool, text)
+		}
+		if !strings.Contains(text, "learn.concord.org") {
+			t.Errorf("%s: advice must name the portal the write went to, got %q", tc.tool, text)
+		}
+		if strings.Contains(text, "cc-data reports list") {
+			t.Errorf("%s: advice tells an agent to run a CLI command, got %q", tc.tool, text)
+		}
+	}
+}
+
+// An explicit empty object is a filter the caller chose, so it reaches the body as {} exactly as
+// the CLI's --report-filter '{}' does. Testing len() instead of nil would omit the key and make
+// the two surfaces send different bodies for the same input.
+func TestMCPReportsCreateSendsAnExplicitEmptyFilter(t *testing.T) {
+	setupEnv(t)
+	var raw []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprint(w, `{"id":90070,"report_slug":"student-answers","athena_query_state":null}`)
+	}))
+	defer srv.Close()
+	if err := (creds.Store{}).Save(config.MustPortal("learn.concord.org"), "test-token", srv.URL); err != nil {
+		t.Fatal(err)
+	}
+
+	res, _ := callJSON(t, connect(t), "reports_create", map[string]any{
+		"portal":        "learn.concord.org",
+		"report_slug":   "student-answers",
+		"report_filter": map[string]any{},
+	})
+	if res.IsError {
+		t.Fatalf("call failed: %s", errorText(res))
+	}
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := body["report_filter"]
+	if !ok {
+		t.Fatalf("report_filter was omitted for an explicit {}; body = %s", raw)
+	}
+	if string(got) != "{}" {
+		t.Errorf("report_filter = %s, want {}", got)
+	}
+}
+
+// The other half of the nil check: a filter the caller never sent must stay out of the body, so
+// the server sees an unfiltered request rather than an empty filter object. Dropping the guard
+// altogether fails this while leaving the explicit-{} case above green.
+func TestMCPReportsCreateOmitsAnAbsentFilter(t *testing.T) {
+	setupEnv(t)
+	var raw []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprint(w, `{"id":90070,"report_slug":"student-answers","athena_query_state":null}`)
+	}))
+	defer srv.Close()
+	if err := (creds.Store{}).Save(config.MustPortal("learn.concord.org"), "test-token", srv.URL); err != nil {
+		t.Fatal(err)
+	}
+
+	res, _ := callJSON(t, connect(t), "reports_create", map[string]any{
+		"portal":      "learn.concord.org",
+		"report_slug": "student-answers",
+	})
+	if res.IsError {
+		t.Fatalf("call failed: %s", errorText(res))
+	}
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := body["report_filter"]; ok {
+		t.Errorf("an absent report_filter must be omitted; body = %s", raw)
+	}
 }

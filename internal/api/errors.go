@@ -103,6 +103,17 @@ func RunMayExistAction(portal string) string {
 	return fmt.Sprintf("The run may still have been created; check with: cc-data reports list --portal %s", portal)
 }
 
+// RunMayExistToolAction is RunMayExistAction for an MCP caller, who has reports_list and can take
+// this step itself. Naming the CLI command instead would hand an agent an instruction it cannot
+// follow. The convention is NotAuthenticated's, which says "A human must run: cc-data login"
+// precisely because that step is the one an agent genuinely cannot do.
+func RunMayExistToolAction(portal string) string {
+	if portal == "" {
+		return "The run may still have been created; check with reports_list"
+	}
+	return fmt.Sprintf("The run may still have been created; check with reports_list on portal %s", portal)
+}
+
 // AsWriteCLIError is AsCLIError for a request the client will not retry. Client.do returns a
 // transport failure on a non-idempotent method immediately, precisely because the request may have
 // reached the server, so the error has to say that rather than invite a retry.
@@ -111,13 +122,18 @@ func AsWriteCLIError(err error, action string) *output.CLIError {
 	if answered(err) {
 		return cliErr
 	}
-	cliErr.Action = action
-	return cliErr
+	// AsCLIError hands back the caller's own *output.CLIError when err already is one, so setting
+	// Action in place would write into an error this function does not own. Nothing reachable
+	// returns one from a write today; copying keeps that from becoming a trap.
+	withAction := *cliErr
+	withAction.Action = action
+	return &withAction
 }
 
 // Whether the server itself answered, which is what proves the write did not happen. A 4xx is its
-// answer; a 5xx can come from a proxy in front of it, and a retry budget that ran out says nothing
-// about what the attempts before it did.
+// answer; a 5xx can come from a proxy in front of it, so it proves nothing about what reached the
+// application. The TransientError branch is defensive rather than reachable from a write: Client.do
+// returns on the first attempt for a non-idempotent method and never exhausts a budget.
 func answered(err error) bool {
 	var transient *TransientError
 	if errors.As(err, &transient) {

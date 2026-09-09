@@ -100,7 +100,7 @@ func registerTools(s *mcp.Server, opts Options) {
 			}
 			run, err := client.CreateReport(ctx, api.CreateReportReq{ReportSlug: in.ReportSlug, ReportFilter: filter})
 			if err != nil {
-				return nil, reportview.RunPayload{}, api.AsWriteCLIError(err, api.RunMayExistAction(in.Portal))
+				return nil, reportview.RunPayload{}, api.AsWriteCLIError(err, api.RunMayExistToolAction(in.Portal))
 			}
 			return nil, reportview.RunPayload{Run: reportview.ToRunJSON(run)}, nil
 		})
@@ -113,7 +113,7 @@ func registerTools(s *mcp.Server, opts Options) {
 			}
 			run, err := client.DuplicateReport(ctx, in.RunID, in.Force)
 			if err != nil {
-				return nil, reportview.RunPayload{}, api.AsWriteCLIError(err, api.RunMayExistAction(in.Portal))
+				return nil, reportview.RunPayload{}, api.AsWriteCLIError(err, api.RunMayExistToolAction(in.Portal))
 			}
 			return nil, reportview.RunPayload{Run: reportview.ToRunJSON(run)}, nil
 		})
@@ -384,8 +384,12 @@ func queryHandler(opts Options) func(context.Context, *mcp.CallToolRequest, quer
 // encodeReportFilter turns a decoded filter object back into the raw JSON the client passes
 // through. The tools take it decoded because json.RawMessage reflects to a byte array in the
 // argument schema and refuses the object reports_list hands back.
+// An explicit empty object is a filter the caller chose and is sent as {}, matching what the CLI
+// does with --report-filter '{}'; only an absent or null report_filter is omitted. Testing len()
+// instead would collapse those two into one body and make the two surfaces disagree. The server
+// decides whether an empty filter can produce a query.
 func encodeReportFilter(filter map[string]any) (json.RawMessage, error) {
-	if len(filter) == 0 {
+	if filter == nil {
 		return nil, nil
 	}
 	raw, err := json.Marshal(filter)
