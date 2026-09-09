@@ -37,9 +37,10 @@ type ReportOptions struct {
 	Progress    io.Writer
 }
 
-// FetchReport runs the poll -> envelope -> S3 stream -> atomic CSV flow. It
-// returns the result-line value (emitted by the caller) and an error carrying
-// the exit code.
+// FetchReport downloads a run's CSV. A sync run's body is computed and streamed by the API; an
+// async run polls, follows the presigned envelope and streams from S3. Everything after that fork
+// is shared. It returns the result-line value (emitted by the caller) and an error carrying the
+// exit code.
 func FetchReport(ctx context.Context, opts ReportOptions) (any, error) {
 	if opts.PollTimeout == 0 {
 		opts.PollTimeout = DefaultPollTimeout
@@ -52,25 +53,38 @@ func FetchReport(ctx context.Context, opts ReportOptions) (any, error) {
 
 	csvName := reportCSVName(opts.RunID, opts.JobID)
 	csvPath := opts.DS.Path(csvName)
-	if fileExists(csvPath) && !opts.Refresh {
-		return nil, &output.CLIError{ExitCode: output.ExitUsage, Code: "EXISTS", Message: fmt.Sprintf("%s already exists; use --refresh to re-download", csvName)}
-	}
 
 	run, err := opts.Client.GetReport(ctx, opts.RunID)
 	if err != nil {
 		return nil, api.AsCLIError(err)
 	}
+	isSync := run.Execution == api.ExecutionSync
+
+	// A job is a separate resource on a separate route and a Portal report has none, so passing
+	// one through would store the run's own CSV under a job's name, type and view.
+	if isSync && opts.JobID != nil {
+		return nil, output.Usagef("run %d is a Portal report, which has no jobs; drop --job", opts.RunID)
+	}
+	if fileExists(csvPath) && !opts.Refresh {
+		return nil, &output.CLIError{ExitCode: output.ExitUsage, Code: "EXISTS", Message: existsMsg(csvName, isSync)}
+	}
 	reportType := resolveReportType(run, opts.Progress)
 
-	env, notReady, cliErr := pollUntilReady(ctx, opts)
-	if cliErr != nil {
-		return notReady, cliErr
-	}
-
 	tmpPath := csvPath + ".tmp"
-	if err := streamReady(ctx, opts, env, tmpPath); err != nil {
-		os.Remove(tmpPath)
-		return nil, api.AsCLIError(err)
+	if isSync {
+		if err := opts.Client.StreamReportCSV(ctx, opts.RunID, tmpPath); err != nil {
+			os.Remove(tmpPath)
+			return nil, api.AsCLIError(err)
+		}
+	} else {
+		env, notReady, cliErr := pollUntilReady(ctx, opts)
+		if cliErr != nil {
+			return notReady, cliErr
+		}
+		if err := streamReady(ctx, opts, env, tmpPath); err != nil {
+			os.Remove(tmpPath)
+			return nil, api.AsCLIError(err)
+		}
 	}
 
 	rowCount, columns, columnOrder, dialect, err := dataset.DetectCSV(tmpPath, reportType)
@@ -117,6 +131,16 @@ func FetchReport(ctx context.Context, opts ReportOptions) (any, error) {
 		result["job_id"] = *opts.JobID
 	}
 	return result, nil
+}
+
+// existsMsg refuses an already-downloaded run. A Portal report is recomputed on every request, so
+// re-downloading is the normal way to get current data rather than a redundant act, and the
+// server's duplicate guard sends callers here to do exactly that.
+func existsMsg(csvName string, isSync bool) string {
+	if isSync {
+		return fmt.Sprintf("%s already exists; Portal reports are live, so use --refresh to re-pull current data", csvName)
+	}
+	return fmt.Sprintf("%s already exists; use --refresh to re-download", csvName)
 }
 
 // resolveReportType uses the server value when present, else derives from the

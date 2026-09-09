@@ -58,18 +58,24 @@ func fastClient(baseURL string) *api.Client {
 	return c
 }
 
-// reportServer is a fake report + S3 server for report-fetch tests.
+// reportServer is a fake report + S3 server for report-fetch tests. A sync execution makes it
+// answer /download the way a Portal run does, computing the CSV and streaming it as text/csv.
 type reportServer struct {
 	*httptest.Server
 	slug           string
 	reportType     *string
+	execution      string
 	notReadyStates []string // states returned before ready; "" means null
 	csv            string
+	portalRefusal  string // a 422 error envelope the Portal download answers with instead
 	pollCount      int32
 	stateIndex     int32
 }
 
 func newReportServer(t *testing.T, s *reportServer) *reportServer {
+	if s.execution == "" {
+		s.execution = api.ExecutionAsync
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/reports/", func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
@@ -79,19 +85,39 @@ func newReportServer(t *testing.T, s *reportServer) *reportServer {
 		case strings.HasSuffix(path, "/s3"):
 			w.Write([]byte(s.csv))
 		default:
-			rt := "null"
-			if s.reportType != nil {
-				rt = fmt.Sprintf("%q", *s.reportType)
-			}
-			fmt.Fprintf(w, `{"id":584,"report_slug":%q,"report_type":%s,"athena_query_state":"succeeded"}`, s.slug, rt)
+			s.handleShow(w)
 		}
 	})
 	s.Server = httptest.NewServer(mux)
 	return s
 }
 
+func (s *reportServer) handleShow(w http.ResponseWriter) {
+	rt, state := "null", `"succeeded"`
+	if s.reportType != nil {
+		rt = fmt.Sprintf("%q", *s.reportType)
+	}
+	// A Portal run declares no api_report_type and has no query to be in a state.
+	if s.execution == api.ExecutionSync {
+		rt, state = "null", "null"
+	}
+	fmt.Fprintf(w, `{"id":584,"report_slug":%q,"report_type":%s,"athena_query_state":%s,"execution":%q}`,
+		s.slug, rt, state, s.execution)
+}
+
 func (s *reportServer) handleDownload(w http.ResponseWriter, r *http.Request) {
 	atomic.AddInt32(&s.pollCount, 1)
+	if s.execution == api.ExecutionSync {
+		if s.portalRefusal != "" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			fmt.Fprint(w, s.portalRefusal)
+			return
+		}
+		w.Header().Set("Content-Type", "text/csv")
+		fmt.Fprint(w, s.csv)
+		return
+	}
 	i := atomic.LoadInt32(&s.stateIndex)
 	if int(i) < len(s.notReadyStates) {
 		atomic.AddInt32(&s.stateIndex, 1)
@@ -365,5 +391,138 @@ func TestGetReportStreamDiscipline(t *testing.T) {
 	var obj map[string]any
 	if err := json.Unmarshal([]byte(lines[0]), &obj); err != nil {
 		t.Fatalf("result line not a JSON object: %s", lines[0])
+	}
+}
+
+const portalMappingCSV = "learner_id,user_id,run_remote_endpoint\n" +
+	"901,11,https://portal/dataservice/external_activity_data/AAA\n" +
+	"902,12,https://portal/dataservice/external_activity_data/BBB\n"
+
+func newPortalServer(t *testing.T) *reportServer {
+	t.Helper()
+	return newReportServer(t, &reportServer{
+		slug:      "student-id-mapping",
+		execution: api.ExecutionSync,
+		csv:       portalMappingCSV,
+	})
+}
+
+func TestGetReportPortalRunDownloadsTheStreamedCSV(t *testing.T) {
+	d := newTestDataset(t)
+	srv := newPortalServer(t)
+	defer srv.Close()
+
+	result, _, cliErr := runFetch(t, d, srv, fetch1{})
+	if cliErr != nil {
+		t.Fatalf("unexpected error: %+v", cliErr)
+	}
+	if m := result.(map[string]any); m["complete"] != true || m["row_count"].(int) != 2 {
+		t.Fatalf("result = %+v", m)
+	}
+	got, err := os.ReadFile(d.Path("report_584.csv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != portalMappingCSV {
+		t.Fatalf("CSV = %q", got)
+	}
+	man, _ := d.ReadManifest()
+	if len(man.Downloads) != 1 {
+		t.Fatalf("expected 1 download, got %d", len(man.Downloads))
+	}
+	dl := man.Downloads[0]
+	if dl.Type != typeReport || dl.RunID != 584 || dl.Slug != "student-id-mapping" || !dl.Complete {
+		t.Fatalf("manifest entry = %+v", dl)
+	}
+	// The lock, the manifest entry and the detection are shared with the Athena path, so the
+	// entry a Portal download records carries the same shape a presigned one does.
+	if dl.RowCount == nil || *dl.RowCount != 2 || dl.CSVDialect == nil || dl.Columns["learner_id"] == "" {
+		t.Fatalf("manifest entry lost the detected shape: %+v", dl)
+	}
+}
+
+// Re-downloading is the only way to get current data from a live report, and the server's
+// duplicate guard sends callers here to do it, so the refusal cannot read as "this is redundant".
+func TestGetReportPortalRepullGuardNamesLiveData(t *testing.T) {
+	d := newTestDataset(t)
+	srv := newPortalServer(t)
+	defer srv.Close()
+
+	if _, _, cliErr := runFetch(t, d, srv, fetch1{}); cliErr != nil {
+		t.Fatal(cliErr)
+	}
+	_, _, cliErr := runFetch(t, d, srv, fetch1{})
+	if cliErr == nil || cliErr.ExitCode != output.ExitUsage || cliErr.Code != "EXISTS" {
+		t.Fatalf("re-pull without --refresh should be a usage error: %+v", cliErr)
+	}
+	for _, want := range []string{"live", "--refresh", "re-pull current data"} {
+		if !strings.Contains(cliErr.Message, want) {
+			t.Errorf("the refusal does not name %q: %q", want, cliErr.Message)
+		}
+	}
+	if _, _, cliErr := runFetch(t, d, srv, fetch1{refresh: true}); cliErr != nil {
+		t.Fatalf("refresh should re-pull: %+v", cliErr)
+	}
+}
+
+// The flag promises "do not poll, report and exit", and a sync run has nothing to poll, so the
+// promise is kept by construction. Refusing it would break one --no-wait over a mixed run list.
+func TestGetReportPortalIgnoresNoWait(t *testing.T) {
+	d := newTestDataset(t)
+	srv := newPortalServer(t)
+	defer srv.Close()
+
+	result, _, cliErr := runFetch(t, d, srv, fetch1{noWait: true})
+	if cliErr != nil {
+		t.Fatalf("--no-wait on a Portal run should download normally: %+v", cliErr)
+	}
+	if m := result.(map[string]any); m["complete"] != true {
+		t.Fatalf("result = %+v", m)
+	}
+}
+
+// Everything downstream of the fork reads opts.JobID, so passing one through would store the run's
+// own CSV under a job's filename, manifest type and per-download view.
+func TestGetReportPortalRefusesAJob(t *testing.T) {
+	d := newTestDataset(t)
+	srv := newPortalServer(t)
+	defer srv.Close()
+
+	jobID := 3
+	_, _, cliErr := runFetch(t, d, srv, fetch1{jobID: &jobID})
+	if cliErr == nil || cliErr.ExitCode != output.ExitUsage {
+		t.Fatalf("--job on a Portal run should be a usage error: %+v", cliErr)
+	}
+	if !strings.Contains(cliErr.Message, "Portal report") || !strings.Contains(cliErr.Message, "--job") {
+		t.Fatalf("the refusal names neither the report kind nor the flag: %q", cliErr.Message)
+	}
+	if _, err := os.Stat(d.Path("report_584_job_3.csv")); !os.IsNotExist(err) {
+		t.Fatalf("a refused --job still wrote a CSV: %v", err)
+	}
+}
+
+// The one refusal only the Portal path can produce. Nothing retries it, and its message is the
+// server's own.
+func TestGetReportPortalFilterlessRunSurfacesItsRefusal(t *testing.T) {
+	d := newTestDataset(t)
+	srv := newReportServer(t, &reportServer{
+		slug:          "student-id-mapping",
+		execution:     api.ExecutionSync,
+		portalRefusal: `{"error":"UNPROCESSABLE","message":"This report run has no filters and cannot be downloaded."}`,
+	})
+	defer srv.Close()
+
+	_, _, cliErr := runFetch(t, d, srv, fetch1{})
+	if cliErr == nil || cliErr.Code != "UNPROCESSABLE" {
+		t.Fatalf("err = %+v, want the server's coded refusal", cliErr)
+	}
+	if !strings.Contains(cliErr.Message, "no filters") {
+		t.Fatalf("message = %q", cliErr.Message)
+	}
+	if atomic.LoadInt32(&srv.pollCount) != 1 {
+		t.Fatalf("a contract refusal was requested %d times, want 1", srv.pollCount)
+	}
+	if _, err := os.Stat(d.Path("report_584.csv")); !os.IsNotExist(err) {
+		t.Fatalf("a refused download left a CSV: %v", err)
 	}
 }
