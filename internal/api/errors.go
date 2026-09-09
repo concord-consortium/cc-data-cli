@@ -16,6 +16,10 @@ const (
 	CodeExpiredCursor = "EXPIRED_CURSOR"
 	CodeServerError   = "SERVER_ERROR"
 	CodeNotApplicable = "NOT_APPLICABLE"
+	// CodePortalDuplicateUnnecessary is the 409 a duplicate of a Portal run answers without
+	// force. AsCLIError needs no case for it: an unmapped code's message and extra reach the
+	// exit-code contract unchanged, which is why the server returns a coded error rather than prose.
+	CodePortalDuplicateUnnecessary = "PORTAL_DUPLICATE_UNNECESSARY"
 )
 
 // APIError is a coded, non-2xx response decoded from the JSON error envelope.
