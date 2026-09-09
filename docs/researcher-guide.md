@@ -401,8 +401,11 @@ student's id number and `username` holds a hash, under those same column names.
 Most reports that carry names work this way, so if you pull runs under different
 roles, or before and after an admin clears the option, one dataset can hold both
 kinds of value in one column. `cc-data` records which each run was: read
-`hide_names` on the `student_metadata` view, or join `downloads` on `run_id` for
-any other report, before you count or group by a name. It is empty for downloads
+`hide_names` on the `student_metadata` view, or for any other report join
+`downloads` and say which download you mean (`... JOIN downloads d ON d.run_id =
+r.run_id AND d.type = 'report'`), before you count or group by a name. That
+`d.type` matters: a run you pulled answers and history for has a `downloads` row
+each, so joining on `run_id` alone silently multiplies your rows. It is empty for downloads
 made before `cc-data` started recording this, which is not the same as "names
 were shown".
 

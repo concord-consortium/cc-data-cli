@@ -519,17 +519,26 @@ func TestDownloadsCarriesHideNamesForEveryReport(t *testing.T) {
 	// A download with no recorded filter, which is what a dataset made by an earlier version
 	// holds: the column has to read as unknown rather than as either role.
 	addReportCSV(t, d, 216, dataset.ReportTypeAnswers, "student_id,student_name\nPrompt,p\nCorrect answer,c\n1,Bea\n")
+	// A second download on run 100, as pulling that run's answers produces. It is what makes the
+	// downloads join fan out unless it is qualified.
+	if err := d.UpsertDownload(dataset.Download{Type: "answers", RunID: 100, Complete: true}); err != nil {
+		t.Fatal(err)
+	}
 
 	e, _ := openWithWarnings(t, d)
 
 	for _, tc := range []struct{ run, want string }{{"100", "false"}, {"101", "true"}, {"216", "<NULL>"}} {
-		if got := queryString(t, e, "SELECT hide_names::VARCHAR FROM downloads WHERE run_id = "+tc.run); got != tc.want {
+		if got := queryString(t, e, "SELECT hide_names::VARCHAR FROM downloads WHERE type = 'report' AND run_id = "+tc.run); got != tc.want {
 			t.Errorf("run %s hide_names = %q, want %q", tc.run, got, tc.want)
 		}
 	}
 
-	// The join a caller writes to separate the two meanings in the union.
-	const join = `SELECT r.student_name FROM reports r JOIN downloads d USING (run_id)
+	// The join a caller writes to separate the two meanings in the union. It is type-qualified
+	// because downloads holds one row per download, not per run: a run whose answers and history
+	// were also pulled has three, and joining on run_id alone multiplies the rows it is meant to
+	// label. Verified against a real run, where it turned 75 rows into 225.
+	const join = `SELECT r.student_name FROM reports r JOIN downloads d
+	                ON d.run_id = r.run_id AND d.type = 'report'
 	              WHERE r.student_name IS NOT NULL AND d.hide_names = false`
 	if got := queryStrings(t, e, join); len(got) != 1 || got[0] != "Ada Lovelace" {
 		t.Fatalf("the join returned %v, want only the run fetched with names shown", got)
@@ -537,5 +546,19 @@ func TestDownloadsCarriesHideNamesForEveryReport(t *testing.T) {
 	// Without it, the union blends them, which is what the column exists to make visible.
 	if n := queryInt(t, e, "SELECT count(DISTINCT student_name) FROM reports"); n != 3 {
 		t.Fatalf("the fixture no longer blends names, so the join above proves nothing: %d", n)
+	}
+
+	// The fixture has to hold a run with more than one download, or the type-qualified join is
+	// indistinguishable from the unqualified one that fans out.
+	if n := queryInt(t, e, "SELECT count(*) FROM downloads WHERE run_id = 100"); n != 2 {
+		t.Fatalf("run 100 has %d downloads, want 2, so the join qualification proves nothing", n)
+	}
+	rows := queryInt(t, e, "SELECT count(*) FROM reports WHERE run_id = 100")
+	qualified := queryInt(t, e, "SELECT count(*) FROM reports r JOIN downloads d ON d.run_id = r.run_id AND d.type = 'report' WHERE r.run_id = 100")
+	if qualified != rows {
+		t.Errorf("the type-qualified join changed the row count: %d, want %d", qualified, rows)
+	}
+	if unqualified := queryInt(t, e, "SELECT count(*) FROM reports r JOIN downloads d USING (run_id) WHERE r.run_id = 100"); unqualified == rows {
+		t.Errorf("the unqualified join did not fan out, so the guidance's qualification is untested")
 	}
 }

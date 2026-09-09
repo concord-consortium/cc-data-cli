@@ -65,10 +65,12 @@ like `wildfire_2026.answers`):
   hid names, `student_name` holds the student id and `username` a hash, under the
   same column names, so runs fetched under different roles are union-compatible
   and blended here with nothing in the row to tell them apart. Four of the five
-  Athena reports and the Portal metadata report are all affected. Join
-  `downloads` on `run_id` and read `hide_names` before counting or grouping by a
-  name; it is NULL for a download whose filter is not on disk, which is not the
-  same as false.
+  Athena reports and the Portal metadata report are all affected. Read
+  `hide_names` before counting or grouping by a name, joining `downloads`
+  **type-qualified** because a run has one `downloads` row per download and an
+  unqualified join multiplies the rows: `reports r JOIN downloads d ON d.run_id
+  = r.run_id AND d.type = 'report'`. It is NULL for a download whose filter is
+  not on disk, which is not the same as false.
 - `report_prompts` — the prompt and correct-answer text keyed by the
   `res_<N>_<question_id>_*` columns.
 - `answers`, `history` — the identity-keyed stores (double-decoded
@@ -109,10 +111,13 @@ like `wildfire_2026.answers`):
   recorded, which includes every download made before cc-data recorded filters
   and any recovered by a reindex with no manifest. The same rows also reach
   `reports`, which has no such column, so name-sensitive work belongs on this
-  view or on a `downloads` join.
+  view or on a type-qualified `downloads` join.
 - `downloads` — a manifest dimension table: `run_id`, `type`, `slug`,
   `report_type`, `hide_names` and `complete`. It is where a per-download fact
   belongs, so it is the join for anything that varies by run rather than by row.
+  **One row per download, not per run**: a run that had its report, answers and
+  history pulled has three, so join it type-qualified (`AND d.type = 'report'`)
+  or the join fans out.
 - Per-run views: `report_<run>`, `answers_<run>`, `history_<run>`, and
   `report_<run>_job_<job>` for a run that has post-processing jobs.
 
