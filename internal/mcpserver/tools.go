@@ -55,12 +55,9 @@ func registerTools(s *mcp.Server, opts Options) {
 			if err != nil {
 				return nil, reportview.FilterOptionsPayload{}, err
 			}
-			var filter json.RawMessage
-			if len(in.ReportFilter) > 0 {
-				filter, err = json.Marshal(in.ReportFilter)
-				if err != nil {
-					return nil, reportview.FilterOptionsPayload{}, fmt.Errorf("report_filter is not encodable: %w", err)
-				}
+			filter, err := encodeReportFilter(in.ReportFilter)
+			if err != nil {
+				return nil, reportview.FilterOptionsPayload{}, err
 			}
 			optReq := api.FilterOptionsReq{
 				Dimension:    in.Dimension,
@@ -89,6 +86,36 @@ func registerTools(s *mcp.Server, opts Options) {
 				return nil, reportview.JobsPayload{}, api.AsCLIError(err)
 			}
 			return nil, reportview.JobsPayload{Jobs: jobs}, nil
+		})
+
+	addTool(s, &mcp.Tool{Name: "reports_create", Description: "Create a report run from a report slug and a filter, without the web form. Pass report_filter as the same object reports_list returns on a run, assembled with reports_filter_options. The server derives the run's filter labels, forces hide_names by the user's role, and refuses an id the user cannot see. The new run is returned in the shape reports_list uses; an Athena run's query starts on its own, so its state may be null until it is read. The portal may be a hostname or an environment alias (prod / staging / dev)."},
+		func(ctx context.Context, req *mcp.CallToolRequest, in reportsCreateIn) (*mcp.CallToolResult, reportview.RunPayload, error) {
+			client, err := portalClient(in.Portal)
+			if err != nil {
+				return nil, reportview.RunPayload{}, err
+			}
+			filter, err := encodeReportFilter(in.ReportFilter)
+			if err != nil {
+				return nil, reportview.RunPayload{}, err
+			}
+			run, err := client.CreateReport(ctx, api.CreateReportReq{ReportSlug: in.ReportSlug, ReportFilter: filter})
+			if err != nil {
+				return nil, reportview.RunPayload{}, api.AsCLIError(err)
+			}
+			return nil, reportview.RunPayload{Run: reportview.ToRunJSON(run)}, nil
+		})
+
+	addTool(s, &mcp.Tool{Name: "reports_duplicate", Description: "Take a fresh snapshot of an existing run, by creating a new run from its report and filter. A Portal report is computed live on every request, so re-read one with get_report rather than duplicating it; duplicating a Portal run is refused unless force is set. An Athena run is frozen once it finishes, so duplicating is how it is re-run. The portal may be a hostname or an environment alias (prod / staging / dev)."},
+		func(ctx context.Context, req *mcp.CallToolRequest, in reportsDuplicateIn) (*mcp.CallToolResult, reportview.RunPayload, error) {
+			client, err := portalClient(in.Portal)
+			if err != nil {
+				return nil, reportview.RunPayload{}, err
+			}
+			run, err := client.DuplicateReport(ctx, in.RunID, in.Force)
+			if err != nil {
+				return nil, reportview.RunPayload{}, api.AsCLIError(err)
+			}
+			return nil, reportview.RunPayload{Run: reportview.ToRunJSON(run)}, nil
 		})
 
 	addTool(s, &mcp.Tool{Name: "get_report", Description: "Download a report CSV into a dataset."},
@@ -352,4 +379,18 @@ func queryHandler(opts Options) func(context.Context, *mcp.CallToolRequest, quer
 		defer e.Close()
 		return runQuery(ctx, e, in.SQL, maxRows)
 	}
+}
+
+// encodeReportFilter turns a decoded filter object back into the raw JSON the client passes
+// through. The tools take it decoded because json.RawMessage reflects to a byte array in the
+// argument schema and refuses the object reports_list hands back.
+func encodeReportFilter(filter map[string]any) (json.RawMessage, error) {
+	if len(filter) == 0 {
+		return nil, nil
+	}
+	raw, err := json.Marshal(filter)
+	if err != nil {
+		return nil, fmt.Errorf("report_filter is not encodable: %w", err)
+	}
+	return raw, nil
 }

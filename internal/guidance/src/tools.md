@@ -9,6 +9,13 @@
 - `reports_filter_options` — the values a report filter dimension offers the user,
   narrowed by any selections already made. Use it to assemble a filter without the
   web form, or on its own to answer what data the user can see.
+- `reports_create` — a new report run from a report slug and a filter, which is
+  how a run is made without the web form. Assemble the filter with
+  `reports_filter_options` first.
+- `reports_duplicate` — a fresh snapshot of an existing run. Athena runs are frozen
+  once they finish, so duplicating is how they are re-run; a Portal report is
+  computed live, so re-read it with `get_report` instead and pass `force` only if
+  a second run id is genuinely wanted.
 - `get_report` — the report CSV for a run, into a dataset.
 - `get_answers`, `get_history` — a run's student answers, and the full series of
   how each answer's interactive state evolved, into a dataset.

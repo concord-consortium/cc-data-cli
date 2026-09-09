@@ -40,6 +40,18 @@ type reportsFilterOptionsIn struct {
 	ReportFilter map[string]any `json:"report_filter,omitempty"`
 }
 
+type reportsCreateIn struct {
+	Portal       string         `json:"portal"`
+	ReportSlug   string         `json:"report_slug"`
+	ReportFilter map[string]any `json:"report_filter,omitempty"`
+}
+
+type reportsDuplicateIn struct {
+	Portal string `json:"portal"`
+	RunID  int    `json:"run_id"`
+	Force  bool   `json:"force,omitempty"`
+}
+
 type getReportIn struct {
 	Dataset string `json:"dataset"`
 	RunID   int    `json:"run_id"`

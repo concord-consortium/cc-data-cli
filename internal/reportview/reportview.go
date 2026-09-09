@@ -31,6 +31,11 @@ type RunsPayload struct {
 	Runs []RunJSON `json:"runs"`
 }
 
+// RunPayload is the reports_create and reports_duplicate payload: the one run they made.
+type RunPayload struct {
+	Run RunJSON `json:"run"`
+}
+
 // JobsPayload is the reports_jobs payload.
 type JobsPayload struct {
 	Jobs []api.Job `json:"jobs"`

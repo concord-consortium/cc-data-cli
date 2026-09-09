@@ -104,7 +104,7 @@ func TestMCPToolSurface(t *testing.T) {
 		names[tool.Name] = tool
 	}
 	want := []string{"auth_status", "version", "reports_list", "reports_jobs",
-		"reports_filter_options", "get_report",
+		"reports_filter_options", "reports_create", "reports_duplicate", "get_report",
 		"get_answers", "get_history", "get_attachments", "dataset_create", "dataset_list",
 		"dataset_show", "dataset_rename", "dataset_edit", "dataset_delete", "dataset_purge",
 		"dataset_reindex", "query"}
@@ -127,6 +127,13 @@ func TestMCPToolSurface(t *testing.T) {
 	for _, n := range []string{"query", "reports_filter_options"} {
 		if names[n].Annotations == nil || !names[n].Annotations.ReadOnlyHint {
 			t.Fatalf("%s should be read-only", n)
+		}
+	}
+	// The write tools carry no read-only hint, which a client uses to decide what it may call
+	// without asking.
+	for _, n := range []string{"reports_create", "reports_duplicate"} {
+		if names[n].Annotations != nil && names[n].Annotations.ReadOnlyHint {
+			t.Fatalf("%s creates a run and must not be marked read-only", n)
 		}
 	}
 	// Destructive hint on delete/purge.

@@ -2,7 +2,10 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -18,9 +21,10 @@ import (
 func newReportsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "reports",
-		Short: "List report runs and jobs",
+		Short: "List, create and duplicate report runs",
 	}
-	cmd.AddCommand(newReportsListCmd(), newReportsJobsCmd(), newReportsFilterOptionsCmd())
+	cmd.AddCommand(newReportsListCmd(), newReportsJobsCmd(), newReportsFilterOptionsCmd(),
+		newReportsCreateCmd(), newReportsDuplicateCmd())
 	return cmd
 }
 
@@ -120,6 +124,153 @@ func newReportsJobsCmd() *cobra.Command {
 	return cmd
 }
 
+// reportFilterFlags is the terminal expression of a report filter: the JSON object the API emits
+// on every run, inline or from a file. Shared by reports create and reports filter-options so the
+// two cannot disagree about what a filter is.
+type reportFilterFlags struct {
+	inline string
+	file   string
+}
+
+func (f *reportFilterFlags) register(cmd *cobra.Command) {
+	cmd.Flags().StringVar(&f.inline, "report-filter", "", "the run filter as a JSON object, e.g. '{\"cohort\":[1,2]}'")
+	cmd.Flags().StringVar(&f.file, "report-filter-file", "", "read the JSON filter from a file instead of the command line")
+}
+
+// raw returns the filter to send, or nil when none was given. It is validated as JSON locally so a
+// typo is a usage error rather than a server round trip, and is otherwise passed through untouched:
+// the server owns what a valid filter is, and a client-side schema could only disagree with it.
+func (f reportFilterFlags) raw() (json.RawMessage, error) {
+	if f.inline != "" && f.file != "" {
+		return nil, output.Usagef("--report-filter and --report-filter-file are mutually exclusive")
+	}
+	text := f.inline
+	if f.file != "" {
+		data, err := os.ReadFile(f.file)
+		if err != nil {
+			return nil, output.Usagef("unable to read --report-filter-file: %v", err)
+		}
+		text = string(data)
+	}
+	if strings.TrimSpace(text) == "" {
+		return nil, nil
+	}
+	var probe map[string]any
+	if err := json.Unmarshal([]byte(text), &probe); err != nil {
+		return nil, output.Usagef("--report-filter must be a JSON object: %v", err)
+	}
+	return json.RawMessage(text), nil
+}
+
+// A POST that fails in transport may still have reached the server, and the client refuses to
+// retry one for that reason, so the run may exist. Looking is the right advice; retrying is not.
+func reportWriteError(err error) error {
+	cliErr := api.AsCLIError(err)
+	var coded *api.APIError
+	if errors.As(err, &coded) {
+		return cliErr
+	}
+	cliErr.Action = "The run may still have been created; check with: cc-data reports list"
+	return cliErr
+}
+
+func renderRun(run api.ReportRun, asJSON bool) error {
+	if asJSON {
+		return output.JSONLine(reportview.RunPayload{Run: reportview.ToRunJSON(run)})
+	}
+	renderRunsTable([]api.ReportRun{run})
+	return nil
+}
+
+func newReportsCreateCmd() *cobra.Command {
+	var portal, slug string
+	var filter reportFilterFlags
+	var asJSON bool
+
+	cmd := &cobra.Command{
+		Use:   "create --report-slug <slug> --portal <portal|env>",
+		Short: "Create a report run from a filter",
+		Long: "Create a report run from a filter, without the web form.\n\n" +
+			"The filter is the JSON object the API emits on a run, so a filter assembled with " +
+			"reports filter-options can be passed straight through. The server derives the run's " +
+			"filter labels and forces hide_names by role, and refuses an id the user cannot see.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if slug == "" {
+				return output.Usagef("--report-slug is required")
+			}
+			raw, err := filter.raw()
+			if err != nil {
+				return err
+			}
+			cfg, _, err := loadRuntime()
+			if err != nil {
+				return err
+			}
+			host, err := resolvePortal(cfg, portal)
+			if err != nil {
+				return err
+			}
+			client, err := api.ForPortal(host)
+			if err != nil {
+				return err
+			}
+			run, err := client.CreateReport(context.Background(), api.CreateReportReq{ReportSlug: slug, ReportFilter: raw})
+			if err != nil {
+				return reportWriteError(err)
+			}
+			return renderRun(run, asJSON)
+		},
+	}
+	cmd.Flags().StringVar(&portal, "portal", "", "portal to create the run on: an environment alias or a hostname")
+	cmd.Flags().StringVar(&slug, "report-slug", "", "the report to run")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "emit JSON instead of a table")
+	filter.register(cmd)
+	return cmd
+}
+
+func newReportsDuplicateCmd() *cobra.Command {
+	var portal string
+	var force, asJSON bool
+
+	cmd := &cobra.Command{
+		Use:   "duplicate <run-id> --portal <portal|env>",
+		Short: "Take a fresh snapshot of an existing run",
+		Long: "Create a new run from an existing run's report and filter.\n\n" +
+			"A Portal report is computed live on every request, so re-reading the run with " +
+			"get report returns current data and duplicating one is refused unless --force is " +
+			"passed. Duplicating is how an Athena run is re-run, since a finished one is frozen.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			runID, err := strconv.Atoi(args[0])
+			if err != nil {
+				return output.Usagef("run-id must be an integer")
+			}
+			cfg, _, err := loadRuntime()
+			if err != nil {
+				return err
+			}
+			host, err := resolvePortal(cfg, portal)
+			if err != nil {
+				return err
+			}
+			client, err := api.ForPortal(host)
+			if err != nil {
+				return err
+			}
+			run, err := client.DuplicateReport(context.Background(), runID, force)
+			if err != nil {
+				return reportWriteError(err)
+			}
+			return renderRun(run, asJSON)
+		},
+	}
+	cmd.Flags().StringVar(&portal, "portal", "", "portal the run belongs to: an environment alias or a hostname")
+	cmd.Flags().BoolVar(&force, "force", false, "duplicate a Portal run anyway, rather than re-reading it")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "emit JSON instead of a table")
+	return cmd
+}
+
 // filterOptionsFlags is the filter-options flag set. The flags-to-request step lives on it so
 // it can be exercised without a server; reached only through RunE, every flag but --dimension
 // was unverifiable.
@@ -127,18 +278,24 @@ type filterOptionsFlags struct {
 	portal, dimension, slug, search, pageToken string
 	limit                                      int
 	all, asJSON                                bool
+	filter                                     reportFilterFlags
 }
 
 func (f filterOptionsFlags) request() (api.FilterOptionsReq, error) {
 	if f.dimension == "" {
 		return api.FilterOptionsReq{}, output.Usagef("--dimension is required")
 	}
+	raw, err := f.filter.raw()
+	if err != nil {
+		return api.FilterOptionsReq{}, err
+	}
 	return api.FilterOptionsReq{
-		Dimension:  f.dimension,
-		ReportSlug: f.slug,
-		Search:     f.search,
-		Limit:      f.limit,
-		PageToken:  f.pageToken,
+		Dimension:    f.dimension,
+		ReportSlug:   f.slug,
+		Search:       f.search,
+		Limit:        f.limit,
+		PageToken:    f.pageToken,
+		ReportFilter: raw,
 	}, nil
 }
 
@@ -199,6 +356,7 @@ func newReportsFilterOptionsCmd() *cobra.Command {
 	cmd.Flags().StringVar(&f.pageToken, "page-token", "", "continue from a token a previous run reported")
 	cmd.Flags().BoolVar(&f.all, "all", false, fmt.Sprintf("walk the pages instead of returning the first, stopping after %d options", api.FilterOptionsDrainMax))
 	cmd.Flags().BoolVar(&f.asJSON, "json", false, "emit JSON instead of a table")
+	f.filter.register(cmd)
 	return cmd
 }
 
