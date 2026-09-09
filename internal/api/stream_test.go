@@ -103,26 +103,37 @@ func TestStreamAPIToFileSurfacesACodedRefusal(t *testing.T) {
 	}
 }
 
-func TestStreamAPIToFileRetriesA503(t *testing.T) {
-	var calls int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if atomic.AddInt32(&calls, 1) <= 2 {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			fmt.Fprint(w, `{"error":"SERVICE_UNAVAILABLE","message":"Too many concurrent report downloads; retry shortly."}`)
-			return
-		}
-		fmt.Fprint(w, "learner_id\n1\n")
-	}))
-	defer srv.Close()
+func TestStreamAPIToFileRetriesTheRefusalsWorthRetrying(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{"the download limiter's 503", http.StatusServiceUnavailable, `{"error":"SERVICE_UNAVAILABLE","message":"Too many concurrent report downloads; retry shortly."}`},
+		{"a 429", http.StatusTooManyRequests, `{"error":"TOO_MANY_REQUESTS","message":"slow down"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if atomic.AddInt32(&calls, 1) <= 2 {
+					w.WriteHeader(tc.status)
+					fmt.Fprint(w, tc.body)
+					return
+				}
+				fmt.Fprint(w, "learner_id\n1\n")
+			}))
+			defer srv.Close()
 
-	dst := filepath.Join(t.TempDir(), "out.csv")
-	if err := testClient(srv.URL).StreamAPIToFile(context.Background(), "/download", dst); err != nil {
-		t.Fatal(err)
-	}
-	// The limiter's 503 arrives before any body byte, so the narrower retry rule must not
-	// swallow it: three attempts, the same count an unconditional retry would take.
-	if calls != 3 {
-		t.Fatalf("the limiter's 503 took %d attempts, want 3", calls)
+			dst := filepath.Join(t.TempDir(), "out.csv")
+			if err := testClient(srv.URL).StreamAPIToFile(context.Background(), "/download", dst); err != nil {
+				t.Fatal(err)
+			}
+			// These arrive before any body byte, so the narrower retry rule must not swallow
+			// them: three attempts, the same count an unconditional retry would take.
+			if calls != 3 {
+				t.Fatalf("took %d attempts, want 3", calls)
+			}
+		})
 	}
 }
 

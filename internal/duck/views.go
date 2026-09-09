@@ -526,6 +526,7 @@ var dimensionViews = []dimensionView{
 
 const (
 	dimensionKey      = "learner_id"
+	dimensionRunID    = "run_id"
 	dimensionEndpoint = "run_remote_endpoint"
 	dimensionRecency  = "fetched_at"
 	dimensionHideName = "hide_names"
@@ -583,7 +584,7 @@ func (vs viewSet) dimensionViewStmt(d dimensionView) viewStmt {
 // report-learner row rather than by the learner id, so one run may legitimately emit a learner
 // twice, and on fetch time and run id alone those two rows tie completely.
 func (d dimensionView) dedupe(inner string, order []string) string {
-	by := []string{dimensionRecency + " DESC", "run_id DESC"}
+	by := []string{sqlIdent(dimensionRecency) + " DESC", sqlIdent(dimensionRunID) + " DESC"}
 	for _, col := range order {
 		by = append(by, sqlIdent(col)+" ASC")
 	}
@@ -600,7 +601,7 @@ func (d dimensionView) dedupe(inner string, order []string) string {
 // standIn is the zero-member view: the full typed column list rather than a run_id-only shape, so
 // the documented joins can be run on a dataset before anything has been downloaded.
 func (d dimensionView) standIn() string {
-	cols := []string{"CAST(NULL AS BIGINT) AS run_id"}
+	cols := []string{fmt.Sprintf("CAST(NULL AS BIGINT) AS %s", sqlIdent(dimensionRunID))}
 	if d.hideNames {
 		cols = append(cols, fmt.Sprintf("CAST(NULL AS BOOLEAN) AS %s", sqlIdent(dimensionHideName)))
 	}
@@ -653,7 +654,7 @@ func (vs viewSet) dimensionEmptyMember(dl dataset.Download, d dimensionView) str
 // the run's hide_names, which every member carries whether it reads a CSV or stands in for one.
 func (vs viewSet) dimensionInjected(dl dataset.Download, d dimensionView) []string {
 	cols := []string{
-		fmt.Sprintf("CAST(%d AS BIGINT) AS run_id", dl.RunID),
+		fmt.Sprintf("CAST(%d AS BIGINT) AS %s", dl.RunID, sqlIdent(dimensionRunID)),
 		fmt.Sprintf("%s AS %s", sqlTimestamp(dl.FetchedAt), sqlIdent(dimensionRecency)),
 	}
 	if d.hideNames {
@@ -666,7 +667,7 @@ func (vs viewSet) dimensionInjected(dl dataset.Download, d dimensionView) []stri
 // injected bookkeeping, which is what closes the dedupe's ordering. Derived from the recorded
 // columns rather than from the fixed schema, so every name is bindable in the union.
 func dimensionOrderColumns(admitted []dataset.Download) []string {
-	seen := map[string]bool{dimensionKey: true, "run_id": true, dimensionRecency: true, dimensionHideName: true}
+	seen := map[string]bool{dimensionKey: true, dimensionRunID: true, dimensionRecency: true, dimensionHideName: true}
 	var cols []string
 	for _, dl := range admitted {
 		for name := range dl.Columns {
@@ -681,8 +682,8 @@ func dimensionOrderColumns(admitted []dataset.Download) []string {
 }
 
 // hideNamesLiteral reads the run's hide_names from the filter the download recorded. It is NULL
-// for any download whose filter is absent, which is every download recorded before the filter was
-// written and every one a manifest-less reindex recovered.
+// wherever no filter is on disk: a download made by a version that stored none, and any one a
+// manifest-less reindex recovered.
 func hideNamesLiteral(dl dataset.Download) string {
 	var filter struct {
 		HideNames *bool `json:"hide_names"`

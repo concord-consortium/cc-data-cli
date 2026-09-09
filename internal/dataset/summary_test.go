@@ -102,8 +102,8 @@ func warningsWithPrefix(warnings []string, prefix string) []string {
 	return out
 }
 
-// A lost provenance record now costs the run's filter and any dimension view it feeds as well as
-// its exact report type, and the warning is the only thing that says so.
+// A lost provenance record costs the run's filter and any dimension view it feeds as well as its
+// exact report type, and this warning is the only thing that says so.
 func TestShowWarnsWhatARecoveredDownloadLost(t *testing.T) {
 	d := newDataset(t)
 	rc := 1

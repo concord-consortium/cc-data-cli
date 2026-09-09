@@ -119,8 +119,8 @@ Tests: the request carries the bearer token (assert on the server side, since a 
 The fork replaces the unconditional `pollUntilReady` plus `streamReady` pair:
 
 ```go
-	if run.Execution == api.ExecutionSync {
-		if err := opts.Client.StreamAPIToFile(ctx, reportDownloadPath(opts.RunID, nil), tmpPath); err != nil {
+	if isSync {
+		if err := opts.Client.StreamReportCSV(ctx, opts.RunID, tmpPath); err != nil {
 			os.Remove(tmpPath)
 			return nil, api.AsCLIError(err)
 		}
@@ -129,6 +129,8 @@ The fork replaces the unconditional `pollUntilReady` plus `streamReady` pair:
 		...
 	}
 ```
+
+The route is the client's to build, not the fetcher's: `StreamReportCSV` wraps `StreamAPIToFile`, and both it and `ReportDownloadEnvelope` read the path from one `reportDownloadPath`, so the envelope and the streamed body cannot address different URLs.
 
 `--job` is refused on a sync run, because unlike the two flags below it produces a wrong artifact rather than a harmless no-op. A job is a separate resource on a separate route, `/api/v1/reports/:id/jobs/:job_id/download` (`server/lib/report_server_web/router.ex:70-71`, `internal/api/endpoints.go:80-84`), and Portal reports have none. If the fork simply passes `nil` for the job id, everything downstream still reads `opts.JobID`: the file is named `report_<run>_job_<job>.csv`, the manifest records type `report_job`, and `perDownloadViews` builds a `report_<run>_job_<job>` view over it (`internal/fetch/report.go:87-99`, `internal/duck/views.go:311-315`). The run's own CSV would be stored, and queryable, as a job result. So the sync branch refuses with `output.Usagef` naming the run as a Portal report, which is the "invalid required value" pattern every other `Usagef` in `cmd/` follows.
 
@@ -174,7 +176,7 @@ if run.ReportType == nil || *run.ReportType == "" {
 
 placed before the `ReportTypeFromSlug` fallback, so no Portal slug reaches the "unknown slug" warning.
 
-`Download.Filters` and `Download.FilterLabels` have existed since the manifest was written and are preserved across a reindex (`internal/dataset/reindex.go:245-250`), but nothing in the repository has ever assigned either. `FetchReport` now records both from the run it already fetched. This is what makes the `hide_names` column in the metadata view possible, and it gives two fields that a reader would reasonably assume were populated their first writer.
+`Download.Filters` and `Download.FilterLabels` have existed since the manifest was written and are preserved across a reindex (`internal/dataset/reindex.go:245-250`), but nothing in the repository has ever assigned either. `FetchReport` now records both from the run it already fetched, rendering the labels through `reportview.FilterLabels` rather than a second copy of the rules, so the manifest and the listing cannot disagree about what a filter says. This is what makes the `hide_names` column in the metadata view possible, and it gives two fields that a reader would reasonably assume were populated their first writer.
 
 Tests: a sync run with a null report type is typed `portal`; an async run with a null type still falls back to the slug map and still warns for an unknown slug; `portal` is allowed by `IsAllowedReportType`; a report download records the run's filter and labels. The second of those is the regression guard: it fails if the new branch is written without the execution check and swallows the Athena fallback.
 
@@ -218,9 +220,11 @@ Two details of that expression are not cosmetic.
 
 taken from the filter the "Type Portal runs, and record the filter" step now records. Without it, two metadata runs fetched under different roles put real names and numeric student ids in the same `student_name` column with nothing to distinguish them. The column is null for any download recorded before this story and for a reindex-recovered one, since neither has a filter on disk to derive it from; that is stated in the guidance entry rather than papered over, because `WHERE hide_names = false` would otherwise silently exclude every pre-existing run.
 
-Both views follow `reportUnionView/3`'s full three-way degradation, not just its last case: a file missing on disk becomes a typed-empty member with the warning naming the file, a present-but-corrupt CSV falls back to a union of every admitted member's typed-empty schema so the column shape survives, and only a union with no members at all becomes a bare stand-in.
+Both views follow `reportUnionView/3`'s full three-way degradation, not just its last case: a file missing on disk becomes a typed-empty member with the warning naming the file, a present-but-unbindable CSV falls back to a union of every admitted member's typed-empty schema so the column shape survives, and only a union with no members at all becomes a bare stand-in.
 
-The typed-empty member for these two views is **not** `csvEmptyMember/1`. That builder emits the recorded columns plus `run_id` and nothing else, and the Self-Review records what happens when every member is one of those: the wrapper's `EXCLUDE (fetched_at)` fails to bind, taking the fallback down with the primary. These views get their own builder carrying `fetched_at` (and `hide_names`) alongside the recorded columns.
+The middle case is reached only when `CREATE VIEW` itself fails. DuckDB binds a `read_csv` view lazily, so a CSV whose *content* no longer matches its recorded types creates fine and fails at query time, exactly as it already does for `reports`. The fallback is therefore insurance whose trigger a test cannot construct without inventing a corruption both paths treat alike, so the assertion is made on the statement instead: the fallback SQL is executed directly and asserted to install a zero-row view that still binds `learner_id` and `hide_names`. That is the property the naive stand-in fails.
+
+The typed-empty member for these two views is **not** `csvEmptyMember/1`. That builder emits the recorded columns plus `run_id` and nothing else, and the Self-Review records what happens when every member is one of those: the wrapper's `EXCLUDE (fetched_at)` fails to bind, taking the fallback down with the primary. These views get their own builder carrying `fetched_at` (and `hide_names`) alongside the recorded columns. It emits the fixed schema as well as the recorded columns, so the wrapper's `EXCLUDE` and `PARTITION BY` bind even for a download whose recorded columns are incomplete; the dedupe's closing order is derived from the recorded columns alone, which is the set present in both the primary and the fallback union.
 
 The zero-member case is different again, and is the common one: a dataset with no Portal downloads at all, which is every dataset until the first one lands and is also the manifest `StaticViewNames()` builds over (`internal/duck/views.go:439-450`). There is nothing to deduplicate, so the wrapper is not applied at all; wrapping the stand-in reproduces the same binder error from the opposite cause, and it would take the drift guard down with it. The stand-in is also not `reports`' bare `run_id`-only shape: these two schemas are fixed and known, which is the premise the dedicated views rest on, so the stand-in declares the full typed column list. Verified against the vendored DuckDB: with the fixed schema, `SELECT count(*) FROM student_id_mapping WHERE learner_id IS NOT NULL` and the documented join to `answers` both answer zero rows on a fresh dataset, while against a `run_id`-only stand-in the same query fails to bind `learner_id`. That is what makes the documented joins safe to copy out of the guidance before anything has been downloaded.
 
@@ -277,10 +281,13 @@ The wire captures follow the convention `filter_options_test.go` already establi
 
 **Files affected**:
 - `internal/guidance/src/core.md` — two entries in the Views section.
+- `docs/researcher-guide.md`: two rows in the views table, plus the report-kinds prose this story invalidates.
 
 **Estimated diff size**: ~25 lines
 
-`TestGuidanceDocumentsEveryStaticView` enumerates registered views from `duck.StaticViewNames()` and documented views from the catalog and compares both directions (`internal/guidance/guard_test.go:38-53`), so the "two dimension views" step fails the build until these exist. That order is deliberate: register, watch it fail, document.
+There are two guards, not one. `TestGuidanceDocumentsEveryStaticView` enumerates registered views from `duck.StaticViewNames()` and documented views from the catalog and compares both directions (`internal/guidance/guard_test.go:38-53`), and `TestResearcherGuideDocumentsEveryStaticView` does the same against the researcher guide's own table. Both fail on the "two dimension views" step until these exist. That order is deliberate: register, watch it fail, document. Because the build is red between the two, they land in one commit.
+
+The guide also carries prose this story makes false, which the guards do not catch: it says there are five kinds of report and that the Portal ones are "not currently downloadable through `cc-data`". Correcting that is not the workflow prose REPORT-95 owns; it is removing a statement that is now wrong. The same applies to the README's one-line description of `get report`, which named polling as the only path.
 
 Each entry is a name, a one-line purpose and the join key, plus the two things a caller cannot infer from the columns: that a `run_remote_endpoint` of NULL means a learner with no secure key rather than missing data, and that `hide_names` is NULL for any download recorded before this story. The workflow prose that teaches create-a-mapping-run-then-pull-against-it is REPORT-95's, and writing it here would leave two versions of it to keep in agreement.
 

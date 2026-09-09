@@ -588,8 +588,8 @@ func TestGetReportStillDerivesAnAsyncTypeFromTheSlug(t *testing.T) {
 	}
 }
 
-// Both fields have existed since the manifest was written and are carried across a reindex, but
-// nothing ever assigned either, so hide_names was not derivable from what is on disk.
+// The recorded filter is what the metadata view's hide_names column is derived from, so a
+// download that does not carry it leaves that column NULL for every one of its rows.
 func TestGetReportRecordsTheRunsFilter(t *testing.T) {
 	d := newTestDataset(t)
 	srv := newReportServer(t, &reportServer{
