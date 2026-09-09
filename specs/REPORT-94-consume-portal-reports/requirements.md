@@ -51,7 +51,7 @@ The bulk endpoints are already run-type agnostic. `EndpointSet.derive_endpoint_s
 
 ### The two dimension views
 
-- The query engine exposes `student_id_mapping` and `student_metadata` as named views, recognized by report slug through the download provenance the manifest already carries (`downloads` exposes `run_id`, `type`, `slug`, `report_type`, `complete`).
+- The query engine exposes `student_id_mapping` and `student_metadata` as named views, recognized by report slug through the download provenance the manifest already carries (`downloads` exposes `run_id`, `type`, `slug`, `report_type`, `hide_names`, `complete`).
 - `student_id_mapping` joins to `answers` and `history` on `run_remote_endpoint = remote_endpoint`, and `student_metadata` joins to `student_id_mapping` on `learner_id`. Both joins are stated in the guidance so a caller does not have to rediscover them, along with the view's contract: one row per `learner_id`, and a `run_remote_endpoint` that matches at most one learner or is NULL.
 - Both views are deduplicated by `learner_id`, latest fetch winning, because a dataset can hold several overlapping mapping runs and the alternative is a view that silently multiplies rows on every join. This is a new pattern: the existing dimension views do no dedupe, and the record-level merge keys on the identity tuple rather than on a learner.
 - The recency signal driving the dedupe is not part of the view's columns. A caller sees the same columns the CSV has, plus the `run_id` every union member already carries.
