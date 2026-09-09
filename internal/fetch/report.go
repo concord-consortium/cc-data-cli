@@ -14,6 +14,7 @@ import (
 	"github.com/concord-consortium/cc-data-cli/internal/api"
 	"github.com/concord-consortium/cc-data-cli/internal/dataset"
 	"github.com/concord-consortium/cc-data-cli/internal/output"
+	"github.com/concord-consortium/cc-data-cli/internal/reportview"
 	"github.com/concord-consortium/cc-data-cli/internal/store"
 )
 
@@ -102,18 +103,20 @@ func FetchReport(ctx context.Context, opts ReportOptions) (any, error) {
 		dlType = typeReportJob
 	}
 	entry := dataset.Download{
-		Type:        dlType,
-		RunID:       opts.RunID,
-		JobID:       opts.JobID,
-		Slug:        run.ReportSlug,
-		ReportType:  reportType,
-		Files:       []string{csvName},
-		RowCount:    &rowCount,
-		Columns:     columns,
-		ColumnOrder: columnOrder,
-		CSVDialect:  &dialect,
-		Complete:    true,
-		FetchedAt:   time.Now().UTC(),
+		Type:         dlType,
+		RunID:        opts.RunID,
+		JobID:        opts.JobID,
+		Slug:         run.ReportSlug,
+		ReportType:   reportType,
+		Filters:      run.ReportFilter,
+		FilterLabels: reportview.FilterLabels(*run),
+		Files:        []string{csvName},
+		RowCount:     &rowCount,
+		Columns:      columns,
+		ColumnOrder:  columnOrder,
+		CSVDialect:   &dialect,
+		Complete:     true,
+		FetchedAt:    time.Now().UTC(),
 	}
 	if err := opts.DS.UpsertDownload(entry); err != nil {
 		return nil, output.Internalf("recording download: %v", err)
@@ -151,6 +154,12 @@ func resolveReportType(run *api.ReportRun, progress io.Writer) string {
 			fmt.Fprintf(progress, "warning: report_type %q is unknown to this cc-data version; it will be excluded from the reports view. Consider upgrading.\n", *run.ReportType)
 		}
 		return *run.ReportType
+	}
+	// A Portal report declares no api_report_type on the wire by design. Deriving the type from
+	// the execution rather than from a slug map means a Portal report added to the server later
+	// is recognized without a cc-data release.
+	if run.Execution == api.ExecutionSync {
+		return dataset.ReportTypePortal
 	}
 	if t, ok := dataset.ReportTypeFromSlug(run.ReportSlug); ok {
 		return t

@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"runtime"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -67,6 +68,8 @@ type reportServer struct {
 	execution      string
 	notReadyStates []string // states returned before ready; "" means null
 	csv            string
+	reportFilter   string // the run's filter and its resolved labels, as the server emits them
+	filterValues   string
 	portalRefusal  string // a 422 error envelope the Portal download answers with instead
 	pollCount      int32
 	stateIndex     int32
@@ -101,8 +104,15 @@ func (s *reportServer) handleShow(w http.ResponseWriter) {
 	if s.execution == api.ExecutionSync {
 		rt, state = "null", "null"
 	}
-	fmt.Fprintf(w, `{"id":584,"report_slug":%q,"report_type":%s,"athena_query_state":%s,"execution":%q}`,
-		s.slug, rt, state, s.execution)
+	filter, values := s.reportFilter, s.filterValues
+	if filter == "" {
+		filter = "null"
+	}
+	if values == "" {
+		values = "{}"
+	}
+	fmt.Fprintf(w, `{"id":584,"report_slug":%q,"report_type":%s,"athena_query_state":%s,"execution":%q,"report_filter":%s,"report_filter_values":%s}`,
+		s.slug, rt, state, s.execution, filter, values)
 }
 
 func (s *reportServer) handleDownload(w http.ResponseWriter, r *http.Request) {
@@ -525,4 +535,111 @@ func TestGetReportPortalFilterlessRunSurfacesItsRefusal(t *testing.T) {
 	if _, err := os.Stat(d.Path("report_584.csv")); !os.IsNotExist(err) {
 		t.Fatalf("a refused download left a CSV: %v", err)
 	}
+}
+
+func TestGetReportTypesAPortalRunFromItsExecution(t *testing.T) {
+	d := newTestDataset(t)
+	srv := newPortalServer(t)
+	defer srv.Close()
+
+	result, stderr, cliErr := runFetch(t, d, srv, fetch1{})
+	if cliErr != nil {
+		t.Fatal(cliErr)
+	}
+	if m := result.(map[string]any); m["report_type"] != dataset.ReportTypePortal {
+		t.Fatalf("report_type = %v, want %q", m["report_type"], dataset.ReportTypePortal)
+	}
+	man, _ := d.ReadManifest()
+	if man.Downloads[0].ReportType != dataset.ReportTypePortal {
+		t.Fatalf("manifest report_type = %q", man.Downloads[0].ReportType)
+	}
+	// Recorded verbatim, the slug would have warned here and then vanished from the reports view.
+	if stderr != "" {
+		t.Fatalf("a recognized Portal report warned: %q", stderr)
+	}
+}
+
+// The regression guard for the execution check: without it the new branch swallows the slug
+// fallback and every async run with a null report type is typed portal.
+func TestGetReportStillDerivesAnAsyncTypeFromTheSlug(t *testing.T) {
+	for _, tc := range []struct {
+		name, slug, want string
+		warns            bool
+	}{
+		{"a known slug", "student-actions-with-metadata", dataset.ReportTypeLog, false},
+		{"an unknown slug", "student-something-new", "student-something-new", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := newTestDataset(t)
+			srv := newReportServer(t, &reportServer{slug: tc.slug, csv: "student_id,x\n1,a\n"})
+			defer srv.Close()
+
+			result, stderr, cliErr := runFetch(t, d, srv, fetch1{})
+			if cliErr != nil {
+				t.Fatal(cliErr)
+			}
+			if m := result.(map[string]any); m["report_type"] != tc.want {
+				t.Fatalf("report_type = %v, want %q", m["report_type"], tc.want)
+			}
+			if warned := strings.Contains(stderr, "unknown to this cc-data version"); warned != tc.warns {
+				t.Fatalf("warned = %v, want %v: %q", warned, tc.warns, stderr)
+			}
+		})
+	}
+}
+
+// Both fields have existed since the manifest was written and are carried across a reindex, but
+// nothing ever assigned either, so hide_names was not derivable from what is on disk.
+func TestGetReportRecordsTheRunsFilter(t *testing.T) {
+	d := newTestDataset(t)
+	srv := newReportServer(t, &reportServer{
+		slug:         "student-metadata",
+		execution:    api.ExecutionSync,
+		csv:          "learner_id,student_name\n901,Ada\n",
+		reportFilter: `{"cohort":[1],"hide_names":true}`,
+		filterValues: `{"cohort":{"1":"Cohort One"}}`,
+	})
+	defer srv.Close()
+
+	if _, _, cliErr := runFetch(t, d, srv, fetch1{}); cliErr != nil {
+		t.Fatal(cliErr)
+	}
+	dl := firstDownload(t, d)
+	var filter map[string]any
+	if err := json.Unmarshal(dl.Filters, &filter); err != nil {
+		t.Fatalf("the run's filter was not recorded: %v", err)
+	}
+	if filter["hide_names"] != true {
+		t.Fatalf("filter = %v, want the run's own hide_names", filter)
+	}
+	// Rendered through the shared helper rather than a second copy of the label rules.
+	if want := []string{"cohort: Cohort One"}; !slices.Equal(dl.FilterLabels, want) {
+		t.Fatalf("filter_labels = %v, want %v", dl.FilterLabels, want)
+	}
+}
+
+func TestGetReportRecordsNoFilterForAFilterlessRun(t *testing.T) {
+	d := newTestDataset(t)
+	srv := newReportServer(t, &reportServer{slug: "student-answers", csv: "student_id,x\n1,a\n"})
+	defer srv.Close()
+
+	if _, _, cliErr := runFetch(t, d, srv, fetch1{}); cliErr != nil {
+		t.Fatal(cliErr)
+	}
+	dl := firstDownload(t, d)
+	if len(dl.FilterLabels) != 0 {
+		t.Fatalf("a filter-less run recorded labels: %v", dl.FilterLabels)
+	}
+}
+
+func firstDownload(t *testing.T, d *dataset.Dataset) dataset.Download {
+	t.Helper()
+	man, err := d.ReadManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(man.Downloads) != 1 {
+		t.Fatalf("expected 1 download, got %d", len(man.Downloads))
+	}
+	return man.Downloads[0]
 }

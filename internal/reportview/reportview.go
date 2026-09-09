@@ -1,5 +1,7 @@
-// Package reportview holds the CLI-side JSON shaping for report listings, shared
-// by the CLI commands and the MCP tools so their payloads never drift.
+// Package reportview holds the JSON shaping for report listings, shared by the CLI commands and
+// the MCP tools so their payloads never drift. FilterLabels has a third caller: it renders the
+// labels a report download records in its dataset manifest, where they are persisted rather than
+// printed.
 package reportview
 
 import (
