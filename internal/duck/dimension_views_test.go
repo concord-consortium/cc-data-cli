@@ -424,7 +424,12 @@ func TestDimensionViewFallbackKeepsTheColumnShape(t *testing.T) {
 	}
 	defer db.Close()
 
-	for _, stmt := range vs.dimensionViewStmts() {
+	stmts := vs.dimensionViewStmts()
+	// The loop below is the whole test, so an empty statement set would assert nothing at all.
+	if len(stmts) != len(dimensionViews) {
+		t.Fatalf("got %d dimension views, want %d", len(stmts), len(dimensionViews))
+	}
+	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt.fallback); err != nil {
 			t.Fatalf("the fallback for %s is not valid SQL: %v", stmt.name, err)
 		}
