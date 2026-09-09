@@ -388,15 +388,34 @@ func TestReportWriteErrorForwardsACodedError(t *testing.T) {
 }
 
 // A POST that fails in transport is never retried, so the run may exist and the user has to look.
-func TestReportWriteErrorPointsATransportFailureAtReportsList(t *testing.T) {
-	err := reportWriteError(errors.New("dial tcp: connection reset"))
+// A retry budget that ran out has the same problem, even though it wraps the last coded error it
+// saw, which is why the advice keys off the exit class rather than the Go error type.
+func TestReportWriteErrorPointsAnUnansweredWriteAtReportsList(t *testing.T) {
+	unanswered := []error{
+		errors.New("dial tcp: connection reset"),
+		&api.TransientError{Attempts: 3, Last: &api.APIError{Status: 503, Code: api.CodeServerError}},
+	}
+
+	for _, err := range unanswered {
+		var cliErr *output.CLIError
+		if !errors.As(reportWriteError(err), &cliErr) {
+			t.Fatalf("err = %T", err)
+		}
+		if !strings.Contains(cliErr.Action, "cc-data reports list") {
+			t.Fatalf("%v: action = %q", err, cliErr.Action)
+		}
+	}
+}
+
+func TestReportWriteErrorLeavesAnAuthFailureAlone(t *testing.T) {
+	err := reportWriteError(&api.APIError{Status: 401, Code: api.CodeNotAuthed, Message: "You must supply a valid API token."})
 
 	var cliErr *output.CLIError
 	if !errors.As(err, &cliErr) {
 		t.Fatalf("err = %T", err)
 	}
-	if !strings.Contains(cliErr.Action, "cc-data reports list") {
-		t.Fatalf("action = %q", cliErr.Action)
+	if !strings.Contains(cliErr.Action, "cc-data login") {
+		t.Fatalf("action = %q, want the login action a rejected token already has", cliErr.Action)
 	}
 }
 

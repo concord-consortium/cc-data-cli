@@ -3,7 +3,6 @@ package cmd
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -162,12 +161,12 @@ func (f reportFilterFlags) raw() (json.RawMessage, error) {
 	return json.RawMessage(text), nil
 }
 
-// A POST that fails in transport may still have reached the server, and the client refuses to
-// retry one for that reason, so the run may exist. Looking is the right advice; retrying is not.
+// A coded refusal is the server's answer, so nothing was created. Anything else may still have
+// reached it, and the client refuses to retry a non-idempotent request for exactly that reason, so
+// looking is the right advice and retrying is not.
 func reportWriteError(err error) error {
 	cliErr := api.AsCLIError(err)
-	var coded *api.APIError
-	if errors.As(err, &coded) {
+	if cliErr.ExitCode == output.ExitContract || cliErr.ExitCode == output.ExitNotAuth {
 		return cliErr
 	}
 	cliErr.Action = "The run may still have been created; check with: cc-data reports list"
