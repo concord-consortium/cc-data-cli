@@ -91,3 +91,31 @@ func AsCLIError(err error) *output.CLIError {
 	}
 	return &output.CLIError{ExitCode: output.ExitInternal, Code: "INTERNAL", Message: err.Error()}
 }
+
+// RunMayExistAction is what a caller must do when a write the client will not retry failed without
+// the server answering.
+const RunMayExistAction = "The run may still have been created; check with: cc-data reports list"
+
+// AsWriteCLIError is AsCLIError for a request the client will not retry. Client.do returns a
+// transport failure on a non-idempotent method immediately, precisely because the request may have
+// reached the server, so the error has to say that rather than invite a retry.
+func AsWriteCLIError(err error, action string) *output.CLIError {
+	cliErr := AsCLIError(err)
+	if answered(err) {
+		return cliErr
+	}
+	cliErr.Action = action
+	return cliErr
+}
+
+// Whether the server itself answered, which is what proves the write did not happen. A 4xx is its
+// answer; a 5xx can come from a proxy in front of it, and a retry budget that ran out says nothing
+// about what the attempts before it did.
+func answered(err error) bool {
+	var transient *TransientError
+	if errors.As(err, &transient) {
+		return false
+	}
+	var apiErr *APIError
+	return errors.As(err, &apiErr) && apiErr.Status >= 400 && apiErr.Status < 500
+}

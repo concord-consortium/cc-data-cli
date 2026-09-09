@@ -129,11 +129,11 @@ func TestMCPToolSurface(t *testing.T) {
 			t.Fatalf("%s should be read-only", n)
 		}
 	}
-	// The write tools carry no read-only hint, which a client uses to decide what it may call
-	// without asking.
+	// The write tools state no hints, so a client applies the MCP defaults: not read-only, and
+	// destructive unless told otherwise. Marking one read-only would let a client call it freely.
 	for _, n := range []string{"reports_create", "reports_duplicate"} {
-		if names[n].Annotations != nil && names[n].Annotations.ReadOnlyHint {
-			t.Fatalf("%s creates a run and must not be marked read-only", n)
+		if names[n].Annotations != nil {
+			t.Fatalf("%s creates a run and must carry no hint: %+v", n, names[n].Annotations)
 		}
 	}
 	// Destructive hint on delete/purge.
@@ -275,6 +275,93 @@ func TestMCPFilterOptionsSendsTheFilterToTheServer(t *testing.T) {
 	}
 	if options, _ := out["options"].([]any); len(options) != 1 {
 		t.Errorf("options = %v", out["options"])
+	}
+}
+
+func TestMCPReportsCreateSendsTheSlugAndFilter(t *testing.T) {
+	setupEnv(t)
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/reports" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprint(w, `{"id":90070,"report_slug":"student-answers","athena_query_state":null}`)
+	}))
+	defer srv.Close()
+	if err := (creds.Store{}).Save(config.MustPortal("learn.concord.org"), "test-token", srv.URL); err != nil {
+		t.Fatal(err)
+	}
+
+	res, out := callJSON(t, connect(t), "reports_create", map[string]any{
+		"portal":        "learn.concord.org",
+		"report_slug":   "student-answers",
+		"report_filter": map[string]any{"cohort": []any{1}},
+	})
+	if res.IsError {
+		t.Fatalf("call failed: %s", errorText(res))
+	}
+	if body["report_slug"] != "student-answers" {
+		t.Errorf("report_slug did not reach the body: %v", body["report_slug"])
+	}
+	filter, ok := body["report_filter"].(map[string]any)
+	if !ok || len(filter["cohort"].([]any)) != 1 {
+		t.Errorf("report_filter did not reach the body: %v", body["report_filter"])
+	}
+	run, _ := out["run"].(map[string]any)
+	if run == nil || run["run_id"] != float64(90070) {
+		t.Errorf("run = %v", out["run"])
+	}
+}
+
+func TestMCPReportsDuplicateSendsForceAndSurfacesTheGuard(t *testing.T) {
+	setupEnv(t)
+	var body map[string]any
+	guard := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/reports/90073/duplicate" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		if guard {
+			w.WriteHeader(http.StatusConflict)
+			fmt.Fprint(w, `{"error":"PORTAL_DUPLICATE_UNNECESSARY","message":"Re-read run 90073 for current data, or pass force: true.","run_id":90073}`)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprint(w, `{"id":90074,"report_slug":"student-answers","athena_query_state":null}`)
+	}))
+	defer srv.Close()
+	if err := (creds.Store{}).Save(config.MustPortal("learn.concord.org"), "test-token", srv.URL); err != nil {
+		t.Fatal(err)
+	}
+
+	cs := connect(t)
+	res, out := callJSON(t, cs, "reports_duplicate", map[string]any{
+		"portal": "learn.concord.org", "run_id": 90073, "force": true,
+	})
+	if res.IsError {
+		t.Fatalf("call failed: %s", errorText(res))
+	}
+	if body["force"] != true {
+		t.Errorf("force did not reach the body: %v", body["force"])
+	}
+	if run, _ := out["run"].(map[string]any); run == nil || run["run_id"] != float64(90074) {
+		t.Errorf("run = %v", out["run"])
+	}
+
+	// The refusal names the run to re-read, and its run_id reaches the result without this tool
+	// naming the key, which is why the server pins that body.
+	guard = true
+	res, _ = callJSON(t, cs, "reports_duplicate", map[string]any{"portal": "learn.concord.org", "run_id": 90073})
+	if !res.IsError {
+		t.Fatal("a Portal duplicate without force must be an error")
+	}
+	for _, want := range []string{"PORTAL_DUPLICATE_UNNECESSARY", "Re-read run 90073", "90073"} {
+		if !strings.Contains(errorText(res), want) {
+			t.Errorf("guard text missing %q: %s", want, errorText(res))
+		}
 	}
 }
 

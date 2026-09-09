@@ -333,8 +333,8 @@ func TestFilterOptionsFlagsRejectAMalformedFilter(t *testing.T) {
 func TestReportsCreateRequiresASlug(t *testing.T) {
 	stdout, stderr, code := runArgs(t, "reports", "create", "--portal", "prod")
 
-	if code == output.ExitSuccess {
-		t.Fatal("a missing --report-slug should not succeed")
+	if code != output.ExitUsage {
+		t.Fatalf("exit = %d, want %d", code, output.ExitUsage)
 	}
 	if !strings.Contains(stdout+stderr, "--report-slug is required") {
 		t.Fatalf("stdout = %q stderr = %q", stdout, stderr)
@@ -363,61 +363,131 @@ func TestReportsDuplicateRequiresAnIntegerRunID(t *testing.T) {
 	}
 }
 
-// The guard's message and the run it names are what tell a caller to re-read rather than retry.
-func TestReportWriteErrorForwardsACodedError(t *testing.T) {
-	err := reportWriteError(&api.APIError{
-		Status:  409,
-		Code:    api.CodePortalDuplicateUnnecessary,
-		Message: "Run 90073 is a Portal report, computed live on every request. Re-read run 90073 for current data, or pass force: true to duplicate anyway.",
-		Extra:   map[string]any{"run_id": float64(90073)},
-	})
+// The command's own call, driven against a fake server. Reached only through RunE, none of it is
+// exercisable without a stored credential.
+func TestReportsCreateSendsTheSlugAndFilterAndRendersTheRun(t *testing.T) {
+	var out, errb bytes.Buffer
+	restore := output.SetStreams(&out, &errb)
+	defer restore()
+
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/reports" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprint(w, `{"id":90070,"report_slug":"student-answers","athena_query_state":null}`)
+	}))
+	defer srv.Close()
+
+	f := reportCreateFlags{slug: "student-answers", filter: reportFilterFlags{inline: `{"cohort":[1]}`}, asJSON: true}
+	if err := f.run(context.Background(), api.New(srv.URL, "token")); err != nil {
+		t.Fatal(err)
+	}
+
+	if body["report_slug"] != "student-answers" {
+		t.Errorf("--report-slug did not reach the body: %v", body["report_slug"])
+	}
+	if filter, ok := body["report_filter"].(map[string]any); !ok || fmt.Sprint(filter["cohort"]) != "[1]" {
+		t.Errorf("--report-filter did not reach the body: %v", body["report_filter"])
+	}
+	if !strings.Contains(out.String(), `"run_id":90070`) {
+		t.Errorf("--json did not render the created run: %s", out.String())
+	}
+}
+
+func TestReportsCreateRefusesAMalformedFilterBeforeCallingTheServer(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("a malformed filter must not reach the server")
+	}))
+	defer srv.Close()
+
+	f := reportCreateFlags{slug: "student-answers", filter: reportFilterFlags{inline: "{"}}
+	if err := f.run(context.Background(), api.New(srv.URL, "token")); err == nil {
+		t.Fatal("a malformed --report-filter must be an error")
+	}
+}
+
+func TestReportsDuplicateSendsForceOnlyWhenAsked(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/reports/90070/duplicate" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprint(w, `{"id":90072,"report_slug":"student-answers","athena_query_state":null}`)
+	}))
+	defer srv.Close()
+
+	client := api.New(srv.URL, "token")
+	if err := (reportDuplicateFlags{}).run(context.Background(), client, 90070); err != nil {
+		t.Fatal(err)
+	}
+	if _, sent := body["force"]; sent {
+		t.Fatalf("force = %v was sent without --force", body["force"])
+	}
+
+	if err := (reportDuplicateFlags{force: true}).run(context.Background(), client, 90070); err != nil {
+		t.Fatal(err)
+	}
+	if body["force"] != true {
+		t.Fatalf("--force did not reach the body: %v", body["force"])
+	}
+}
+
+// The guard's message and the run it names are what tell a caller to re-read rather than retry, so
+// both reach the envelope the CLI prints.
+func TestReportsDuplicateSurfacesThePortalGuard(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		fmt.Fprint(w, portalDuplicateWire)
+	}))
+	defer srv.Close()
+
+	err := (reportDuplicateFlags{}).run(context.Background(), api.New(srv.URL, "token"), 90073)
 
 	var cliErr *output.CLIError
 	if !errors.As(err, &cliErr) {
 		t.Fatalf("err = %T", err)
 	}
-	if cliErr.Code != api.CodePortalDuplicateUnnecessary || !strings.Contains(cliErr.Message, "Re-read run 90073") {
+	if cliErr.Code != api.CodePortalDuplicateUnnecessary || cliErr.ExitCode != output.ExitContract {
 		t.Fatalf("cli error = %+v", cliErr)
 	}
+	envelope := cliErr.Envelope()
+	if fmt.Sprint(envelope["run_id"]) != "90073" {
+		t.Fatalf("envelope = %v", envelope)
+	}
+	if !strings.Contains(fmt.Sprint(envelope["message"]), "Re-read run 90073") {
+		t.Fatalf("message = %v", envelope["message"])
+	}
 	if cliErr.Action != "" {
-		t.Fatalf("a coded refusal must not claim the run may have been created: %q", cliErr.Action)
-	}
-	if fmt.Sprint(cliErr.Envelope()["run_id"]) != "90073" {
-		t.Fatalf("envelope = %v", cliErr.Envelope())
+		t.Fatalf("a refusal the server sent must not claim the run may exist: %q", cliErr.Action)
 	}
 }
 
-// A POST that fails in transport is never retried, so the run may exist and the user has to look.
-// A retry budget that ran out has the same problem, even though it wraps the last coded error it
-// saw, which is why the advice keys off the exit class rather than the Go error type.
-func TestReportWriteErrorPointsAnUnansweredWriteAtReportsList(t *testing.T) {
-	unanswered := []error{
-		errors.New("dial tcp: connection reset"),
-		&api.TransientError{Attempts: 3, Last: &api.APIError{Status: 503, Code: api.CodeServerError}},
-	}
+// A write the server never answered may have created the run, and the client will not retry it.
+func TestReportsCreateSaysAnUnansweredWriteMayHaveCreatedTheRun(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	srv.Close()
 
-	for _, err := range unanswered {
-		var cliErr *output.CLIError
-		if !errors.As(reportWriteError(err), &cliErr) {
-			t.Fatalf("err = %T", err)
-		}
-		if !strings.Contains(cliErr.Action, "cc-data reports list") {
-			t.Fatalf("%v: action = %q", err, cliErr.Action)
-		}
-	}
-}
-
-func TestReportWriteErrorLeavesAnAuthFailureAlone(t *testing.T) {
-	err := reportWriteError(&api.APIError{Status: 401, Code: api.CodeNotAuthed, Message: "You must supply a valid API token."})
+	f := reportCreateFlags{slug: "student-answers"}
+	err := f.run(context.Background(), api.New(srv.URL, "token"))
 
 	var cliErr *output.CLIError
 	if !errors.As(err, &cliErr) {
-		t.Fatalf("err = %T", err)
+		t.Fatalf("err = %T (%v)", err, err)
 	}
-	if !strings.Contains(cliErr.Action, "cc-data login") {
-		t.Fatalf("action = %q, want the login action a rejected token already has", cliErr.Action)
+	if !strings.Contains(cliErr.Action, "cc-data reports list") {
+		t.Fatalf("action = %q", cliErr.Action)
 	}
 }
+
+// A stand-in for the guard's body, not a capture: the wording is pinned once, where the client
+// decodes it, and what this asserts is that the code, the message and the run_id come out the far
+// side of the command unchanged.
+const portalDuplicateWire = `{"error":"PORTAL_DUPLICATE_UNNECESSARY","message":"Re-read run 90073 for current data, or pass force: true.","run_id":90073}`
 
 func TestRenderRunEmitsTheRunPayload(t *testing.T) {
 	var out, errb bytes.Buffer

@@ -17,8 +17,8 @@ func (c *Client) ListJobs(ctx context.Context, runID int) ([]Job, error) {
 }
 
 // CreateReportReq is the body of POST /api/v1/reports. ReportFilter is passed through as the
-// server emitted it on a run, so the client never has to decode a filter, and report_filter_values
-// is not sent at all: the server derives the labels and refuses to accept them.
+// server emitted it on a run, so the client never has to decode a filter. report_filter_values is
+// not sent: the server derives the labels and ignores any it is handed.
 type CreateReportReq struct {
 	ReportSlug   string
 	ReportFilter json.RawMessage

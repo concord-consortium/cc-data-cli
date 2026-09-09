@@ -100,7 +100,7 @@ func registerTools(s *mcp.Server, opts Options) {
 			}
 			run, err := client.CreateReport(ctx, api.CreateReportReq{ReportSlug: in.ReportSlug, ReportFilter: filter})
 			if err != nil {
-				return nil, reportview.RunPayload{}, api.AsCLIError(err)
+				return nil, reportview.RunPayload{}, api.AsWriteCLIError(err, api.RunMayExistAction)
 			}
 			return nil, reportview.RunPayload{Run: reportview.ToRunJSON(run)}, nil
 		})
@@ -113,7 +113,7 @@ func registerTools(s *mcp.Server, opts Options) {
 			}
 			run, err := client.DuplicateReport(ctx, in.RunID, in.Force)
 			if err != nil {
-				return nil, reportview.RunPayload{}, api.AsCLIError(err)
+				return nil, reportview.RunPayload{}, api.AsWriteCLIError(err, api.RunMayExistAction)
 			}
 			return nil, reportview.RunPayload{Run: reportview.ToRunJSON(run)}, nil
 		})
