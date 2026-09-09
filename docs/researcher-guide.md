@@ -17,12 +17,11 @@ use it: the most common way to work with `cc-data` is to talk to Claude Code in
 ordinary language and let it pull and query the data for you, with SQL there
 whenever you want to run it yourself.
 
-> **`cc-data` downloads reports; it doesn't create them (yet).** You generate
-> report runs in the report server's web interface, and `cc-data` pulls the results
-> of runs that already exist. Kicking off a new report run from the command line or
-> from Claude is **not supported today**; it's planned for a future release. For
-> now: create the run in the report server, then ask `cc-data` (or Claude) to
-> download it.
+> **You can create report runs here as well as download them.** `cc-data reports
+> create` turns a filter into a run without the web form, and `cc-data reports
+> filter-options` lists the values you may filter on, so Claude can assemble a
+> filter and make the run for you. The report server's web interface still works
+> the same way if you prefer it; either way, `cc-data` downloads the result.
 
 ---
 
@@ -336,17 +335,25 @@ When you (or Claude) query a dataset, the data is exposed as a set of SQL
 | `attachment_files` | One row per downloaded file (audio, saved docs) with its type and local path. |
 | `attachment_states` | The saved CODAP/SageModeler state the current answer points at. |
 | `attachment_content` | The text/JSON content of every saved CODAP/SageModeler snapshot, queryable and diffable. |
+| `student_id_mapping` | One row per learner from Student ID Mapping runs, with the ids that join them to their answers and history. |
+| `student_metadata` | One row per learner from Student Metadata runs: name, username, class, school, teachers, permission forms. |
 | `run_membership`, `downloads` | Provenance, which run's fetch covered which records, and what each download was. |
 
 ### Report types
 
 You generate report runs in the report server, and `cc-data` downloads whichever
-runs you've created. There are **five kinds of report** (across three
-`report_type`s: `answers`, `usage`, and `log`), all fetchable with `get report`
-and all queryable through the same `reports` view. `cc-data` records each run's
-type (shown by `dataset show`) so you can tell them apart.
+runs you've created. Every report the API exposes is fetchable with `get report`
+and queryable through the same `reports` view. `cc-data` records each run's type
+(shown by `dataset show`) so you can tell them apart.
 
-**Student data, one row per student:**
+Reports come in two flavors. **Athena reports** (`execution` `async`) are
+computed in the background from the log archive, so a run has a query state and
+its result never changes once it succeeds. **Portal reports** (`execution`
+`sync`, `report_type` `portal`) are computed from the Portal database every time
+you ask for them, so `reports list` shows their state as `live` and re-pulling
+one with `get report --refresh` is how you get current data.
+
+**Athena student data, one row per student:**
 
 - **Student Answers** (slug `student-answers`, type `answers`): the most detailed
   student report: student, class, teacher, and school identity plus each student's
@@ -357,7 +364,7 @@ type (shown by `dataset show`) so you can tell them apart.
   (such as the total number of questions and answers), but **without** the
   individual answer text. Good for participation and completion at a glance.
 
-**Action logs, one row per logged event (a clickstream):**
+**Athena action logs, one row per logged event (a clickstream):**
 
 - **Student Actions** (slug `student-actions`, type `log`): the low-level log
   event stream for learners: focus, scroll, page changes, model- and tool-level
@@ -374,13 +381,27 @@ type (shown by `dataset show`) so you can tell them apart.
 The three `log` reports share the same clickstream columns; `student-answers` and
 `student-assignment-usage` share the same per-student, per-resource shape.
 
-**Other reports (not pullable by `cc-data`).** The report server also offers
-several **portal reports**, aggregate metrics computed directly from the Portal
-rather than from Athena: *Summary Metrics by Assignment*, *Detailed Metrics by
-Assignment*, *Teacher Status*, *Detailed Metrics by School*, and *Summary Metrics
-by Subject Area*. These are served in the report server's web interface and are
-**not currently downloadable through `cc-data`**, which pulls only the Athena
-report types listed above.
+**Portal reports, computed live.** Two of them name a set of learners, and are
+what you use to pull those learners' answers, history and attachments without
+authoring an Athena report first:
+
+- **Student ID Mapping** (slug `student-id-mapping`): one row per learner with
+  the portal ids and the `run_remote_endpoint` that joins them to stored
+  records, and no names. A run of this report is a valid run id for `get
+  answers`, `get history` and `get attachments`. It also becomes the
+  `student_id_mapping` view.
+- **Student Metadata** (slug `student-metadata`): one row per learner with the
+  human-readable context (name, username, class, school, teachers, permission
+  forms), joining 1:1 to Student ID Mapping on `learner_id`. Names are hidden
+  unless you are an admin who cleared the hide-names option. It becomes the
+  `student_metadata` view.
+
+The rest are aggregate metrics: *Summary Metrics by Assignment*, *Detailed
+Metrics by Assignment*, *Teacher Status*, *Detailed Metrics by School*, and
+*Summary Metrics by Subject Area*. They download like any other report, but the
+two metrics-by-school and by-subject-area reports do not describe individual
+learners, so a run of either cannot drive `get answers`, `get history` or `get
+attachments` and says so if you try.
 
 ---
 

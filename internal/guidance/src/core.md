@@ -83,6 +83,23 @@ like `wildfire_2026.answers`):
   `state`), not just the current-answer one, so you can diff every saved snapshot
   of a doc across a session's history. Binary attachments (audio, images) are
   excluded here (not UTF-8 text) but remain downloadable via `attachment_files`.
+- `student_id_mapping` — one row per `learner_id` from Student ID Mapping runs,
+  deduplicated across runs with the latest fetch winning. Join to `answers` and
+  `history` on `run_remote_endpoint = remote_endpoint`. A NULL
+  `run_remote_endpoint` is a learner with no secure key, not missing data: every
+  such learner carries the same endpoint string, so the join key is withheld
+  rather than attributing one learner's answers to all of them. To check whether
+  one run repeated a learner, compare `SELECT count(*) FROM report_<run_id>`
+  with `SELECT count(*) FROM student_id_mapping WHERE run_id = <run_id>`.
+- `student_metadata` — one row per `learner_id` from Student Metadata runs, same
+  dedupe and the same `run_remote_endpoint` rule, carrying the names and roster
+  labels the mapping view deliberately has none of. Join to
+  `student_id_mapping` on `learner_id`. `hide_names` is the run's own setting:
+  where it is true, `student_name` holds the student id and `username` a hash,
+  so a dataset holding runs fetched under different roles is filterable rather
+  than silently mixed. It is NULL for any download whose filter was not
+  recorded, which includes every download made before cc-data recorded filters
+  and any recovered by a reindex with no manifest.
 - `downloads` — a manifest dimension table.
 - Per-run views: `report_<run>`, `answers_<run>`, `history_<run>`, and
   `report_<run>_job_<job>` for a run that has post-processing jobs.
