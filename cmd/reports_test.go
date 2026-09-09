@@ -303,6 +303,31 @@ func TestReportFilterFlagsRejectMalformedJSONLocally(t *testing.T) {
 	}
 }
 
+// `--report-filter "$FILTER"` with an empty variable would otherwise create an unfiltered run,
+// which for a Portal report a project-scoped caller can be given over their whole project scope.
+func TestReportFilterFlagsRejectAnExplicitlyEmptyValue(t *testing.T) {
+	if _, err := (reportFilterFlags{inlineSet: true}).raw(); err == nil {
+		t.Fatal("an explicitly empty --report-filter must be a usage error")
+	}
+	if _, err := (reportFilterFlags{inlineSet: true, inline: "   "}).raw(); err == nil {
+		t.Fatal("a whitespace-only --report-filter must be a usage error")
+	}
+	if _, err := (reportFilterFlags{fileSet: true}).raw(); err == nil {
+		t.Fatal("an explicitly empty --report-filter-file must be a usage error")
+	}
+}
+
+func TestReportsCreateRejectsAnEmptyFilterFlag(t *testing.T) {
+	stdout, stderr, code := runArgs(t, "reports", "create", "--portal", "prod", "--report-slug", "student-answers", "--report-filter", "")
+
+	if code != output.ExitUsage {
+		t.Fatalf("exit = %d, want %d", code, output.ExitUsage)
+	}
+	if !strings.Contains(stdout+stderr, "--report-filter is empty") {
+		t.Fatalf("stdout = %q stderr = %q", stdout, stderr)
+	}
+}
+
 func TestReportFilterFlagsAreAbsentWhenUnset(t *testing.T) {
 	raw, err := reportFilterFlags{}.raw()
 	if err != nil {
@@ -471,15 +496,25 @@ func TestReportsCreateSaysAnUnansweredWriteMayHaveCreatedTheRun(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	srv.Close()
 
-	f := reportCreateFlags{slug: "student-answers"}
+	// the advice has to name the portal the write went to: `reports list` without one reads the
+	// configured default, where the run would look absent and invite the retry this prevents
+	f := reportCreateFlags{slug: "student-answers", portal: "staging"}
 	err := f.run(context.Background(), api.New(srv.URL, "token"))
 
 	var cliErr *output.CLIError
 	if !errors.As(err, &cliErr) {
 		t.Fatalf("err = %T (%v)", err, err)
 	}
-	if !strings.Contains(cliErr.Action, "cc-data reports list") {
+	if !strings.Contains(cliErr.Action, "cc-data reports list --portal staging") {
 		t.Fatalf("action = %q", cliErr.Action)
+	}
+
+	dupErr := (reportDuplicateFlags{portal: "staging"}).run(context.Background(), api.New(srv.URL, "token"), 1)
+	if !errors.As(dupErr, &cliErr) {
+		t.Fatalf("err = %T (%v)", dupErr, dupErr)
+	}
+	if !strings.Contains(cliErr.Action, "cc-data reports list --portal staging") {
+		t.Fatalf("duplicate action = %q", cliErr.Action)
 	}
 }
 

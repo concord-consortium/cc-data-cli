@@ -93,8 +93,15 @@ func AsCLIError(err error) *output.CLIError {
 }
 
 // RunMayExistAction is what a caller must do when a write the client will not retry failed without
-// the server answering.
-const RunMayExistAction = "The run may still have been created; check with: cc-data reports list"
+// the server answering. It names the portal the write was attempted on, because `reports list`
+// without one reads the configured default, where the run would appear absent and invite the
+// retry this advice exists to prevent.
+func RunMayExistAction(portal string) string {
+	if portal == "" {
+		return "The run may still have been created; check with: cc-data reports list"
+	}
+	return fmt.Sprintf("The run may still have been created; check with: cc-data reports list --portal %s", portal)
+}
 
 // AsWriteCLIError is AsCLIError for a request the client will not retry. Client.do returns a
 // transport failure on a non-idempotent method immediately, precisely because the request may have

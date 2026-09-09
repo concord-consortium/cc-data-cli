@@ -113,6 +113,15 @@ func newReportsJobsCmd() *cobra.Command {
 type reportFilterFlags struct {
 	inline string
 	file   string
+	// Whether each flag was named, which is the only way to tell `--report-filter ""` from an
+	// omitted flag. A caller who passed an empty shell variable believes they filtered.
+	inlineSet bool
+	fileSet   bool
+}
+
+func (f *reportFilterFlags) bind(cmd *cobra.Command) {
+	f.inlineSet = cmd.Flags().Changed("report-filter")
+	f.fileSet = cmd.Flags().Changed("report-filter-file")
 }
 
 func (f *reportFilterFlags) register(cmd *cobra.Command, what string) {
@@ -124,6 +133,12 @@ func (f *reportFilterFlags) register(cmd *cobra.Command, what string) {
 func (f reportFilterFlags) raw() (json.RawMessage, error) {
 	if f.inline != "" && f.file != "" {
 		return nil, output.Usagef("--report-filter and --report-filter-file are mutually exclusive")
+	}
+	if f.inlineSet && strings.TrimSpace(f.inline) == "" {
+		return nil, output.Usagef("--report-filter is empty; pass a JSON object, or omit the flag entirely")
+	}
+	if f.fileSet && f.file == "" {
+		return nil, output.Usagef("--report-filter-file is empty; pass a path, or omit the flag entirely")
 	}
 	if f.file != "" {
 		data, err := os.ReadFile(f.file)
@@ -189,7 +204,7 @@ func (f reportCreateFlags) run(ctx context.Context, client *api.Client) error {
 	}
 	run, err := client.CreateReport(ctx, req)
 	if err != nil {
-		return api.AsWriteCLIError(err, api.RunMayExistAction)
+		return api.AsWriteCLIError(err, api.RunMayExistAction(f.portal))
 	}
 	return renderRun(run, f.asJSON)
 }
@@ -202,7 +217,7 @@ type reportDuplicateFlags struct {
 func (f reportDuplicateFlags) run(ctx context.Context, client *api.Client, runID int) error {
 	run, err := client.DuplicateReport(ctx, runID, f.force)
 	if err != nil {
-		return api.AsWriteCLIError(err, api.RunMayExistAction)
+		return api.AsWriteCLIError(err, api.RunMayExistAction(f.portal))
 	}
 	return renderRun(run, f.asJSON)
 }
@@ -219,6 +234,7 @@ func newReportsCreateCmd() *cobra.Command {
 			"filter labels and forces hide_names by role, and refuses an id the user cannot see.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			f.filter.bind(cmd)
 			if _, err := f.request(); err != nil {
 				return err
 			}
@@ -333,6 +349,7 @@ func newReportsFilterOptionsCmd() *cobra.Command {
 		Short: "Browse the values a report filter dimension offers",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			f.filter.bind(cmd)
 			if _, err := f.request(); err != nil {
 				return err
 			}

@@ -88,7 +88,7 @@ func registerTools(s *mcp.Server, opts Options) {
 			return nil, reportview.JobsPayload{Jobs: jobs}, nil
 		})
 
-	addTool(s, &mcp.Tool{Name: "reports_create", Description: "Create a report run from a report slug and a filter, without the web form. Pass report_filter as the same object reports_list returns on a run, assembled with reports_filter_options. The server derives the run's filter labels, forces hide_names by the user's role, and refuses an id the user cannot see. The new run is returned in the shape reports_list uses; an Athena run's query starts on its own, so its state may be null until it is read. The portal may be a hostname or an environment alias (prod / staging / dev)."},
+	addTool(s, &mcp.Tool{Name: "reports_create", Description: "Create a report run from a report slug and a filter, without the web form. Pass report_filter as the same object reports_list returns on a run, assembled with reports_filter_options. The server derives the run's filter labels, forces hide_names by the user's role, and refuses an id the user cannot see. The new run is returned in the shape reports_list uses; an Athena run's query starts on its own, so its state reads \"(none)\" until the query is queued. The portal may be a hostname or an environment alias (prod / staging / dev)."},
 		func(ctx context.Context, req *mcp.CallToolRequest, in reportsCreateIn) (*mcp.CallToolResult, reportview.RunPayload, error) {
 			client, err := portalClient(in.Portal)
 			if err != nil {
@@ -100,7 +100,7 @@ func registerTools(s *mcp.Server, opts Options) {
 			}
 			run, err := client.CreateReport(ctx, api.CreateReportReq{ReportSlug: in.ReportSlug, ReportFilter: filter})
 			if err != nil {
-				return nil, reportview.RunPayload{}, api.AsWriteCLIError(err, api.RunMayExistAction)
+				return nil, reportview.RunPayload{}, api.AsWriteCLIError(err, api.RunMayExistAction(in.Portal))
 			}
 			return nil, reportview.RunPayload{Run: reportview.ToRunJSON(run)}, nil
 		})
@@ -113,7 +113,7 @@ func registerTools(s *mcp.Server, opts Options) {
 			}
 			run, err := client.DuplicateReport(ctx, in.RunID, in.Force)
 			if err != nil {
-				return nil, reportview.RunPayload{}, api.AsWriteCLIError(err, api.RunMayExistAction)
+				return nil, reportview.RunPayload{}, api.AsWriteCLIError(err, api.RunMayExistAction(in.Portal))
 			}
 			return nil, reportview.RunPayload{Run: reportview.ToRunJSON(run)}, nil
 		})

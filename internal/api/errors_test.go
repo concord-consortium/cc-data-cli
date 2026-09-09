@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/concord-consortium/cc-data-cli/internal/output"
@@ -16,7 +17,7 @@ func TestAsWriteCLIErrorLeavesTheServersOwnAnswerAlone(t *testing.T) {
 	}
 
 	for _, err := range answered {
-		if got := AsWriteCLIError(err, RunMayExistAction); got.Action == RunMayExistAction {
+		if got := AsWriteCLIError(err, RunMayExistAction("")); got.Action == RunMayExistAction("") {
 			t.Fatalf("%s: a %d proves nothing was created, so it must not claim otherwise", err.Code, err.Status)
 		}
 	}
@@ -24,7 +25,7 @@ func TestAsWriteCLIErrorLeavesTheServersOwnAnswerAlone(t *testing.T) {
 
 // A 401 keeps the login action AsCLIError already gives it.
 func TestAsWriteCLIErrorKeepsTheAuthAction(t *testing.T) {
-	got := AsWriteCLIError(&APIError{Status: http.StatusUnauthorized, Code: CodeNotAuthed}, RunMayExistAction)
+	got := AsWriteCLIError(&APIError{Status: http.StatusUnauthorized, Code: CodeNotAuthed}, RunMayExistAction(""))
 
 	if got.ExitCode != output.ExitNotAuth || got.Action == "" {
 		t.Fatalf("cli error = %+v", got)
@@ -35,13 +36,24 @@ func TestAsWriteCLIErrorKeepsTheAuthAction(t *testing.T) {
 // of a write the server may have taken: retrying that creates a second run. The unknown outcome is
 // carried by the action field instead, which is why an unanswered write stays in the catch-all class.
 func TestAsWriteCLIErrorDoesNotClassifyAnUnansweredWriteAsRetryable(t *testing.T) {
-	got := AsWriteCLIError(errors.New("dial tcp: connection reset"), RunMayExistAction)
+	got := AsWriteCLIError(errors.New("dial tcp: connection reset"), RunMayExistAction(""))
 
 	if got.ExitCode == output.ExitTransient {
 		t.Fatal("an unanswered write must not exit as transient; a script that retries it duplicates the run")
 	}
 	if got.ExitCode != output.ExitInternal {
 		t.Fatalf("exit = %d, want %d", got.ExitCode, output.ExitInternal)
+	}
+}
+
+// `reports list` without a portal reads the configured default, so a write attempted elsewhere
+// would look absent and invite the retry this advice exists to prevent.
+func TestRunMayExistActionNamesThePortalTheWriteWentTo(t *testing.T) {
+	if got := RunMayExistAction("staging"); !strings.Contains(got, "reports list --portal staging") {
+		t.Fatalf("action = %q", got)
+	}
+	if got := RunMayExistAction(""); strings.Contains(got, "--portal") {
+		t.Fatalf("a caller who named no portal must not be told to name one: %q", got)
 	}
 }
 
@@ -53,7 +65,7 @@ func TestAsWriteCLIErrorSaysWhatAnUnansweredWriteMayHaveDone(t *testing.T) {
 	}
 
 	for _, err := range unanswered {
-		if got := AsWriteCLIError(err, RunMayExistAction); got.Action != RunMayExistAction {
+		if got := AsWriteCLIError(err, RunMayExistAction("")); got.Action != RunMayExistAction("") {
 			t.Fatalf("%v: action = %q", err, got.Action)
 		}
 	}
