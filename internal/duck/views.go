@@ -218,14 +218,20 @@ func (vs viewSet) runMembershipView() viewStmt {
 }
 
 // downloadsView is a VALUES dimension table from the manifest.
+//
+// hide_names separates the two meanings of a name column: where a run hid names, student_name
+// holds the student id and username a hash, under those same names, so rows fetched under
+// different roles are union-compatible and indistinguishable in the reports view. It is NULL
+// wherever no filter is on disk to derive it from.
 func (vs viewSet) downloadsView() viewStmt {
 	name := vs.prefix + `"downloads"`
-	header := "(run_id, type, slug, report_type, complete)"
+	header := "(run_id, type, slug, report_type, hide_names, complete)"
 	var rows []string
 	for _, dl := range vs.m.Downloads {
-		rows = append(rows, fmt.Sprintf("(%d, %s, %s, %s, %t)", dl.RunID, sqlStr(dl.Type), sqlStr(dl.Slug), sqlStr(dl.ReportType), dl.Complete))
+		rows = append(rows, fmt.Sprintf("(%d, %s, %s, %s, %s, %t)",
+			dl.RunID, sqlStr(dl.Type), sqlStr(dl.Slug), sqlStr(dl.ReportType), hideNamesLiteral(dl), dl.Complete))
 	}
-	fallback := fmt.Sprintf("CREATE VIEW %s AS SELECT CAST(NULL AS BIGINT) AS run_id, CAST(NULL AS VARCHAR) AS type, CAST(NULL AS VARCHAR) AS slug, CAST(NULL AS VARCHAR) AS report_type, CAST(NULL AS BOOLEAN) AS complete WHERE false", name)
+	fallback := fmt.Sprintf("CREATE VIEW %s AS SELECT CAST(NULL AS BIGINT) AS run_id, CAST(NULL AS VARCHAR) AS type, CAST(NULL AS VARCHAR) AS slug, CAST(NULL AS VARCHAR) AS report_type, CAST(NULL AS BOOLEAN) AS %s, CAST(NULL AS BOOLEAN) AS complete WHERE false", name, sqlIdent(dimensionHideName))
 	if len(rows) == 0 {
 		return viewStmt{name: name, primary: fallback, fallback: fallback}
 	}

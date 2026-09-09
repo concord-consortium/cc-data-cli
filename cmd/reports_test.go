@@ -611,6 +611,7 @@ func TestRenderRunsTableDistinguishesAPortalRun(t *testing.T) {
 	renderRunsTable([]api.ReportRun{
 		{ID: 216, ReportSlug: "student-answers", Execution: api.ExecutionAsync, AthenaQueryState: &succeeded},
 		{ID: 584, ReportSlug: "student-id-mapping", Execution: api.ExecutionSync},
+		{ID: 9, ReportSlug: "student-answers", AthenaQueryState: &succeeded},
 	})
 
 	got := out.String()
@@ -632,5 +633,8 @@ func TestRenderRunsTableDistinguishesAPortalRun(t *testing.T) {
 	}
 	if want := []string{"584", "student-id-mapping", "sync", "live", "-"}; !slices.Equal(rows["584"], want) {
 		t.Errorf("a Portal run must read as live rather than as a broken Athena run: %v, want %v", rows["584"], want)
+	}
+	if want := []string{"9", "student-answers", "-", "succeeded", "-"}; !slices.Equal(rows["9"], want) {
+		t.Errorf("an unreported execution row = %v, want %v", rows["9"], want)
 	}
 }

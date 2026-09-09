@@ -264,9 +264,7 @@ func storedRecords(t *testing.T, d *dataset.Dataset, typ string) []map[string]an
 }
 
 // The bulk endpoints derive learners from the run's filter for any report that derives learner
-// data, and both Portal student reports do, so a mapping run id needs no client change at all. A
-// step whose expectation is "nothing changes" is the one that needs a test, because nothing else
-// would notice if it stopped being true.
+// data, and both Portal student reports do, so a mapping run id needs no client change at all.
 func TestPagedAPortalMappingRunStoresWhatAnAthenaRunDoes(t *testing.T) {
 	for _, typ := range []string{store.TypeAnswers, store.TypeHistory} {
 		t.Run(typ, func(t *testing.T) {

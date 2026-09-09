@@ -330,8 +330,10 @@ func TestDimensionViewsAreEmptyWithNoSuchDownloads(t *testing.T) {
 	if n := queryInt(t, e, "SELECT count(*) FROM student_id_mapping m JOIN student_metadata s USING (learner_id)"); n != 0 {
 		t.Errorf("the metadata join does not bind on a fresh dataset, got %d", n)
 	}
-	if warnings != "" {
-		t.Errorf("a dataset with no Portal downloads warned: %q", warnings)
+	for _, view := range []string{"student_id_mapping", "student_metadata"} {
+		if strings.Contains(warnings, view) {
+			t.Errorf("a dataset with no Portal downloads warned about %s: %q", view, warnings)
+		}
 	}
 }
 
@@ -498,5 +500,42 @@ func TestAPortalRunIsQueryablePerRun(t *testing.T) {
 	// where the dimension view answers "what is currently true of these learners".
 	if n := queryInt(t, e, "SELECT count(*) FROM report_100 WHERE run_remote_endpoint = '"+endpointBBB+"'"); n != 1 {
 		t.Fatal("the per-run view rewrote the run's own columns")
+	}
+}
+
+// A name column means one thing or the other depending on the run's hide-names setting, and the
+// reports union has no column of its own to say which. Four of the five Athena reports carry the
+// same ambiguity, so the discriminator belongs on the download rather than on one view's rows.
+func TestDownloadsCarriesHideNamesForEveryReport(t *testing.T) {
+	d := newDS(t, "ds")
+	addDimensionCSV(t, d, dimFixture{
+		run: 100, slug: "student-metadata", fetchedAt: at(1), filter: `{"hide_names":false}`,
+		csv: metadataCSV(metadataRow(901, endpointAAA, "Ada Lovelace")),
+	})
+	addDimensionCSV(t, d, dimFixture{
+		run: 101, slug: "student-metadata", fetchedAt: at(2), filter: `{"hide_names":true}`,
+		csv: metadataCSV(metadataRow(902, endpointBBB, "s902")),
+	})
+	// A download with no recorded filter, which is what a dataset made by an earlier version
+	// holds: the column has to read as unknown rather than as either role.
+	addReportCSV(t, d, 216, dataset.ReportTypeAnswers, "student_id,student_name\nPrompt,p\nCorrect answer,c\n1,Bea\n")
+
+	e, _ := openWithWarnings(t, d)
+
+	for _, tc := range []struct{ run, want string }{{"100", "false"}, {"101", "true"}, {"216", "<NULL>"}} {
+		if got := queryString(t, e, "SELECT hide_names::VARCHAR FROM downloads WHERE run_id = "+tc.run); got != tc.want {
+			t.Errorf("run %s hide_names = %q, want %q", tc.run, got, tc.want)
+		}
+	}
+
+	// The join a caller writes to separate the two meanings in the union.
+	const join = `SELECT r.student_name FROM reports r JOIN downloads d USING (run_id)
+	              WHERE r.student_name IS NOT NULL AND d.hide_names = false`
+	if got := queryStrings(t, e, join); len(got) != 1 || got[0] != "Ada Lovelace" {
+		t.Fatalf("the join returned %v, want only the run fetched with names shown", got)
+	}
+	// Without it, the union blends them, which is what the column exists to make visible.
+	if n := queryInt(t, e, "SELECT count(DISTINCT student_name) FROM reports"); n != 3 {
+		t.Fatalf("the fixture no longer blends names, so the join above proves nothing: %d", n)
 	}
 }

@@ -337,7 +337,7 @@ When you (or Claude) query a dataset, the data is exposed as a set of SQL
 | `attachment_content` | The text/JSON content of every saved CODAP/SageModeler snapshot, queryable and diffable. |
 | `student_id_mapping` | One row per learner from Student ID Mapping runs, with the ids that join them to their answers and history. |
 | `student_metadata` | One row per learner from Student Metadata runs: name, username, class, school, teachers, permission forms. |
-| `run_membership`, `downloads` | Provenance, which run's fetch covered which records, and what each download was. |
+| `run_membership`, `downloads` | Provenance: which run's fetch covered which records, and what each download was, including whether its run hid names. |
 
 ### Report types
 
@@ -395,6 +395,16 @@ authoring an Athena report first:
   forms), joining 1:1 to Student ID Mapping on `learner_id`. Names are hidden
   unless you are an admin who cleared the hide-names option. It becomes the
   `student_metadata` view.
+
+**A warning about names.** When a run hides names, `student_name` holds the
+student's id number and `username` holds a hash, under those same column names.
+Most reports that carry names work this way, so if you pull runs under different
+roles, or before and after an admin clears the option, one dataset can hold both
+kinds of value in one column. `cc-data` records which each run was: read
+`hide_names` on the `student_metadata` view, or join `downloads` on `run_id` for
+any other report, before you count or group by a name. It is empty for downloads
+made before `cc-data` started recording this, which is not the same as "names
+were shown".
 
 The rest are aggregate metrics: *Summary Metrics by Assignment*, *Detailed
 Metrics by Assignment*, *Teacher Status*, *Detailed Metrics by School*, and

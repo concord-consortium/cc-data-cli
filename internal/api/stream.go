@@ -69,12 +69,9 @@ func (c *Client) StreamAPIToFile(ctx context.Context, path, dstPath string) erro
 			return ctxErr
 		}
 
-		// The server commits the 200 and the header row before any data, then reraises on a
-		// mid-stream failure so the chunked framing aborts. Bytes on disk therefore mean the
-		// failure landed after commit, and its likeliest cause is the server passing its own
-		// download deadline, which a retry reproduces exactly: there is no Range support to
-		// resume from, so each retry recomputes the whole portal query against a server that
-		// admits two at a time. Every refusal worth retrying arrives before the first byte.
+		// Bytes on disk mean the failure landed after the server committed its response, so
+		// its likeliest cause is the server's own deadline, which a retry reproduces with
+		// nothing to resume from. Every refusal worth retrying arrives before the first byte.
 		if wrote > 0 {
 			return &partialDownloadError{Wrote: wrote, Err: err}
 		}

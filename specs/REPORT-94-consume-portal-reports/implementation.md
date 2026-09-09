@@ -180,6 +180,22 @@ placed before the `ReportTypeFromSlug` fallback, so no Portal slug reaches the "
 
 Tests: a sync run with a null report type is typed `portal`; an async run with a null type still falls back to the slug map and still warns for an unknown slug; `portal` is allowed by `IsAllowedReportType`; a report download records the run's filter and labels. The second of those is the regression guard: it fails if the new branch is written without the execution check and swallows the Athena fallback.
 
+### The hide-names discriminator on `downloads`
+
+**Summary**: one column on the manifest dimension table, so the two meanings of a name column are separable for every report rather than only on the metadata view.
+
+**Files affected**:
+- `internal/duck/views.go`: `downloadsView` carries `hide_names`.
+- `internal/duck/dimension_views_test.go`, `internal/guidance/src/core.md`, `docs/researcher-guide.md`: extend.
+
+**Estimated diff size**: ~40 lines
+
+Verified against the vendored DuckDB rather than assumed: a `VALUES` column mixing NULL, true and false types as `BOOLEAN`, answers all three states, and joins to `reports` on `run_id`. No report emits a column named `hide_names`, so nothing collides.
+
+The value comes from `hideNamesLiteral`, the same helper the metadata view uses, so the two copies cannot drift. The metadata view keeps its own column: that is the view where per-learner name work happens, and sending it back through a join to `downloads` for its own defining property would be perverse.
+
+This does not make the bad state impossible, because the hidden value is a real student id and withholding it would destroy legitimate data. It makes it visible and one join away everywhere it occurs, which is the strongest position available.
+
 ### The two dimension views
 
 **Summary**: the deduplicated join dimensions, and the `hide_names` column that keeps a mixed-role dataset honest.
@@ -561,6 +577,7 @@ Everything downstream of the fork still reads `opts.JobID`. `reportCSVName/2` na
 | A duplicate `learner_id` within one run yields a defined survivor, not an arbitrary one | the two dimension views, plus REPORT-118 against real data |
 | A degenerate `run_remote_endpoint` is NULL, so the documented join cannot fan out | the two dimension views |
 | `student_metadata` exposes `hide_names` | the two dimension views |
+| `downloads` exposes `hide_names` for every report | the hide-names discriminator |
 | A report download records the run's filter | type Portal runs, and record the filter |
 | Every Portal run is typed `portal`, derived from `execution` | type Portal runs, and record the filter |
 | The two CSVs appear in the `reports` union | type Portal runs, and record the filter |
