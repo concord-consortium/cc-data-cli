@@ -91,7 +91,9 @@ func runAttachments(t *testing.T, d *dataset.Dataset, ps *presignServer, opts At
 	t.Helper()
 	opts.DS = d
 	opts.Client = fastClient(ps.URL)
-	opts.RunID = 584
+	if opts.RunID == 0 {
+		opts.RunID = 584
+	}
 	opts.Progress = discard{}
 	result, err := FetchAttachments(context.Background(), opts)
 	if err != nil {
@@ -298,5 +300,61 @@ func TestAttachmentsChunking(t *testing.T) {
 	// 250 refs / 100 per chunk = 3 presign calls.
 	if atomic.LoadInt32(&ps.presignCalls) != 3 {
 		t.Fatalf("expected 3 presign chunks, got %d", ps.presignCalls)
+	}
+}
+
+// The presign endpoint derives learners the same way the paged endpoints do, so a mapping run id
+// drives an attachments pull with no client change. Nothing else would notice if that stopped
+// being true, because the client never asks what kind of run it is holding.
+func TestAttachmentsFromAPortalMappingRun(t *testing.T) {
+	d := seedAnswers(t, portalMappingRun, answerWithAttachment("e1", "q1", "d1", "a.mp3", "p/a.mp3"))
+	ps := newPresignServer(t, &presignServer{})
+	defer ps.Close()
+
+	result, cliErr := runAttachments(t, d, ps, AttachmentOptions{RunID: portalMappingRun})
+	if cliErr != nil {
+		t.Fatalf("a mapping run should drive an attachments pull: %+v", cliErr)
+	}
+	m := result.(map[string]any)
+	if m["run_id"] != portalMappingRun {
+		t.Fatalf("result names run %v, want %d", m["run_id"], portalMappingRun)
+	}
+	if files, ok := m["files"].([]string); !ok || len(files) != 1 {
+		t.Fatalf("result = %+v", m)
+	}
+	if m["complete"] != true {
+		t.Fatalf("result = %+v", m)
+	}
+	man, _ := d.ReadManifest()
+	var found bool
+	for _, dl := range man.Downloads {
+		if dl.Type == "attachments" && dl.RunID == portalMappingRun {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no attachments download was recorded for run %d: %+v", portalMappingRun, man.Downloads)
+	}
+}
+
+// The two aggregate metrics reports opt out of learner derivation, and the presign endpoint
+// refuses them with the same coded error the paged endpoints use.
+func TestAttachmentsANonLearnerReportRefusalIsReadable(t *testing.T) {
+	d := seedAnswers(t, 584, answerWithAttachment("e1", "q1", "d1", "a.mp3", "p/a.mp3"))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		fmt.Fprint(w, notLearnerDerivableWire)
+	}))
+	defer srv.Close()
+
+	_, err := FetchAttachments(context.Background(), AttachmentOptions{
+		DS: d, Client: fastClient(srv.URL), RunID: 584, Progress: discard{},
+	})
+	cliErr, ok := err.(*output.CLIError)
+	if !ok {
+		t.Fatalf("err = %v (%T), want a *output.CLIError", err, err)
+	}
+	if cliErr.Code != "UNPROCESSABLE" || cliErr.Message != notLearnerDerivableMsg {
+		t.Fatalf("the server's refusal did not survive: %+v", cliErr)
 	}
 }

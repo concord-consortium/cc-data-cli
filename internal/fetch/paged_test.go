@@ -2,13 +2,18 @@ package fetch
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/concord-consortium/cc-data-cli/internal/dataset"
+	"github.com/concord-consortium/cc-data-cli/internal/output"
 	"github.com/concord-consortium/cc-data-cli/internal/store"
 )
 
@@ -209,5 +214,136 @@ func TestPagedStaleSegmentDiscarded(t *testing.T) {
 	// The stale record must not survive; only the fresh fetch's identity lands.
 	if result["merge_counts"].(store.MergeCounts).New != 1 {
 		t.Fatalf("stale segment should be discarded, got %+v", result["merge_counts"])
+	}
+}
+
+// portalMappingRun is a student-id-mapping run id, shared with the attachments tests so both
+// halves of "a mapping run drives the bulk fetches" name the same run.
+const portalMappingRun = 101342
+
+// The message the two aggregate metrics reports produce, which opt out of learner derivation.
+// From ErrorHelpers.unprocessable in bulk_export_controller.ex and attachment_controller.ex.
+const notLearnerDerivableWire = `{"error":"UNPROCESSABLE","message":"This report does not support per-learner endpoints."}`
+
+const notLearnerDerivableMsg = "This report does not support per-learner endpoints."
+
+func runPagedFor(t *testing.T, d *dataset.Dataset, srv *bulkServer, run int, typ string) (map[string]any, error) {
+	t.Helper()
+	result, err := FetchPaged(context.Background(), PagedOptions{
+		DS: d, Client: fastClient(srv.URL), RunID: run, Type: typ, Progress: discard{},
+	})
+	if result == nil {
+		return nil, err
+	}
+	return result.(map[string]any), err
+}
+
+func storedRecords(t *testing.T, d *dataset.Dataset, typ string) []map[string]any {
+	t.Helper()
+	m, err := d.ReadManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, ok := m.Stores[typ]
+	if !ok {
+		t.Fatalf("no %s store was written", typ)
+	}
+	body, err := os.ReadFile(d.Path(st.File))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(string(body)), "\n") {
+		var rec map[string]any
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, rec)
+	}
+	return out
+}
+
+// The bulk endpoints derive learners from the run's filter for any report that derives learner
+// data, and both Portal student reports do, so a mapping run id needs no client change at all. A
+// step whose expectation is "nothing changes" is the one that needs a test, because nothing else
+// would notice if it stopped being true.
+func TestPagedAPortalMappingRunStoresWhatAnAthenaRunDoes(t *testing.T) {
+	for _, typ := range []string{store.TypeAnswers, store.TypeHistory} {
+		t.Run(typ, func(t *testing.T) {
+			pages := []string{"[" + answerItem("s", "e1", "q1") + "," + answerItem("s", "e2", "q2") + "]"}
+
+			athenaDS := newTestDataset(t)
+			athenaSrv := newBulkServer(t, &bulkServer{pages: pages, tokens: []string{""}})
+			defer athenaSrv.Close()
+			if _, err := runPagedFor(t, athenaDS, athenaSrv, 584, typ); err != nil {
+				t.Fatal(err)
+			}
+
+			portalDS := newTestDataset(t)
+			portalSrv := newBulkServer(t, &bulkServer{pages: pages, tokens: []string{""}})
+			defer portalSrv.Close()
+			result, err := runPagedFor(t, portalDS, portalSrv, portalMappingRun, typ)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result["complete"] != true {
+				t.Fatalf("result = %+v", result)
+			}
+
+			athena, portal := storedRecords(t, athenaDS, typ), storedRecords(t, portalDS, typ)
+			if len(portal) != 2 {
+				t.Fatalf("stored %d records, want 2", len(portal))
+			}
+			for i := range portal {
+				// The run id is the only difference the run kind makes, and it is bookkeeping
+				// rather than part of what identifies a record.
+				for _, key := range []string{"_run_id", "_fetched_at"} {
+					delete(portal[i], key)
+					delete(athena[i], key)
+				}
+				if !reflect.DeepEqual(portal[i], athena[i]) {
+					t.Fatalf("a Portal run stored a different record:\n portal = %v\n athena = %v", portal[i], athena[i])
+				}
+				// learner_id lives only in the two dimension CSVs; making it part of a record's
+				// identity is what these views exist to avoid.
+				if _, ok := portal[i]["learner_id"]; ok {
+					t.Errorf("a stored record carries a learner_id: %v", portal[i])
+				}
+				for _, key := range []string{"source_key", "remote_endpoint", "question_id"} {
+					if portal[i][key] == nil {
+						t.Errorf("the identity tuple lost %q: %v", key, portal[i])
+					}
+				}
+			}
+		})
+	}
+}
+
+// The two aggregate metrics reports opt out of learner derivation, and the server says so with a
+// coded refusal. AsCLIError forwards a coded error's code and message unchanged, so what a
+// researcher sees has to be the server's sentence rather than an internal error.
+func TestPagedANonLearnerReportRefusalIsReadable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		fmt.Fprint(w, notLearnerDerivableWire)
+	}))
+	defer srv.Close()
+
+	d := newTestDataset(t)
+	_, err := FetchPaged(context.Background(), PagedOptions{
+		DS: d, Client: fastClient(srv.URL), RunID: 101343, Type: store.TypeAnswers, Progress: discard{},
+	})
+	cliErr, ok := err.(*output.CLIError)
+	if !ok {
+		t.Fatalf("err = %v (%T), want a *output.CLIError", err, err)
+	}
+	if cliErr.Code != "UNPROCESSABLE" {
+		t.Errorf("code = %q, want the server's own", cliErr.Code)
+	}
+	if cliErr.Message != notLearnerDerivableMsg {
+		t.Errorf("message = %q, want the server's own sentence", cliErr.Message)
+	}
+	if cliErr.ExitCode != output.ExitContract {
+		t.Errorf("exit code = %d, want contract", cliErr.ExitCode)
 	}
 }
