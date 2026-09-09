@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -249,5 +252,351 @@ func TestRenderFilterOptionsTableExplainsARefusedCount(t *testing.T) {
 	got := out.String()
 	if !strings.Contains(got, "no total") || !strings.Contains(got, "unbounded") {
 		t.Fatalf("a refused count must say why rather than showing nothing:\n%s", got)
+	}
+}
+
+func TestReportFilterFlagsInlineAndFileAgree(t *testing.T) {
+	const filter = `{"cohort":[1,2]}`
+	path := filepath.Join(t.TempDir(), "filter.json")
+	if err := os.WriteFile(path, []byte(filter+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	inline, err := reportFilterFlags{inline: filter}.raw()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fromFile, err := reportFilterFlags{file: path}.raw()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(canonical(t, inline), canonical(t, fromFile)) {
+		t.Fatalf("--report-filter %s and --report-filter-file %s produced different bodies", inline, fromFile)
+	}
+}
+
+func canonical(t *testing.T, raw json.RawMessage) []byte {
+	t.Helper()
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		t.Fatalf("decoding %s: %v", raw, err)
+	}
+	out, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+func TestReportFilterFlagsRefusesBothSources(t *testing.T) {
+	if _, err := (reportFilterFlags{inline: "{}", file: "f.json"}).raw(); err == nil {
+		t.Fatal("passing both --report-filter and --report-filter-file must be a usage error")
+	}
+}
+
+func TestReportFilterFlagsRejectMalformedJSONLocally(t *testing.T) {
+	if _, err := (reportFilterFlags{inline: `{"cohort":[1`}).raw(); err == nil {
+		t.Fatal("malformed JSON must be a usage error rather than a server round trip")
+	}
+	if _, err := (reportFilterFlags{inline: `[1,2]`}).raw(); err == nil {
+		t.Fatal("a filter that is not an object must be a usage error")
+	}
+}
+
+// `--report-filter "$FILTER"` with an empty variable would otherwise create an unfiltered run,
+// which for a Portal report a project-scoped caller can be given over their whole project scope.
+func TestReportFilterFlagsRejectAnExplicitlyEmptyValue(t *testing.T) {
+	if _, err := (reportFilterFlags{inlineSet: true}).raw(); err == nil {
+		t.Fatal("an explicitly empty --report-filter must be a usage error")
+	}
+	if _, err := (reportFilterFlags{inlineSet: true, inline: "   "}).raw(); err == nil {
+		t.Fatal("a whitespace-only --report-filter must be a usage error")
+	}
+	if _, err := (reportFilterFlags{fileSet: true}).raw(); err == nil {
+		t.Fatal("an explicitly empty --report-filter-file must be a usage error")
+	}
+}
+
+func TestReportsCreateRejectsAnEmptyFilterFlag(t *testing.T) {
+	stdout, stderr, code := runArgs(t, "reports", "create", "--portal", "prod", "--report-slug", "student-answers", "--report-filter", "")
+
+	if code != output.ExitUsage {
+		t.Fatalf("exit = %d, want %d", code, output.ExitUsage)
+	}
+	if !strings.Contains(stdout+stderr, "--report-filter is empty") {
+		t.Fatalf("stdout = %q stderr = %q", stdout, stderr)
+	}
+}
+
+func TestReportFilterFlagsAreAbsentWhenUnset(t *testing.T) {
+	raw, err := reportFilterFlags{}.raw()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if raw != nil {
+		t.Fatalf("raw = %s, want nil so the body omits the key", raw)
+	}
+}
+
+// The same expression backs both commands, so filter-options narrows by exactly what create sends.
+func TestFilterOptionsFlagsCarryTheReportFilter(t *testing.T) {
+	req, err := filterOptionsFlags{dimension: "school", filter: reportFilterFlags{inline: `{"cohort":[1]}`}}.request()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(req.ReportFilter) != `{"cohort":[1]}` {
+		t.Fatalf("--report-filter did not reach the request: %s", req.ReportFilter)
+	}
+}
+
+func TestFilterOptionsFlagsRejectAMalformedFilter(t *testing.T) {
+	if _, err := (filterOptionsFlags{dimension: "school", filter: reportFilterFlags{inline: "{"}}).request(); err == nil {
+		t.Fatal("a malformed --report-filter must be a usage error")
+	}
+}
+
+func TestReportsCreateRequiresASlug(t *testing.T) {
+	stdout, stderr, code := runArgs(t, "reports", "create", "--portal", "prod")
+
+	if code != output.ExitUsage {
+		t.Fatalf("exit = %d, want %d", code, output.ExitUsage)
+	}
+	if !strings.Contains(stdout+stderr, "--report-slug is required") {
+		t.Fatalf("stdout = %q stderr = %q", stdout, stderr)
+	}
+}
+
+func TestReportsCreateRejectsAMalformedFilterBeforeAnyRequest(t *testing.T) {
+	stdout, stderr, code := runArgs(t, "reports", "create", "--portal", "prod", "--report-slug", "student-answers", "--report-filter", "{")
+
+	if code != output.ExitUsage {
+		t.Fatalf("exit = %d, want %d", code, output.ExitUsage)
+	}
+	if !strings.Contains(stdout+stderr, "--report-filter must be a JSON object") {
+		t.Fatalf("stdout = %q stderr = %q", stdout, stderr)
+	}
+}
+
+func TestReportsDuplicateRequiresAnIntegerRunID(t *testing.T) {
+	stdout, stderr, code := runArgs(t, "reports", "duplicate", "abc", "--portal", "prod")
+
+	if code != output.ExitUsage {
+		t.Fatalf("exit = %d, want %d", code, output.ExitUsage)
+	}
+	if !strings.Contains(stdout+stderr, "run-id must be an integer") {
+		t.Fatalf("stdout = %q stderr = %q", stdout, stderr)
+	}
+}
+
+// The command's own call, driven against a fake server through the seam that exists so it can be.
+func TestReportsCreateSendsTheSlugAndFilterAndRendersTheRun(t *testing.T) {
+	var out, errb bytes.Buffer
+	restore := output.SetStreams(&out, &errb)
+	defer restore()
+
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/reports" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprint(w, `{"id":90070,"report_slug":"student-answers","athena_query_state":null}`)
+	}))
+	defer srv.Close()
+
+	f := reportCreateFlags{slug: "student-answers", filter: reportFilterFlags{inline: `{"cohort":[1]}`}, asJSON: true}
+	req, err := f.request()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.run(context.Background(), api.New(srv.URL, "token"), req); err != nil {
+		t.Fatal(err)
+	}
+
+	if body["report_slug"] != "student-answers" {
+		t.Errorf("--report-slug did not reach the body: %v", body["report_slug"])
+	}
+	if filter, ok := body["report_filter"].(map[string]any); !ok || fmt.Sprint(filter["cohort"]) != "[1]" {
+		t.Errorf("--report-filter did not reach the body: %v", body["report_filter"])
+	}
+	if !strings.Contains(out.String(), `"run_id":90070`) {
+		t.Errorf("--json did not render the created run: %s", out.String())
+	}
+}
+
+func TestReportsCreateRefusesAMalformedFilterBeforeCallingTheServer(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("a malformed filter must not reach the server")
+	}))
+	defer srv.Close()
+
+	// request() is where the refusal lives, and RunE calls it before looking up a credential, so
+	// a malformed filter never reaches a client at all.
+	f := reportCreateFlags{slug: "student-answers", filter: reportFilterFlags{inline: "{"}}
+	if _, err := f.request(); err == nil {
+		t.Fatal("a malformed --report-filter must be an error")
+	}
+}
+
+func TestReportsCreateBlamesTheFileAMalformedFilterCameFrom(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "filter.json")
+	if err := os.WriteFile(path, []byte(`{"cohort":[1`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	f := reportCreateFlags{slug: "student-answers", filter: reportFilterFlags{file: path, fileSet: true}}
+	_, err := f.request()
+	if err == nil {
+		t.Fatal("a malformed --report-filter-file must be an error")
+	}
+	// Naming --report-filter here would point the caller at a flag they never passed, and the path
+	// is what tells them which file to fix.
+	if !strings.Contains(err.Error(), "--report-filter-file") || !strings.Contains(err.Error(), path) {
+		t.Fatalf("error must name the file flag and the path, got %q", err.Error())
+	}
+	if strings.Contains(err.Error(), "--report-filter must") {
+		t.Fatalf("error blames the inline flag: %q", err.Error())
+	}
+}
+
+func TestReportsCreateReadsTheFilterFileOnce(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "filter.json")
+	if err := os.WriteFile(path, []byte(`{"cohort":[1]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&body)
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprint(w, `{"id":90070,"report_slug":"student-answers","athena_query_state":null}`)
+	}))
+	defer srv.Close()
+
+	f := reportCreateFlags{slug: "student-answers", filter: reportFilterFlags{file: path, fileSet: true}}
+	req, err := f.request()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The request is built once and handed to run, so replacing the file afterwards cannot change
+	// what is sent. Reading it again inside run would send the second version.
+	if err := os.WriteFile(path, []byte(`{"cohort":[999]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.run(context.Background(), api.New(srv.URL, "token"), req); err != nil {
+		t.Fatal(err)
+	}
+	filter, _ := body["report_filter"].(map[string]any)
+	if filter == nil || fmt.Sprint(filter["cohort"]) != "[1]" {
+		t.Fatalf("the body must carry the filter read at request time, got %v", body["report_filter"])
+	}
+}
+
+func TestReportsDuplicateSendsForceOnlyWhenAsked(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/reports/90070/duplicate" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprint(w, `{"id":90072,"report_slug":"student-answers","athena_query_state":null}`)
+	}))
+	defer srv.Close()
+
+	client := api.New(srv.URL, "token")
+	if err := (reportDuplicateFlags{}).run(context.Background(), client, 90070); err != nil {
+		t.Fatal(err)
+	}
+	if _, sent := body["force"]; sent {
+		t.Fatalf("force = %v was sent without --force", body["force"])
+	}
+
+	if err := (reportDuplicateFlags{force: true}).run(context.Background(), client, 90070); err != nil {
+		t.Fatal(err)
+	}
+	if body["force"] != true {
+		t.Fatalf("--force did not reach the body: %v", body["force"])
+	}
+}
+
+// The guard's message and the run it names are what tell a caller to re-read rather than retry, so
+// both reach the envelope the CLI prints.
+func TestReportsDuplicateSurfacesThePortalGuard(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		fmt.Fprint(w, portalDuplicateWire)
+	}))
+	defer srv.Close()
+
+	err := (reportDuplicateFlags{}).run(context.Background(), api.New(srv.URL, "token"), 90073)
+
+	var cliErr *output.CLIError
+	if !errors.As(err, &cliErr) {
+		t.Fatalf("err = %T", err)
+	}
+	if cliErr.Code != api.CodePortalDuplicateUnnecessary || cliErr.ExitCode != output.ExitContract {
+		t.Fatalf("cli error = %+v", cliErr)
+	}
+	envelope := cliErr.Envelope()
+	if fmt.Sprint(envelope["run_id"]) != "90073" {
+		t.Fatalf("envelope = %v", envelope)
+	}
+	if !strings.Contains(fmt.Sprint(envelope["message"]), "Re-read run 90073") {
+		t.Fatalf("message = %v", envelope["message"])
+	}
+	if cliErr.Action != "" {
+		t.Fatalf("a refusal the server sent must not claim the run may exist: %q", cliErr.Action)
+	}
+}
+
+// A write the server never answered may have created the run, and the client will not retry it.
+func TestReportsCreateSaysAnUnansweredWriteMayHaveCreatedTheRun(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	srv.Close()
+
+	// the advice has to name the portal the write went to: `reports list` without one reads the
+	// configured default, where the run would look absent and invite the retry this prevents
+	f := reportCreateFlags{slug: "student-answers", portal: "staging"}
+	req, reqErr := f.request()
+	if reqErr != nil {
+		t.Fatal(reqErr)
+	}
+	err := f.run(context.Background(), api.New(srv.URL, "token"), req)
+
+	var cliErr *output.CLIError
+	if !errors.As(err, &cliErr) {
+		t.Fatalf("err = %T (%v)", err, err)
+	}
+	if !strings.Contains(cliErr.Action, "cc-data reports list --portal staging") {
+		t.Fatalf("action = %q", cliErr.Action)
+	}
+
+	dupErr := (reportDuplicateFlags{portal: "staging"}).run(context.Background(), api.New(srv.URL, "token"), 1)
+	if !errors.As(dupErr, &cliErr) {
+		t.Fatalf("err = %T (%v)", dupErr, dupErr)
+	}
+	if !strings.Contains(cliErr.Action, "cc-data reports list --portal staging") {
+		t.Fatalf("duplicate action = %q", cliErr.Action)
+	}
+}
+
+// A stand-in for the guard's body, not a capture: the wording is pinned once, where the client
+// decodes it, and what this asserts is that the code, the message and the run_id come out the far
+// side of the command unchanged.
+const portalDuplicateWire = `{"error":"PORTAL_DUPLICATE_UNNECESSARY","message":"Re-read run 90073 for current data, or pass force: true.","run_id":90073}`
+
+func TestRenderRunEmitsTheRunPayload(t *testing.T) {
+	var out, errb bytes.Buffer
+	restore := output.SetStreams(&out, &errb)
+	defer restore()
+
+	if err := renderRun(api.ReportRun{ID: 90070, ReportSlug: "student-answers"}, true); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, `"run"`) || !strings.Contains(got, `"run_id":90070`) {
+		t.Fatalf("--json did not go through reportview: %s", got)
 	}
 }

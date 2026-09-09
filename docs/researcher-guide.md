@@ -211,8 +211,8 @@ session looks like this.
 
 ### Find your report runs
 
-`cc-data` downloads runs you've *already generated* in the report server. To see
-which runs you can pull, and their IDs:
+`cc-data` downloads runs from the report server, whether you generated them in
+the web form or made them here. To see which runs you can pull, and their IDs:
 
 ```
 cc-data reports list
@@ -222,6 +222,20 @@ This lists your report runs with their `run_id`, `slug`, and state (add `--json`
 to include the `report_type`). (Add `--portal <portal>` for a non-production
 portal; `--portal staging` works as well as the full hostname.) Through Claude,
 the same thing is just asking "what report runs do I have?"
+
+### Make a run without the web form
+
+`cc-data reports filter-options --dimension cohort` lists the values you may
+filter on, and `cc-data reports create` turns a filter into a run:
+
+```
+cc-data reports create --report-slug student-answers --report-filter '{"cohort":[1]}'
+```
+
+Use `--report-filter-file <path>` when the filter is too long to quote. To take a
+fresh snapshot of a run you already have, `cc-data reports duplicate <run-id>`.
+Portal reports are computed live, so re-reading one with `get report` gives you
+current data and duplicating one needs `--force`.
 
 ### A complete session
 
