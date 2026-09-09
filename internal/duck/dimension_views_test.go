@@ -562,3 +562,43 @@ func TestDownloadsCarriesHideNamesForEveryReport(t *testing.T) {
 		t.Errorf("the unqualified join did not fan out, so the guidance's qualification is untested")
 	}
 }
+
+// Hiding names changes the column's recorded type, not just its contents: the student id is
+// numeric, so DetectCSV widens student_name to BIGINT for a run that hid names and VARCHAR for one
+// that did not. Both shapes reach the same view, and a real pull of one class under both roles
+// produces exactly this pair.
+func TestStudentMetadataUnionsBothNameTypes(t *testing.T) {
+	d := newDS(t, "ds")
+	addDimensionCSV(t, d, dimFixture{
+		run: 100, slug: "student-metadata", fetchedAt: at(1), filter: `{"hide_names":false}`,
+		csv: metadataCSV(metadataRow(901, endpointAAA, "Ada Lovelace")),
+	})
+	addDimensionCSV(t, d, dimFixture{
+		run: 101, slug: "student-metadata", fetchedAt: at(2), filter: `{"hide_names":true}`,
+		csv: metadataCSV(metadataRow(902, endpointBBB, "4815162342")),
+	})
+
+	man, err := d.ReadManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	types := map[int]string{}
+	for _, dl := range man.Downloads {
+		types[dl.RunID] = dl.Columns["student_name"]
+	}
+	if types[100] == types[101] {
+		t.Fatalf("both runs recorded student_name as %q, so the mixed-type union is untested", types[100])
+	}
+
+	e, _ := openWithWarnings(t, d)
+	if n := queryInt(t, e, "SELECT count(*) FROM student_metadata"); n != 2 {
+		t.Fatalf("the mixed-type union produced %d rows, want 2", n)
+	}
+	// Comparing the column across runs needs a cast, which is what a caller has to know.
+	if got := queryString(t, e, "SELECT student_name::VARCHAR FROM student_metadata WHERE learner_id = 902"); got != "4815162342" {
+		t.Fatalf("the hidden name did not survive the union: %q", got)
+	}
+	if got := queryString(t, e, "SELECT student_name::VARCHAR FROM student_metadata WHERE learner_id = 901"); got != "Ada Lovelace" {
+		t.Fatalf("the shown name did not survive the union: %q", got)
+	}
+}

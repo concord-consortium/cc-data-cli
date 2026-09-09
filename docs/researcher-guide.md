@@ -405,7 +405,10 @@ kinds of value in one column. `cc-data` records which each run was: read
 `downloads` and say which download you mean (`... JOIN downloads d ON d.run_id =
 r.run_id AND d.type = 'report'`), before you count or group by a name. That
 `d.type` matters: a run you pulled answers and history for has a `downloads` row
-each, so joining on `run_id` alone silently multiplies your rows. It is empty for downloads
+each, so joining on `run_id` alone silently multiplies your rows. One more
+quirk: because a hidden name is a number, that column can come back as a number
+for one run and text for another, so compare it as text
+(`student_name::VARCHAR`) when you work across runs. It is empty for downloads
 made before `cc-data` started recording this, which is not the same as "names
 were shown".
 

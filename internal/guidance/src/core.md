@@ -70,7 +70,10 @@ like `wildfire_2026.answers`):
   **type-qualified** because a run has one `downloads` row per download and an
   unqualified join multiplies the rows: `reports r JOIN downloads d ON d.run_id
   = r.run_id AND d.type = 'report'`. It is NULL for a download whose filter is
-  not on disk, which is not the same as false.
+  not on disk, which is not the same as false. Hiding names also changes the
+  column's **type**, since a student id is numeric: `student_name` scans as
+  BIGINT for a run that hid names and VARCHAR for one that did not, so cast
+  (`student_name::VARCHAR`) when comparing or grouping it across runs.
 - `report_prompts` — the prompt and correct-answer text keyed by the
   `res_<N>_<question_id>_*` columns.
 - `answers`, `history` — the identity-keyed stores (double-decoded
