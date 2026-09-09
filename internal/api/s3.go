@@ -96,29 +96,7 @@ func (c *Client) DownloadURL(ctx context.Context, rawURL, dstPath string) error 
 }
 
 func (c *Client) streamToPath(ctx context.Context, rawURL, dstPath string) error {
-	f, err := os.OpenFile(dstPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-	if err != nil {
-		return &localIOError{err}
-	}
-	dw := &destWriter{f: f}
-	if err := c.streamURL(ctx, rawURL, dw); err != nil {
-		f.Close()
-		os.Remove(dstPath)
-		// A write failure (for example ENOSPC) is local and terminal; any
-		// other copy error is a network/URL failure and stays retryable.
-		if dw.writeErr != nil {
-			return &localIOError{dw.writeErr}
-		}
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		f.Close()
-		os.Remove(dstPath)
-		return &localIOError{err}
-	}
-	if err := f.Close(); err != nil {
-		os.Remove(dstPath)
-		return &localIOError{err}
-	}
-	return nil
+	return c.streamToPathWith(ctx, dstPath, func(ctx context.Context, dst io.Writer) error {
+		return c.streamURL(ctx, rawURL, dst)
+	})
 }

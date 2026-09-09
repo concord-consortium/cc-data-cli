@@ -67,6 +67,16 @@ func AsCLIError(err error) *output.CLIError {
 	if errors.As(err, &already) {
 		return already
 	}
+	// It wraps whatever copy error ended the download, so unwrapping it first would surface
+	// that error and lose the message that names the recovery.
+	var partial *partialDownloadError
+	if errors.As(err, &partial) {
+		return &output.CLIError{
+			ExitCode: output.ExitTransient,
+			Code:     "TRANSIENT",
+			Message:  partial.Error(),
+		}
+	}
 	// TransientError wraps the last APIError it saw, so it must be checked before
 	// APIError or errors.As would surface that inner contract error instead.
 	var transient *TransientError
