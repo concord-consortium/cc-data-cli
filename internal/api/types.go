@@ -5,6 +5,15 @@ import (
 	"time"
 )
 
+// How a run produces its result, as the server reports it on every run.
+const (
+	// ExecutionAsync is an Athena run, whose result is queried in the background and fetched
+	// later through a presigned envelope.
+	ExecutionAsync = "async"
+	// ExecutionSync is a Portal run, whose CSV is computed and streamed when it is asked for.
+	ExecutionSync = "sync"
+)
+
 // ReportRun is a run's metadata as served by GET /reports and /reports/:id.
 type ReportRun struct {
 	ID                 int             `json:"id"`
@@ -13,8 +22,11 @@ type ReportRun struct {
 	ReportFilter       json.RawMessage `json:"report_filter"`
 	ReportFilterValues map[string]any  `json:"report_filter_values"`
 	AthenaQueryState   *string         `json:"athena_query_state"`
-	InsertedAt         time.Time       `json:"inserted_at"`
-	UpdatedAt          time.Time       `json:"updated_at"`
+	// The discriminator every download and listing branch keys off: report_type is null for a
+	// Portal run by design, and a null athena_query_state is a real state for an Athena run.
+	Execution  string    `json:"execution"`
+	InsertedAt time.Time `json:"inserted_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }
 
 // Page is a keyset-paginated envelope of typed items.

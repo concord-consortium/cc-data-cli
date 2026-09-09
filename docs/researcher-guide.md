@@ -218,10 +218,16 @@ the web form or made them here. To see which runs you can pull, and their IDs:
 cc-data reports list
 ```
 
-This lists your report runs with their `run_id`, `slug`, and state (add `--json`
-to include the `report_type`). (Add `--portal <portal>` for a non-production
-portal; `--portal staging` works as well as the full hostname.) Through Claude,
-the same thing is just asking "what report runs do I have?"
+This lists your report runs with their `run_id`, `slug`, execution and state
+(add `--json` to include the `report_type`). (Add `--portal <portal>` for a
+non-production portal; `--portal staging` works as well as the full hostname.)
+Through Claude, the same thing is just asking "what report runs do I have?"
+
+Execution is how the run produces its result. An `async` run is computed by
+Athena in the background, so its state is that query's: `succeeded`, `running`,
+or `(none)` before the query starts. A `sync` run is a Portal report, computed
+fresh from the portal database every time you ask for it, so its state is always
+`live`.
 
 ### Make a run without the web form
 

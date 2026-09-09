@@ -410,13 +410,13 @@ func renderFilterOptionsTable(page api.FilterOptionsPage) {
 
 func renderRunsTable(runs []api.ReportRun) {
 	tw := tabwriter.NewWriter(output.Stdout(), 0, 2, 2, ' ', 0)
-	fmt.Fprintln(tw, "RUN\tSLUG\tSTATE\tFILTERS")
+	fmt.Fprintln(tw, "RUN\tSLUG\tEXECUTION\tSTATE\tFILTERS")
 	for _, r := range runs {
 		labels := strings.Join(reportview.FilterLabels(r), ", ")
 		if labels == "" {
 			labels = "-"
 		}
-		fmt.Fprintf(tw, "%d\t%s\t%s\t%s\n", r.ID, r.ReportSlug, reportview.StateText(r.AthenaQueryState), labels)
+		fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\n", r.ID, r.ReportSlug, r.Execution, reportview.StateText(r), labels)
 	}
 	tw.Flush()
 }

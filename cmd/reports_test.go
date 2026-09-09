@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -598,5 +599,38 @@ func TestRenderRunEmitsTheRunPayload(t *testing.T) {
 	got := out.String()
 	if !strings.Contains(got, `"run"`) || !strings.Contains(got, `"run_id":90070`) {
 		t.Fatalf("--json did not go through reportview: %s", got)
+	}
+}
+
+func TestRenderRunsTableDistinguishesAPortalRun(t *testing.T) {
+	var out, errb bytes.Buffer
+	restore := output.SetStreams(&out, &errb)
+	defer restore()
+
+	succeeded := "succeeded"
+	renderRunsTable([]api.ReportRun{
+		{ID: 216, ReportSlug: "student-answers", Execution: api.ExecutionAsync, AthenaQueryState: &succeeded},
+		{ID: 584, ReportSlug: "student-id-mapping", Execution: api.ExecutionSync},
+	})
+
+	got := out.String()
+	rows := map[string][]string{}
+	for _, line := range strings.Split(got, "\n") {
+		if fields := strings.Fields(line); len(fields) > 0 {
+			rows[fields[0]] = fields
+		}
+	}
+	// Per row rather than over the whole buffer: "async" contains "sync", so a table that
+	// rendered the column for Athena runs only would satisfy a substring check on the output.
+	for _, want := range []string{"RUN", "SLUG", "EXECUTION", "STATE", "FILTERS"} {
+		if !slices.Contains(rows["RUN"], want) {
+			t.Fatalf("header missing %q:\n%s", want, got)
+		}
+	}
+	if want := []string{"216", "student-answers", "async", "succeeded", "-"}; !slices.Equal(rows["216"], want) {
+		t.Errorf("Athena row = %v, want %v", rows["216"], want)
+	}
+	if want := []string{"584", "student-id-mapping", "sync", "live", "-"}; !slices.Equal(rows["584"], want) {
+		t.Errorf("a Portal run must read as live rather than as a broken Athena run: %v, want %v", rows["584"], want)
 	}
 }
