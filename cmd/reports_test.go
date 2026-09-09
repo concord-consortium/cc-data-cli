@@ -363,8 +363,7 @@ func TestReportsDuplicateRequiresAnIntegerRunID(t *testing.T) {
 	}
 }
 
-// The command's own call, driven against a fake server. Reached only through RunE, none of it is
-// exercisable without a stored credential.
+// The command's own call, driven against a fake server through the seam that exists so it can be.
 func TestReportsCreateSendsTheSlugAndFilterAndRendersTheRun(t *testing.T) {
 	var out, errb bytes.Buffer
 	restore := output.SetStreams(&out, &errb)
