@@ -79,15 +79,28 @@ func (c *Client) PresignAttachments(ctx context.Context, runID int, refs []Attac
 // (or a job's CSV when jobID is non-nil). A not-ready run/job returns a coded
 // *APIError (NOT_READY) carrying its state.
 func (c *Client) ReportDownloadEnvelope(ctx context.Context, runID int, jobID *int) (*DownloadEnvelope, error) {
-	path := fmt.Sprintf("/api/v1/reports/%d/download", runID)
-	if jobID != nil {
-		path = fmt.Sprintf("/api/v1/reports/%d/jobs/%d/download", runID, *jobID)
-	}
 	var env DownloadEnvelope
-	if err := c.getJSON(ctx, path, nil, &env); err != nil {
+	if err := c.getJSON(ctx, reportDownloadPath(runID, jobID), nil, &env); err != nil {
 		return nil, err
 	}
 	return &env, nil
+}
+
+// StreamReportCSV downloads a Portal run's CSV, which the server computes and streams on request
+// rather than staging behind a presigned URL. Jobs are an Athena-side resource on their own route,
+// so this addresses the run only.
+func (c *Client) StreamReportCSV(ctx context.Context, runID int, dstPath string) error {
+	return c.StreamAPIToFile(ctx, reportDownloadPath(runID, nil), dstPath)
+}
+
+// reportDownloadPath is the download route for a run, or for one of its jobs when jobID is
+// non-nil. Both callers read it here so the envelope and the streamed body cannot address
+// different URLs.
+func reportDownloadPath(runID int, jobID *int) string {
+	if jobID != nil {
+		return fmt.Sprintf("/api/v1/reports/%d/jobs/%d/download", runID, *jobID)
+	}
+	return fmt.Sprintf("/api/v1/reports/%d/download", runID)
 }
 
 // FilterOptionsReq is one page request for a report filter dimension. ReportFilter is passed

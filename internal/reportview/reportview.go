@@ -1,5 +1,7 @@
-// Package reportview holds the CLI-side JSON shaping for report listings, shared
-// by the CLI commands and the MCP tools so their payloads never drift.
+// Package reportview holds the JSON shaping for report listings, shared by the CLI commands and
+// the MCP tools so their payloads never drift. FilterLabels has a third caller: it renders the
+// labels a report download records in its dataset manifest, where they are persisted rather than
+// printed.
 package reportview
 
 import (
@@ -13,9 +15,12 @@ import (
 
 // RunJSON is the machine form of a report run.
 type RunJSON struct {
-	RunID        int      `json:"run_id"`
-	Slug         string   `json:"slug"`
-	State        string   `json:"state"`
+	RunID int    `json:"run_id"`
+	Slug  string `json:"slug"`
+	State string `json:"state"`
+	// api.ExecutionSync or api.ExecutionAsync, so an MCP client is not left inferring the run
+	// kind from a null state.
+	Execution    string   `json:"execution,omitempty"`
 	ReportType   string   `json:"report_type,omitempty"`
 	FilterLabels []string `json:"filter_labels"`
 	// The run's filter as the server emitted it, which reports_filter_options takes back to
@@ -65,19 +70,25 @@ func ToRunJSON(r api.ReportRun) RunJSON {
 	return RunJSON{
 		RunID:        r.ID,
 		Slug:         r.ReportSlug,
-		State:        StateText(r.AthenaQueryState),
+		State:        StateText(r),
+		Execution:    r.Execution,
 		ReportType:   rt,
 		FilterLabels: FilterLabels(r),
 		ReportFilter: filter,
 	}
 }
 
-// StateText renders a nullable athena_query_state.
-func StateText(s *string) string {
-	if s == nil || *s == "" {
+// StateText renders a run's readiness. A sync run has no query to be in a state, so it reports
+// "live"; an async run reports its Athena state, and "(none)" for a run whose query has not
+// started, which is a real and common value rather than only a broken one.
+func StateText(r api.ReportRun) string {
+	if r.Execution == api.ExecutionSync {
+		return "live"
+	}
+	if r.AthenaQueryState == nil || *r.AthenaQueryState == "" {
 		return "(none)"
 	}
-	return *s
+	return *r.AthenaQueryState
 }
 
 // FilterLabels renders a run's resolved filter labels.

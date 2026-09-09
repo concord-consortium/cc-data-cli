@@ -232,6 +232,12 @@ func (d *Dataset) priorDownloadIndex() map[dlKey]Download {
 // dialect) are left as reindex computed them. An authoritative prior entry (a real
 // fetch, not a previous recovery) also restores the exact report_type and clears
 // the recovered flag.
+//
+// The prior fetch time is restored whenever there is one, so a reindex is idempotent for it.
+// Reindex rebuilds CSV downloads in filename order and stamps each with the current clock, which
+// would otherwise reorder downloads by filename: that is what dataset show reports as the fetch
+// date, and what the deduplicated dimension views order by when the same learner appears in more
+// than one run.
 func carryProvenance(dl *Download, prior Download) {
 	if prior.Type == "" {
 		return // no matching prior entry
@@ -256,6 +262,9 @@ func carryProvenance(dl *Download, prior Download) {
 	}
 	if prior.MergeCounts != nil {
 		dl.MergeCounts = prior.MergeCounts
+	}
+	if !prior.FetchedAt.IsZero() {
+		dl.FetchedAt = prior.FetchedAt
 	}
 	if !prior.Recovered {
 		if prior.ReportType != "" {
@@ -306,8 +315,12 @@ func (d *Dataset) reindexCSV(name string, prior map[dlKey]Download) (Download, e
 }
 
 // recoverReportType recovers the report type from CSV shape only partially:
-// no student_id column -> log; student_id plus pseudo-header rows -> answers;
-// the ambiguous remainder -> the distinguished recovered value.
+// a log schema -> log; student_id plus pseudo-header rows -> answers; the
+// ambiguous remainder -> the distinguished recovered value.
+//
+// A log CSV is identified by columns only a log report has. The absence of student_id is not
+// enough on its own, because every Portal aggregate report lacks it too, and a wrong type returned
+// as a confident answer suppresses the warning that would otherwise say to re-fetch the run.
 func recoverReportType(path string) (reportType string, recovered bool) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -320,9 +333,12 @@ func recoverReportType(path string) (reportType string, recovered bool) {
 	if err != nil {
 		return ReportTypeRecovered, true
 	}
+	if indexOf(header, "event") >= 0 && indexOf(header, "time") >= 0 {
+		return ReportTypeLog, false
+	}
 	studentIDCol := indexOf(header, "student_id")
 	if studentIDCol < 0 {
-		return ReportTypeLog, false
+		return ReportTypeRecovered, true
 	}
 	for {
 		row, rerr := r.Read()

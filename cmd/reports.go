@@ -410,13 +410,19 @@ func renderFilterOptionsTable(page api.FilterOptionsPage) {
 
 func renderRunsTable(runs []api.ReportRun) {
 	tw := tabwriter.NewWriter(output.Stdout(), 0, 2, 2, ' ', 0)
-	fmt.Fprintln(tw, "RUN\tSLUG\tSTATE\tFILTERS")
+	fmt.Fprintln(tw, "RUN\tSLUG\tEXECUTION\tSTATE\tFILTERS")
 	for _, r := range runs {
 		labels := strings.Join(reportview.FilterLabels(r), ", ")
 		if labels == "" {
 			labels = "-"
 		}
-		fmt.Fprintf(tw, "%d\t%s\t%s\t%s\n", r.ID, r.ReportSlug, reportview.StateText(r.AthenaQueryState), labels)
+		// A server too old to report an execution leaves the cell empty, which reads as a
+		// rendering fault rather than as an unanswered field.
+		execution := r.Execution
+		if execution == "" {
+			execution = "-"
+		}
+		fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\n", r.ID, r.ReportSlug, execution, reportview.StateText(r), labels)
 	}
 	tw.Flush()
 }

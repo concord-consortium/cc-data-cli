@@ -60,7 +60,20 @@ like `wildfire_2026.answers`):
   `class`, `learner_id`, ...) that are NULL for a plain `student-actions` run's
   rows, while shared columns like `event`/`time` populate for both. When a column
   exists only for some runs, scope by `run_id` (or filter via `downloads`, which
-  carries `run_id`, `type`, `slug`, `report_type`, `complete`).
+  carries `run_id`, `type`, `slug`, `report_type`, `hide_names`, `complete`).
+  **`student_name` and `username` mean different things run by run.** Where a run
+  hid names, `student_name` holds the student id and `username` a hash, under the
+  same column names, so runs fetched under different roles are union-compatible
+  and blended here with nothing in the row to tell them apart. Four of the five
+  Athena reports and the Portal metadata report are all affected. Read
+  `hide_names` before counting or grouping by a name, joining `downloads`
+  **type-qualified** because a run has one `downloads` row per download and an
+  unqualified join multiplies the rows: `reports r JOIN downloads d ON d.run_id
+  = r.run_id AND d.type = 'report'`. It is NULL for a download whose filter is
+  not on disk, which is not the same as false. Hiding names also changes the
+  column's **type**, since a student id is numeric: `student_name` scans as
+  BIGINT for a run that hid names and VARCHAR for one that did not, so cast
+  (`student_name::VARCHAR`) when comparing or grouping it across runs.
 - `report_prompts` — the prompt and correct-answer text keyed by the
   `res_<N>_<question_id>_*` columns.
 - `answers`, `history` — the identity-keyed stores (double-decoded
@@ -83,7 +96,34 @@ like `wildfire_2026.answers`):
   `state`), not just the current-answer one, so you can diff every saved snapshot
   of a doc across a session's history. Binary attachments (audio, images) are
   excluded here (not UTF-8 text) but remain downloadable via `attachment_files`.
-- `downloads` — a manifest dimension table.
+- `student_id_mapping` — one row per `learner_id` from Student ID Mapping runs,
+  deduplicated across runs with the latest fetch winning. Join to `answers` and
+  `history` on `run_remote_endpoint = remote_endpoint`. A NULL
+  `run_remote_endpoint` is a learner with no secure key, not missing data: every
+  such learner carries the same endpoint string, so the join key is withheld
+  rather than attributing one learner's answers to all of them. To check whether
+  one run repeated a learner, compare that run's own row count with its distinct
+  learner count: `SELECT count(*), count(DISTINCT learner_id) FROM
+  report_<run_id>`. Do not compare against this view's rows for that run: it
+  deduplicates **across** runs, so a learner a later run also holds is absent
+  here without the earlier run having repeated anything.
+- `student_metadata` — one row per `learner_id` from Student Metadata runs, same
+  dedupe and the same `run_remote_endpoint` rule, carrying the names and roster
+  labels the mapping view deliberately has none of. Join to
+  `student_id_mapping` on `learner_id`. `hide_names` is the run's own setting:
+  where it is true, `student_name` holds the student id and `username` a hash,
+  so a dataset holding runs fetched under different roles is filterable rather
+  than silently mixed. It is NULL for any download whose filter was not
+  recorded, which includes every download made before cc-data recorded filters
+  and any recovered by a reindex with no manifest. The same rows also reach
+  `reports`, which has no such column, so name-sensitive work belongs on this
+  view or on a type-qualified `downloads` join.
+- `downloads` — a manifest dimension table: `run_id`, `type`, `slug`,
+  `report_type`, `hide_names` and `complete`. It is where a per-download fact
+  belongs, so it is the join for anything that varies by run rather than by row.
+  **One row per download, not per run**: a run that had its report, answers and
+  history pulled has three, so join it type-qualified (`AND d.type = 'report'`)
+  or the join fans out.
 - Per-run views: `report_<run>`, `answers_<run>`, `history_<run>`, and
   `report_<run>_job_<job>` for a run that has post-processing jobs.
 

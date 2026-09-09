@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/concord-consortium/cc-data-cli/internal/store"
 )
@@ -104,8 +105,9 @@ func TestReindexPreservesManifestProvenance(t *testing.T) {
 
 func TestReindexReportTypeRecovery(t *testing.T) {
 	d := newDataset(t)
-	// log CSV: no student_id column.
-	os.WriteFile(d.Path("report_100.csv"), []byte("event,ts\nlogin,1\n"), 0o600)
+	// log CSV: identified by the event and time columns every log report carries. Absence of
+	// student_id is not enough, since the Portal aggregate reports lack it too.
+	os.WriteFile(d.Path("report_100.csv"), []byte("event,time\nlogin,1\n"), 0o600)
 	// answers CSV: student_id + pseudo-header rows.
 	os.WriteFile(d.Path("report_200.csv"), []byte("student_id,x_answer\nPrompt,p\nCorrect answer,c\n1,a\n"), 0o600)
 	// usage CSV: student_id, no pseudo-header rows -> recovered.
@@ -314,5 +316,98 @@ func TestReindexBusyWhenActivityHeld(t *testing.T) {
 	defer d.Activity().RUnlock()
 	if err := d.Reindex(); err != ErrBusy {
 		t.Fatalf("reindex under fetch should be busy, got %v", err)
+	}
+}
+
+// Reindex rebuilds CSV downloads from the filesystem and stamps each with the current clock, so
+// without carrying the prior value the fetch date a dataset reports moves to today on every
+// reindex, and the dimension views reorder overlapping runs by filename.
+func TestReindexKeepsThePriorFetchTime(t *testing.T) {
+	d := newDataset(t)
+	fetched := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
+	os.WriteFile(d.Path("report_584.csv"), []byte("student_id,x\n1,a\n"), 0o600)
+	if err := d.UpsertDownload(Download{
+		Type: "report", RunID: 584, Slug: "student-answers", ReportType: ReportTypeAnswers,
+		Files: []string{"report_584.csv"}, Complete: true, FetchedAt: fetched,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := d.Reindex(); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := d.ReadManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Downloads) != 1 {
+		t.Fatalf("expected 1 download, got %d", len(m.Downloads))
+	}
+	if got := m.Downloads[0].FetchedAt.UTC(); !got.Equal(fetched) {
+		t.Fatalf("reindex restamped the fetch time as %s, want %s", got, fetched)
+	}
+}
+
+// The disaster path has no prior entry to carry, so the generated value stands.
+func TestReindexStampsAFetchTimeWithNoPriorManifest(t *testing.T) {
+	d := newDataset(t)
+	os.WriteFile(d.Path("report_584.csv"), []byte("student_id,x\n1,a\n"), 0o600)
+	os.Remove(d.Path(ManifestFile))
+
+	if err := d.Reindex(); err != nil {
+		t.Fatal(err)
+	}
+	m, err := d.ReadManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Downloads[0].FetchedAt.IsZero() {
+		t.Fatal("a recovered download has no fetch time at all")
+	}
+}
+
+// A Portal aggregate report has no student_id, and before this rule tightened that alone was read
+// as confident evidence of a log CSV, so a wrong report_type was recorded with no warning. The
+// header is the real one from Detailed Metrics by School.
+func TestRecoverReportTypeDoesNotGuessLogFromAMissingStudentID(t *testing.T) {
+	const aggregate = "school_name,school_district,school_city,school_state,school_country," +
+		"number_of_teachers,number_of_classes,number_of_students,class_grade_levels,subject_areas\n" +
+		"Elm High,D1,Boston,MA,USA,3,4,50,\"9, 10\",\"Physics, Mathematics\"\n"
+
+	for _, tc := range []struct {
+		name, csv, wantType string
+		wantRecovered       bool
+	}{
+		{"a portal aggregate", aggregate, ReportTypeRecovered, true},
+		// The report the log rule exists for: no student_id, but a log schema to prove it.
+		{"a log report", "id,session,username,application,activity,event,event_value,time,parameters,extras,run_remote_endpoint,timestamp\n" +
+			"1,s,u,AP,act,started,,1700000000,{},{},https://portal/e/AAA,1700000000000\n", ReportTypeLog, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := newDataset(t)
+			os.WriteFile(d.Path("report_700.csv"), []byte(tc.csv), 0o600)
+			os.Remove(d.Path(ManifestFile))
+
+			if err := d.Reindex(); err != nil {
+				t.Fatal(err)
+			}
+			m, err := d.ReadManifest()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(m.Downloads) != 1 {
+				t.Fatalf("expected 1 download, got %d", len(m.Downloads))
+			}
+			dl := m.Downloads[0]
+			if dl.ReportType != tc.wantType || dl.Recovered != tc.wantRecovered {
+				t.Fatalf("report_type=%q recovered=%v, want %q and %v", dl.ReportType, dl.Recovered, tc.wantType, tc.wantRecovered)
+			}
+			// A guess presented as confident raises no warning, which is what made it costly.
+			warned := len(warningsWithPrefix(driftWarnings(d, m), "RECOVERED_PROVENANCE:")) > 0
+			if warned != tc.wantRecovered {
+				t.Errorf("RECOVERED_PROVENANCE warning present = %v, want %v", warned, tc.wantRecovered)
+			}
+		})
 	}
 }

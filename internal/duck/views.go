@@ -1,12 +1,14 @@
 package duck
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/concord-consortium/cc-data-cli/internal/dataset"
 	"github.com/concord-consortium/cc-data-cli/internal/store"
@@ -62,6 +64,7 @@ func (vs viewSet) statements() []viewStmt {
 	stmts = append(stmts, vs.attachmentFilesView())
 	stmts = append(stmts, vs.attachmentStatesView())
 	stmts = append(stmts, vs.attachmentContentView())
+	stmts = append(stmts, vs.dimensionViewStmts()...)
 	stmts = append(stmts, vs.perDownloadViews()...)
 	return stmts
 }
@@ -215,14 +218,20 @@ func (vs viewSet) runMembershipView() viewStmt {
 }
 
 // downloadsView is a VALUES dimension table from the manifest.
+//
+// hide_names separates the two meanings of a name column: where a run hid names, student_name
+// holds the student id and username a hash, under those same names, so rows fetched under
+// different roles are union-compatible and indistinguishable in the reports view. It is NULL
+// wherever no filter is on disk to derive it from.
 func (vs viewSet) downloadsView() viewStmt {
 	name := vs.prefix + `"downloads"`
-	header := "(run_id, type, slug, report_type, complete)"
+	header := "(run_id, type, slug, report_type, hide_names, complete)"
 	var rows []string
 	for _, dl := range vs.m.Downloads {
-		rows = append(rows, fmt.Sprintf("(%d, %s, %s, %s, %t)", dl.RunID, sqlStr(dl.Type), sqlStr(dl.Slug), sqlStr(dl.ReportType), dl.Complete))
+		rows = append(rows, fmt.Sprintf("(%d, %s, %s, %s, %s, %t)",
+			dl.RunID, sqlStr(dl.Type), sqlStr(dl.Slug), sqlStr(dl.ReportType), hideNamesLiteral(dl), dl.Complete))
 	}
-	fallback := fmt.Sprintf("CREATE VIEW %s AS SELECT CAST(NULL AS BIGINT) AS run_id, CAST(NULL AS VARCHAR) AS type, CAST(NULL AS VARCHAR) AS slug, CAST(NULL AS VARCHAR) AS report_type, CAST(NULL AS BOOLEAN) AS complete WHERE false", name)
+	fallback := fmt.Sprintf("CREATE VIEW %s AS SELECT CAST(NULL AS BIGINT) AS run_id, CAST(NULL AS VARCHAR) AS type, CAST(NULL AS VARCHAR) AS slug, CAST(NULL AS VARCHAR) AS report_type, CAST(NULL AS BOOLEAN) AS %s, CAST(NULL AS BOOLEAN) AS complete WHERE false", name, sqlIdent(dimensionHideName))
 	if len(rows) == 0 {
 		return viewStmt{name: name, primary: fallback, fallback: fallback}
 	}
@@ -459,4 +468,239 @@ func IdentityColumnNames() []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// dimensionView describes one slug-recognized join dimension: the report that feeds it, and the
+// fixed schema its stand-in declares before any run of that report has been downloaded. The
+// schema is known rather than sniffed, which is the premise these dedicated views rest on.
+type dimensionView struct {
+	name    string
+	slug    string
+	columns []dimensionColumn
+	// hideNames adds the run's hide_names filter value as a column. Without it a dataset
+	// holding runs fetched under different roles puts real names and numeric student ids in
+	// one column with nothing to tell them apart.
+	hideNames bool
+}
+
+type dimensionColumn struct{ name, typ string }
+
+// run_remote_endpoint is last in both schemas because the dedupe wrapper rewrites it and so
+// re-appends it, and a stand-in whose columns sat in a different order to the populated view
+// would be a second shape for a caller to learn.
+var dimensionViews = []dimensionView{
+	{
+		name: "student_id_mapping",
+		slug: "student-id-mapping",
+		columns: []dimensionColumn{
+			{"learner_id", dataset.TypeBIGINT},
+			{"user_id", dataset.TypeBIGINT},
+			{"primary_user_id", dataset.TypeBIGINT},
+			{"student_id", dataset.TypeVARCHAR},
+			{"class_id", dataset.TypeBIGINT},
+			{"offering_id", dataset.TypeBIGINT},
+			{"runnable_url", dataset.TypeVARCHAR},
+			{"run_remote_endpoint", dataset.TypeVARCHAR},
+		},
+	},
+	{
+		name:      "student_metadata",
+		slug:      "student-metadata",
+		hideNames: true,
+		columns: []dimensionColumn{
+			{"learner_id", dataset.TypeBIGINT},
+			{"user_id", dataset.TypeBIGINT},
+			{"primary_user_id", dataset.TypeBIGINT},
+			{"student_id", dataset.TypeVARCHAR},
+			{"class_id", dataset.TypeBIGINT},
+			{"school_id", dataset.TypeBIGINT},
+			{"student_name", dataset.TypeVARCHAR},
+			{"username", dataset.TypeVARCHAR},
+			{"class", dataset.TypeVARCHAR},
+			{"school", dataset.TypeVARCHAR},
+			{"teacher_user_ids", dataset.TypeVARCHAR},
+			{"teacher_names", dataset.TypeVARCHAR},
+			{"teacher_emails", dataset.TypeVARCHAR},
+			{"teacher_districts", dataset.TypeVARCHAR},
+			{"teacher_states", dataset.TypeVARCHAR},
+			{"permission_forms", dataset.TypeVARCHAR},
+			{"last_run", dataset.TypeVARCHAR},
+			{"run_remote_endpoint", dataset.TypeVARCHAR},
+		},
+	},
+}
+
+const (
+	dimensionKey      = "learner_id"
+	dimensionRunID    = "run_id"
+	dimensionEndpoint = "run_remote_endpoint"
+	dimensionRecency  = "fetched_at"
+	dimensionHideName = "hide_names"
+)
+
+// dimensionViewStmts builds the deduplicated join dimensions over the downloads that fed them,
+// recognized by report slug through the manifest's provenance rather than by column sniffing.
+func (vs viewSet) dimensionViewStmts() []viewStmt {
+	stmts := make([]viewStmt, 0, len(dimensionViews))
+	for _, d := range dimensionViews {
+		stmts = append(stmts, vs.dimensionViewStmt(d))
+	}
+	return stmts
+}
+
+func (vs viewSet) dimensionViewStmt(d dimensionView) viewStmt {
+	name := vs.prefix + sqlIdent(d.name)
+
+	var admitted []dataset.Download
+	var members, emptyMembers, files []string
+	for _, dl := range vs.m.Downloads {
+		if dl.Type != "report" || dl.Slug != d.slug || len(dl.Files) == 0 || dl.Columns == nil {
+			continue
+		}
+		if fileMissing(filepath.Join(vs.canonDir, dl.Files[0])) {
+			vs.warnf("report CSV %s is missing on disk; contributing zero rows to %s (run cc-data dataset reindex)", dl.Files[0], d.name)
+			members = append(members, vs.dimensionEmptyMember(dl, d))
+		} else {
+			members = append(members, vs.dimensionScan(dl, d))
+		}
+		emptyMembers = append(emptyMembers, vs.dimensionEmptyMember(dl, d))
+		admitted = append(admitted, dl)
+		files = append(files, dl.Files...)
+	}
+
+	// A union with no members has nothing to deduplicate, and the wrapper's EXCLUDE cannot bind
+	// against a stand-in, so it is not applied. That case is every dataset until the first such
+	// run lands, and it is the shape StaticViewNames builds.
+	if len(members) == 0 {
+		standIn := fmt.Sprintf("CREATE VIEW %s AS %s", name, d.standIn())
+		return viewStmt{name: name, primary: standIn, fallback: standIn}
+	}
+
+	order := dimensionOrderColumns(admitted)
+	primary := fmt.Sprintf("CREATE VIEW %s AS %s", name, d.dedupe(strings.Join(members, "\nUNION ALL BY NAME\n"), order))
+	fallback := fmt.Sprintf("CREATE VIEW %s AS %s", name, d.dedupe(strings.Join(emptyMembers, "\nUNION ALL BY NAME\n"), order))
+	return viewStmt{name: name, primary: primary, fallback: fallback, files: files}
+}
+
+// dedupe keeps one row per learner, latest fetch winning, and withholds the join key of a learner
+// with no secure key. Ordering by fetch time rather than run id is the point: a higher run id is a
+// later-created run, where this store's model everywhere else is that the latest fetch wins.
+//
+// The order is closed with the remaining columns because the portal query groups by the
+// report-learner row rather than by the learner id, so one run may legitimately emit a learner
+// twice, and on fetch time and run id alone those two rows tie completely.
+func (d dimensionView) dedupe(inner string, order []string) string {
+	by := []string{sqlIdent(dimensionRecency) + " DESC", sqlIdent(dimensionRunID) + " DESC"}
+	for _, col := range order {
+		by = append(by, sqlIdent(col)+" ASC")
+	}
+	// A real endpoint always ends with a non-empty secure key, so the bare trailing-slash form
+	// identifies the learners who have none. They share that one string, so joining on it
+	// attributes one student's answers to every other such learner; NULL never joins, and the
+	// learners stay in the dimension with every other column intact.
+	endpoint := fmt.Sprintf("CASE WHEN %s LIKE %s THEN NULL ELSE %s END AS %s",
+		sqlIdent(dimensionEndpoint), sqlStr("%/"), sqlIdent(dimensionEndpoint), sqlIdent(dimensionEndpoint))
+	return fmt.Sprintf("SELECT * EXCLUDE (%s, %s), %s FROM (\n%s\n) QUALIFY ROW_NUMBER() OVER (PARTITION BY %s ORDER BY %s) = 1",
+		sqlIdent(dimensionRecency), sqlIdent(dimensionEndpoint), endpoint, inner, sqlIdent(dimensionKey), strings.Join(by, ", "))
+}
+
+// standIn is the zero-member view: the full typed column list rather than a run_id-only shape, so
+// the documented joins can be run on a dataset before anything has been downloaded.
+func (d dimensionView) standIn() string {
+	cols := []string{fmt.Sprintf("CAST(NULL AS BIGINT) AS %s", sqlIdent(dimensionRunID))}
+	if d.hideNames {
+		cols = append(cols, fmt.Sprintf("CAST(NULL AS BOOLEAN) AS %s", sqlIdent(dimensionHideName)))
+	}
+	for _, c := range d.columns {
+		cols = append(cols, fmt.Sprintf("CAST(NULL AS %s) AS %s", c.typ, sqlIdent(c.name)))
+	}
+	return "SELECT " + strings.Join(cols, ", ") + " WHERE false"
+}
+
+// dimensionScan reads one run's CSV, injecting the run id and the fetch time the dedupe orders by.
+func (vs viewSet) dimensionScan(dl dataset.Download, d dimensionView) string {
+	dialect := dataset.DefaultCSVDialect()
+	if dl.CSVDialect != nil {
+		dialect = *dl.CSVDialect
+	}
+	return fmt.Sprintf("SELECT %s, * FROM read_csv(%s, auto_detect=false, header=true, delim=%s, quote=%s, escape=%s, columns=%s)",
+		strings.Join(vs.dimensionInjected(dl, d), ", "), vs.file(dl.Files[0]),
+		sqlStr(dialect.Delim), sqlStr(dialect.Quote), sqlStr(dialect.Escape),
+		orderedColumnsClause(dl.Columns, dl.ColumnOrder))
+}
+
+// dimensionEmptyMember is a zero-row member for a CSV that is missing or unreadable. It carries
+// the fixed schema as well as the recorded columns, so the wrapper's EXCLUDE and PARTITION BY bind
+// even for a download whose recorded columns are incomplete.
+func (vs viewSet) dimensionEmptyMember(dl dataset.Download, d dimensionView) string {
+	cols := vs.dimensionInjected(dl, d)
+	seen := map[string]bool{}
+	for _, c := range d.columns {
+		typ := c.typ
+		if recorded, ok := dl.Columns[c.name]; ok {
+			typ = recorded
+		}
+		cols = append(cols, fmt.Sprintf("CAST(NULL AS %s) AS %s", typ, sqlIdent(c.name)))
+		seen[c.name] = true
+	}
+	extra := make([]string, 0, len(dl.Columns))
+	for name := range dl.Columns {
+		if !seen[name] {
+			extra = append(extra, name)
+		}
+	}
+	sort.Strings(extra)
+	for _, name := range extra {
+		cols = append(cols, fmt.Sprintf("CAST(NULL AS %s) AS %s", dl.Columns[name], sqlIdent(name)))
+	}
+	return "SELECT " + strings.Join(cols, ", ") + " WHERE false"
+}
+
+// dimensionInjected is the run id, the fetch time the dedupe orders by, and for the metadata view
+// the run's hide_names, which every member carries whether it reads a CSV or stands in for one.
+func (vs viewSet) dimensionInjected(dl dataset.Download, d dimensionView) []string {
+	cols := []string{
+		fmt.Sprintf("CAST(%d AS BIGINT) AS %s", dl.RunID, sqlIdent(dimensionRunID)),
+		fmt.Sprintf("%s AS %s", sqlTimestamp(dl.FetchedAt), sqlIdent(dimensionRecency)),
+	}
+	if d.hideNames {
+		cols = append(cols, fmt.Sprintf("%s AS %s", hideNamesLiteral(dl), sqlIdent(dimensionHideName)))
+	}
+	return cols
+}
+
+// dimensionOrderColumns is every column the union carries besides the partition key and the
+// injected bookkeeping, which is what closes the dedupe's ordering. Derived from the recorded
+// columns rather than from the fixed schema, so every name is bindable in the union.
+func dimensionOrderColumns(admitted []dataset.Download) []string {
+	seen := map[string]bool{dimensionKey: true, dimensionRunID: true, dimensionRecency: true, dimensionHideName: true}
+	var cols []string
+	for _, dl := range admitted {
+		for name := range dl.Columns {
+			if !seen[name] {
+				cols = append(cols, name)
+				seen[name] = true
+			}
+		}
+	}
+	sort.Strings(cols)
+	return cols
+}
+
+// hideNamesLiteral reads the run's hide_names from the filter the download recorded. It is NULL
+// wherever no filter is on disk: a download made by a version that stored none, and any one a
+// manifest-less reindex recovered.
+func hideNamesLiteral(dl dataset.Download) string {
+	var filter struct {
+		HideNames *bool `json:"hide_names"`
+	}
+	if len(dl.Filters) > 0 && json.Unmarshal(dl.Filters, &filter) == nil && filter.HideNames != nil {
+		return fmt.Sprintf("CAST(%t AS BOOLEAN)", *filter.HideNames)
+	}
+	return "CAST(NULL AS BOOLEAN)"
+}
+
+// sqlTimestamp renders a time as a DuckDB TIMESTAMP literal in UTC.
+func sqlTimestamp(t time.Time) string {
+	return fmt.Sprintf("CAST(%s AS TIMESTAMP)", sqlStr(t.UTC().Format("2006-01-02 15:04:05.999999")))
 }

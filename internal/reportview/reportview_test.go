@@ -3,6 +3,7 @@ package reportview
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/concord-consortium/cc-data-cli/internal/api"
@@ -47,12 +48,40 @@ func TestFilterlessRunHasNoLabels(t *testing.T) {
 }
 
 func TestStateText(t *testing.T) {
-	s := "running"
-	if StateText(&s) != "running" {
-		t.Fatal("state text wrong")
+	running := "running"
+	for _, tc := range []struct {
+		name string
+		run  api.ReportRun
+		want string
+	}{
+		{"an async run reports its state", api.ReportRun{Execution: api.ExecutionAsync, AthenaQueryState: &running}, "running"},
+		{"an async run with no state has not started", api.ReportRun{Execution: api.ExecutionAsync}, "(none)"},
+		{"a sync run is live", api.ReportRun{Execution: api.ExecutionSync}, "live"},
+		// The one that fails if the branch is written as "a null state means live".
+		{"a sync run is live whatever its state field holds", api.ReportRun{Execution: api.ExecutionSync, AthenaQueryState: &running}, "live"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := StateText(tc.run); got != tc.want {
+				t.Fatalf("StateText = %q, want %q", got, tc.want)
+			}
+		})
 	}
-	if StateText(nil) != "(none)" {
-		t.Fatal("nil state should render (none)")
+}
+
+func TestToRunJSONCarriesExecution(t *testing.T) {
+	j := ToRunJSON(api.ReportRun{ID: 584, ReportSlug: "student-id-mapping", Execution: api.ExecutionSync})
+	if j.Execution != api.ExecutionSync {
+		t.Errorf("execution = %q, want %q", j.Execution, api.ExecutionSync)
+	}
+	if j.State != "live" {
+		t.Errorf("state = %q, want live", j.State)
+	}
+	raw, err := json.Marshal(j)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"execution":"sync"`) {
+		t.Errorf("the MCP payload must carry execution: %s", raw)
 	}
 }
 

@@ -1,6 +1,7 @@
 package duck
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -324,5 +325,35 @@ func TestResolveSchemasLegacyMainRequiresAlias(t *testing.T) {
 	// A single dataset named main uses the default schema and is fine.
 	if _, err := resolveSchemas([]DatasetSpec{{DS: dataset.Open(root, dataset.Ref{Portal: config.MustPortal("p"), Name: "main"})}}); err != nil {
 		t.Fatalf("single main dataset should be allowed: %v", err)
+	}
+}
+
+// The type is what decides union membership, so a Portal CSV recognized as portal is queryable
+// through reports rather than downloading successfully and then vanishing behind a warning.
+func TestEnginePortalReportJoinsTheReportsUnion(t *testing.T) {
+	d := newDS(t, "ds")
+	addReportCSV(t, d, 584, dataset.ReportTypePortal,
+		"learner_id,run_remote_endpoint\n901,https://portal/e/AAA\n902,https://portal/e/BBB\n")
+	addReportCSV(t, d, 216, dataset.ReportTypeAnswers, "student_id,x_answer\nPrompt,p\nCorrect answer,c\n1,a\n")
+
+	var warn bytes.Buffer
+	e, err := Open(context.Background(), []DatasetSpec{{DS: d}}, nil, &warn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Close()
+
+	if n := queryInt(t, e, "SELECT count(*) FROM reports WHERE run_id = 584"); n != 2 {
+		t.Fatalf("the Portal run contributes %d rows to reports, want 2", n)
+	}
+	if strings.Contains(warn.String(), "584") {
+		t.Fatalf("the Portal run was quarantined: %q", warn.String())
+	}
+	// Unioned BY NAME, so the two shapes coexist rather than one truncating the other.
+	if n := queryInt(t, e, "SELECT count(*) FROM reports WHERE learner_id IS NOT NULL"); n != 2 {
+		t.Fatalf("the Portal columns did not survive the union, got %d", n)
+	}
+	if n := queryInt(t, e, "SELECT count(*) FROM reports WHERE student_id IS NOT NULL"); n != 1 {
+		t.Fatalf("the answers columns did not survive the union, got %d", n)
 	}
 }
