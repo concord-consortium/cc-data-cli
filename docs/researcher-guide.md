@@ -336,6 +336,7 @@ When you (or Claude) query a dataset, the data is exposed as a set of SQL
 | `answers` | Student answers, one current record per learner-question. |
 | `history` | Every interactive-state snapshot, how each answer evolved over time. |
 | `report_prompts` | The prompt and correct-answer text for each question. |
+| `logs` | Log/action report rows with `parameters` and `extras` parsed as JSON, and both of the row's clocks as UTC timestamps: `event_time` from the client device's clock, `received_time` from the server's. |
 | `attachment_files` | One row per downloaded file (audio, saved docs) with its type and local path. |
 | `attachment_states` | The saved CODAP/SageModeler state the current answer points at. |
 | `attachment_content` | The text/JSON content of every saved CODAP/SageModeler snapshot, queryable and diffable. |
@@ -499,8 +500,10 @@ GROUP BY user_id;
 
 > Log timestamps come in two columns with different units: `time` is epoch
 > **seconds** (`to_timestamp(time)`) and `timestamp` is epoch **milliseconds**
-> (`to_timestamp(timestamp/1000)`). Order an event trace by one of these, not by
-> row order.
+> (`to_timestamp(timestamp/1000)`). They are also different clocks, not one instant
+> at two resolutions: `time` is the client device's clock and `timestamp` is server
+> receipt, so prefer `timestamp` for ordering within a session. Order an event trace
+> by one of these, not by row order.
 
 ### Broken down by class, school, or teacher (action logs with metadata)
 

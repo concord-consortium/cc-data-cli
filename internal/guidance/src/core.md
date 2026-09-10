@@ -30,8 +30,9 @@
   obvious.
   - The two time columns are in different units: `time` is epoch **seconds**
     (`to_timestamp(time)`), `timestamp` is epoch **milliseconds**
-    (`to_timestamp(timestamp/1000)`). Both resolve to the same instant; use
-    `timestamp` for sub-second ordering within a session. Order an event trace by
+    (`to_timestamp(timestamp/1000)`). They are different clocks, not one instant at
+    two resolutions: `time` is the client device's clock and `timestamp` is server
+    receipt, so prefer `timestamp` for ordering within a session. Order an event trace by
     `timestamp` (or `time`), not row order. Passing `timestamp` straight to
     `to_timestamp` gives year 57814, and dividing `time` by 1000 gives 1970, so
     match the unit. `parameters` and `extras` are VARCHAR holding JSON: parse with
@@ -76,6 +77,38 @@ like `wildfire_2026.answers`):
   (`student_name::VARCHAR`) when comparing or grouping it across runs.
 - `report_prompts` — the prompt and correct-answer text keyed by the
   `res_<N>_<question_id>_*` columns.
+- `logs`: the log-type report CSVs (`student-actions`,
+  `student-actions-with-metadata`, `teacher-actions`) unioned with `run_id`, plus
+  four parsed columns. The original `parameters`, `extras`, `time` and `timestamp`
+  columns are retained unchanged alongside them.
+  `parameters_json` and `extras_json` are the payload and the UI-state snapshot as
+  JSON, so `extras_json->>'selectedNavTab'` works directly, and `->>` on them is
+  always safe. Each parsed column keeps its source string beside it, and that is the
+  discriminator whenever a NULL matters: `parameters IS NOT NULL AND parameters_json
+  IS NULL` is a value that was present and did not parse, while a NULL source column
+  means there was nothing to parse (an empty field, or a run whose CSV never carried
+  that column at all).
+  **`event_time` and `received_time` are different clocks, not one instant at two
+  resolutions.** `event_time` comes from `time`, the client device's own clock
+  rounded to seconds, which the ingester replaces with the server clock when the
+  client sends nothing usable. `received_time` comes from `timestamp`, server
+  receipt in milliseconds. Ordering or measuring intervals on `event_time` alone
+  ties a large share of adjacent events and mixes two clocks across rows, so
+  prefer `received_time` for sequence and interval work. Their difference is
+  server receipt minus client event time, so it combines device-clock offset with
+  network and ingestion delay and **cannot separate them**; a negative difference
+  is the one readable case, since delay cannot be negative. Both are timezone-naive
+  `TIMESTAMP` holding **UTC** by convention, which is what makes them comparable to
+  each other and to the stores' `_fetched_at`.
+  The three reports do not have the same shape, so **`username` means up to five
+  different things here**: absent for `student-actions`, the student's for
+  `student-actions-with-metadata`, the teacher's for `teacher-actions`, and a
+  salted hash instead of either where the run hid names (`student_name` then holds
+  the student id). Before counting or grouping any name-bearing column, join
+  `downloads` type-qualified for **both** `slug` and `hide_names`, since neither
+  alone distinguishes the five: `logs l JOIN downloads d ON d.run_id = l.run_id AND
+  d.type = 'report'`. `hide_names` is NULL where the run's filter is not on disk,
+  which the `reports` entry above explains and which is not the same as false.
 - `answers`, `history` — the identity-keyed stores (double-decoded
   `report_state`; no dedup needed).
 - `run_membership` — one row per membership line with `run_id` and `type`. Join
