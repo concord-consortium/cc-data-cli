@@ -264,6 +264,10 @@ const (
 	failedJobWire        = `{"error":"NOT_READY","message":"The job result is not ready to download.","status":"failed"}`
 )
 
+// Synthetic rather than captured: today's server sends null for a reason it has no guidance for,
+// so an empty string is a shape only a later server could produce.
+const failedEmptyGuidanceWire = `{"error":"NOT_READY","message":"The report is not ready to download.","athena_query_error":"WEIRD_NEW_CODE: something Athena has not said before","athena_query_id":"qid-failed","athena_query_state":"failed","athena_query_guidance":""}`
+
 // Synthetic rather than captured: a body from a server that has grown a field this client predates,
 // which the passthrough has to carry without knowing it.
 const failedUnknownFieldWire = `{"error":"NOT_READY","message":"The report is not ready to download.","athena_query_error":"HIVE_EXCEEDED_PARTITION_LIMIT: too many","athena_query_id":"qid-failed","athena_query_state":"failed","athena_query_guidance":"Narrow it.","athena_query_bytes_scanned":1234}`
@@ -404,6 +408,28 @@ func TestGetReportForwardsAFieldThisClientDoesNotKnow(t *testing.T) {
 	}
 	if env["action"] != wireField(t, failedUnknownFieldWire, api.FieldAthenaQueryGuidance) {
 		t.Errorf("action = %v, want the guidance the server sent", env["action"])
+	}
+}
+
+func TestGetReportEmptyGuidanceLeavesNoActionAndNoKey(t *testing.T) {
+	d := newTestDataset(t)
+	rt := "answers"
+	srv := newReportServer(t, &reportServer{slug: "student-answers", reportType: &rt, notReadyStates: []string{"failed"}, notReadyBody: failedEmptyGuidanceWire})
+	defer srv.Close()
+
+	_, _, cliErr := runFetch(t, d, srv, fetch1{})
+	if cliErr == nil {
+		t.Fatal("terminal failure should error")
+	}
+	env := cliErr.Envelope()
+	if _, present := env["action"]; present {
+		t.Errorf("an empty guidance should leave action absent, not empty: %v", env)
+	}
+	if _, present := env[api.FieldAthenaQueryGuidance]; present {
+		t.Errorf("the guidance key reached the caller under its own name: %v", env)
+	}
+	if env["athena_query_error"] != "WEIRD_NEW_CODE: something Athena has not said before" {
+		t.Errorf("the raw reason is the authority and must survive: %v", env)
 	}
 }
 

@@ -280,8 +280,13 @@ func isTerminalFailure(state string, isJob bool) bool {
 // promoteGuidance renders the server's guidance into the envelope's action field and forwards every
 // other key untouched, so the sentence reaches the caller once rather than under two names.
 func promoteGuidance(extra map[string]any) (map[string]any, string) {
-	guidance, _ := extra[api.FieldAthenaQueryGuidance].(string)
-	if guidance == "" {
+	// Whether the key is there and is a string, not whether it says anything: an empty guidance is
+	// still the server naming this field, and leaving it in extra would print it as the one shape
+	// of this key a caller ever sees. A null or a non-string is forwarded instead, which leaves the
+	// null for the envelope's nil-drop.
+	raw, present := extra[api.FieldAthenaQueryGuidance]
+	guidance, isString := raw.(string)
+	if !present || !isString {
 		return extra, ""
 	}
 	out := make(map[string]any, len(extra)-1)
