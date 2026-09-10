@@ -29,6 +29,11 @@ type RunJSON struct {
 	// json.RawMessage, which reflects to a byte array in the MCP output schema and fails
 	// validation for every run that has a filter.
 	ReportFilter map[string]any `json:"report_filter,omitempty"`
+	// Why a listed run failed, as the server reported it. Omitted rather than null when absent,
+	// so a Portal run and a run that has not failed carry none of them.
+	AthenaQueryID       *string `json:"athena_query_id,omitempty"`
+	AthenaQueryError    *string `json:"athena_query_error,omitempty"`
+	AthenaQueryGuidance *string `json:"athena_query_guidance,omitempty"`
 }
 
 // RunsPayload is the reports_list payload.
@@ -68,13 +73,16 @@ func ToRunJSON(r api.ReportRun) RunJSON {
 		_ = json.Unmarshal(r.ReportFilter, &filter)
 	}
 	return RunJSON{
-		RunID:        r.ID,
-		Slug:         r.ReportSlug,
-		State:        StateText(r),
-		Execution:    r.Execution,
-		ReportType:   rt,
-		FilterLabels: FilterLabels(r),
-		ReportFilter: filter,
+		RunID:               r.ID,
+		Slug:                r.ReportSlug,
+		State:               StateText(r),
+		Execution:           r.Execution,
+		ReportType:          rt,
+		FilterLabels:        FilterLabels(r),
+		ReportFilter:        filter,
+		AthenaQueryID:       r.AthenaQueryID,
+		AthenaQueryError:    r.AthenaQueryError,
+		AthenaQueryGuidance: r.AthenaQueryGuidance,
 	}
 }
 

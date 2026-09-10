@@ -115,6 +115,54 @@ func TestToRunJSON(t *testing.T) {
 	}
 }
 
+func TestToRunJSONCarriesTheFailureFields(t *testing.T) {
+	state, id := "failed", "qid-failed"
+	reason := "HIVE_EXCEEDED_PARTITION_LIMIT: too many"
+	guidance := "This query covers too many Athena partitions."
+
+	j := ToRunJSON(api.ReportRun{
+		ID: 5, ReportSlug: "student-actions", Execution: api.ExecutionAsync,
+		AthenaQueryState: &state, AthenaQueryID: &id, AthenaQueryError: &reason, AthenaQueryGuidance: &guidance,
+	})
+
+	if j.AthenaQueryID == nil || *j.AthenaQueryID != id {
+		t.Errorf("query id = %v", j.AthenaQueryID)
+	}
+	if j.AthenaQueryError == nil || *j.AthenaQueryError != reason {
+		t.Errorf("reason = %v", j.AthenaQueryError)
+	}
+	if j.AthenaQueryGuidance == nil || *j.AthenaQueryGuidance != guidance {
+		t.Errorf("guidance = %v", j.AthenaQueryGuidance)
+	}
+}
+
+func TestToRunJSONOmitsTheFailureFieldsWhenTheServerSendsNone(t *testing.T) {
+	state := "queued"
+	raw, err := json.Marshal(RunPayload{Run: ToRunJSON(api.ReportRun{
+		ID: 90070, ReportSlug: "student-answers", Execution: api.ExecutionAsync, AthenaQueryState: &state,
+	})})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := `{"run":{"run_id":90070,"slug":"student-answers","state":"queued","execution":"async","filter_labels":null}}`
+	if string(raw) != want {
+		t.Errorf("a created run's payload changed:\n got %s\nwant %s", raw, want)
+	}
+}
+
+func TestToRunJSONPortalRunCarriesNoFailureFields(t *testing.T) {
+	raw, err := json.Marshal(ToRunJSON(api.ReportRun{ID: 229, ReportSlug: "school-metrics", Execution: api.ExecutionSync}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"athena_query_id", "athena_query_error", "athena_query_guidance"} {
+		if strings.Contains(string(raw), key) {
+			t.Errorf("a Portal run has no Athena query, so %q must not appear: %s", key, raw)
+		}
+	}
+}
+
 func TestFilterOptionsPayload(t *testing.T) {
 	total := 9
 	token := "eyJ0b2tlbiI6MX0"
