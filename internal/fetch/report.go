@@ -189,11 +189,16 @@ func pollUntilReady(ctx context.Context, opts ReportOptions) (*api.DownloadEnvel
 		state := extractState(apiErr, isJob)
 
 		if isTerminalFailure(state, isJob) {
+			// The NOT_READY body is a caller-visible contract, pinned server-side, so every key
+			// except the rendered guidance is forwarded: a field the server adds later reaches the
+			// envelope with no client release.
+			extra, guidance := promoteGuidance(apiErr.Extra)
 			return nil, nil, &output.CLIError{
 				ExitCode: output.ExitContract,
 				Code:     api.CodeNotReady,
 				Message:  fmt.Sprintf("run %d is in terminal state %q; nothing to download", opts.RunID, state),
-				Extra:    stateExtra(state, isJob),
+				Action:   guidance,
+				Extra:    extra,
 			}
 		}
 		if opts.NoWait {
@@ -272,11 +277,26 @@ func isTerminalFailure(state string, isJob bool) bool {
 	return state == "failed" || state == "cancelled"
 }
 
-func stateExtra(state string, isJob bool) map[string]any {
-	if isJob {
-		return map[string]any{"status": state}
+// promoteGuidance renders the server's guidance into the envelope's action field and forwards every
+// other key untouched, so the sentence reaches the caller once rather than under two names.
+func promoteGuidance(extra map[string]any) (map[string]any, string) {
+	// Whether the key is there and is a string, not whether it says anything: an empty guidance is
+	// still the server naming this field, and leaving it in extra would print it as the one shape
+	// of this key a caller ever sees. A null or a non-string is forwarded instead, which leaves the
+	// null for the envelope's nil-drop.
+	raw, present := extra[api.FieldAthenaQueryGuidance]
+	guidance, isString := raw.(string)
+	if !present || !isString {
+		return extra, ""
 	}
-	return map[string]any{"athena_query_state": state}
+	out := make(map[string]any, len(extra)-1)
+	for k, v := range extra {
+		if k == api.FieldAthenaQueryGuidance {
+			continue
+		}
+		out[k] = v
+	}
+	return out, guidance
 }
 
 func notReadyResult(opts ReportOptions, state string) map[string]any {

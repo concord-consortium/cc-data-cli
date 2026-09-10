@@ -60,6 +60,54 @@ const (
 	badFilterWire       = `{"error":"BAD_REQUEST","message":"cohort values must be integer ids"}`
 )
 
+// The first two are captured from GET /api/v1/reports/:id against failed runs on the report-service
+// test fixture. The third is synthetic: a server that sends none of the failure fields, which the
+// client has to read as an ordinary run rather than as an error.
+const (
+	failedMappedRunWire   = `{"id":114444,"inserted_at":"2026-09-10T12:20:08Z","report_filter":{"state":null,"filters":["cohort"],"app":[],"class":null,"cohort":[1],"school":null,"teacher":null,"assignment":null,"permission_form":null,"student":null,"country":null,"subject_area":null,"end_date":null,"exclude_internal":false,"hide_names":false,"start_date":null},"report_filter_values":{},"report_slug":"student-actions","athena_query_error":"HIVE_EXCEEDED_PARTITION_LIMIT: too many","athena_query_id":"qid-failed","athena_query_state":"failed","updated_at":"2026-09-10T12:20:08Z","athena_query_guidance":"This query covers too many Athena partitions. Narrow it with a date range or one or more applications and run it again.","execution":"async","report_type":"log"}`
+	failedUnmappedRunWire = `{"id":114445,"inserted_at":"2026-09-10T12:20:08Z","report_filter":{"state":null,"filters":[],"app":[],"class":null,"cohort":null,"school":null,"teacher":null,"assignment":null,"permission_form":null,"student":null,"country":null,"subject_area":null,"end_date":null,"exclude_internal":false,"hide_names":false,"start_date":null},"report_filter_values":{},"report_slug":"student-actions","athena_query_error":"WEIRD_NEW_CODE: something Athena has not said before","athena_query_id":"qid-failed","athena_query_state":"failed","updated_at":"2026-09-10T12:20:08Z","athena_query_guidance":null,"execution":"async","report_type":"log"}`
+	olderServerRunWire    = `{"id":216,"report_slug":"student-answers","athena_query_state":"failed","execution":"async"}`
+)
+
+func getReportFromWire(t *testing.T, wire string) ReportRun {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, wire)
+	}))
+	defer srv.Close()
+	run, err := testClient(srv.URL).GetReport(context.Background(), 584)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return *run
+}
+
+func TestGetReportDecodesTheFailureFields(t *testing.T) {
+	mapped := getReportFromWire(t, failedMappedRunWire)
+	if mapped.AthenaQueryID == nil || *mapped.AthenaQueryID != "qid-failed" {
+		t.Errorf("query id = %v", mapped.AthenaQueryID)
+	}
+	if mapped.AthenaQueryError == nil || !strings.HasPrefix(*mapped.AthenaQueryError, "HIVE_EXCEEDED_PARTITION_LIMIT") {
+		t.Errorf("reason = %v", mapped.AthenaQueryError)
+	}
+	if mapped.AthenaQueryGuidance == nil || !strings.Contains(*mapped.AthenaQueryGuidance, "Narrow it") {
+		t.Errorf("guidance = %v", mapped.AthenaQueryGuidance)
+	}
+
+	unmapped := getReportFromWire(t, failedUnmappedRunWire)
+	if unmapped.AthenaQueryError == nil {
+		t.Error("the raw reason is the authority and must decode even with no guidance")
+	}
+	if unmapped.AthenaQueryGuidance != nil {
+		t.Errorf("a reason the server cannot map has no guidance, got %v", *unmapped.AthenaQueryGuidance)
+	}
+
+	older := getReportFromWire(t, olderServerRunWire)
+	if older.AthenaQueryID != nil || older.AthenaQueryError != nil || older.AthenaQueryGuidance != nil {
+		t.Errorf("a server that sends none of them is not an error: %+v", older)
+	}
+}
+
 func TestCreateReportSendsTheFilterAndDecodesTheRun(t *testing.T) {
 	var body map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

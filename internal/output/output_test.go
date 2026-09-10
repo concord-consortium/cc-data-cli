@@ -46,6 +46,23 @@ func TestEnvelopeOmitsEmptyFields(t *testing.T) {
 	}
 }
 
+func TestEnvelopeDropsNilExtraButKeepsFalsyValues(t *testing.T) {
+	e := &CLIError{
+		Code:  "NOT_READY",
+		Extra: map[string]any{"reason": nil, "count": 0, "hidden": false, "label": ""},
+	}
+	env := e.Envelope()
+
+	if _, ok := env["reason"]; ok {
+		t.Errorf("a nil value should be absent, not null: %v", env)
+	}
+	for _, k := range []string{"count", "hidden", "label"} {
+		if _, ok := env[k]; !ok {
+			t.Errorf("%q is a value, not an absence, and should survive: %v", k, env)
+		}
+	}
+}
+
 func TestNotAuthenticated(t *testing.T) {
 	e := NotAuthenticated()
 	if e.ExitCode != ExitNotAuth || e.Code != "NOT_AUTHENTICATED" {
@@ -108,5 +125,34 @@ func TestProgressAndWarnGoToStderr(t *testing.T) {
 	}
 	if !strings.Contains(errb.String(), "polling 1") || !strings.Contains(errb.String(), "warning: heads up") {
 		t.Fatalf("stderr missing content: %q", errb.String())
+	}
+}
+
+// AsWriteCLIError sets Action to the advice that a create or duplicate may have landed anyway, and
+// nothing pins the error bodies those two routes can return. A server key of the same name taking
+// precedence would drop that advice and invite the duplicate run it exists to prevent.
+func TestEnvelopeClientFieldsBeatForwardedServerKeys(t *testing.T) {
+	e := &CLIError{
+		Code:    "SERVER_ERROR",
+		Message: "the client's message",
+		Action:  "The run may still have been created; check with: cc-data reports list",
+		Extra: map[string]any{
+			"error":   "SOMETHING_ELSE",
+			"message": "the server's message",
+			"action":  "Just run it again.",
+			"detail":  "forwarded",
+		},
+	}
+	env := e.Envelope()
+
+	for k, want := range map[string]any{
+		"error":   "SERVER_ERROR",
+		"message": "the client's message",
+		"action":  "The run may still have been created; check with: cc-data reports list",
+		"detail":  "forwarded",
+	} {
+		if env[k] != want {
+			t.Errorf("envelope[%q] = %v, want %v", k, env[k], want)
+		}
 	}
 }

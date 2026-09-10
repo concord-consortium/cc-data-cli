@@ -228,6 +228,10 @@ or `(none)` before the query starts. A `sync` run is a Portal report, computed
 fresh from the portal database every time you ask for it, so its state is always
 `live`.
 
+A state of `failed` means the query itself failed. The list doesn't say why; run
+`cc-data get report <run_id>` on that run to see the reason and what to do about
+it.
+
 ### Make a run without the web form
 
 `cc-data reports filter-options --dimension cohort` lists the values you may

@@ -12,6 +12,9 @@ const (
 	ExecutionAsync = "async"
 	// ExecutionSync is a Portal run, whose CSV is computed and streamed when it is asked for.
 	ExecutionSync = "sync"
+	// FieldAthenaQueryGuidance is the NOT_READY body's key for the suggested next step. The client
+	// renders its value and holds no copy of the wording.
+	FieldAthenaQueryGuidance = "athena_query_guidance"
 )
 
 // ReportRun is a run's metadata as served by GET /reports and /reports/:id.
@@ -22,6 +25,11 @@ type ReportRun struct {
 	ReportFilter       json.RawMessage `json:"report_filter"`
 	ReportFilterValues map[string]any  `json:"report_filter_values"`
 	AthenaQueryState   *string         `json:"athena_query_state"`
+	AthenaQueryID      *string         `json:"athena_query_id"`
+	AthenaQueryError   *string         `json:"athena_query_error"`
+	// The server derives this from the reason on every response, and a reason it does not
+	// recognize has none, so a listed run can carry a reason and no guidance.
+	AthenaQueryGuidance *string `json:"athena_query_guidance"`
 	// The discriminator every download and listing branch keys off: report_type is null for a
 	// Portal run by design, and a null athena_query_state is a real state for an Athena run.
 	Execution  string    `json:"execution"`

@@ -39,17 +39,24 @@ func (e *CLIError) Error() string {
 	return e.Code
 }
 
-// Envelope renders the single-line JSON error object, omitting empty fields.
+// Envelope renders the single-line JSON error object, omitting empty fields. A forwarded server
+// body cannot overwrite the client's own error, message or action: those three name this client's
+// exit-code contract, and a server with something new to say adds a key the forwarding carries.
 func (e *CLIError) Envelope() map[string]any {
-	m := map[string]any{"error": e.Code}
+	m := map[string]any{}
+	for k, v := range e.Extra {
+		// A key the server sent as JSON null is an absence, like an empty message or action.
+		if v == nil {
+			continue
+		}
+		m[k] = v
+	}
+	m["error"] = e.Code
 	if e.Message != "" {
 		m["message"] = e.Message
 	}
 	if e.Action != "" {
 		m["action"] = e.Action
-	}
-	for k, v := range e.Extra {
-		m[k] = v
 	}
 	return m
 }

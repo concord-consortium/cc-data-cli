@@ -71,6 +71,7 @@ type reportServer struct {
 	reportFilter   string // the run's filter and its resolved labels, as the server emits them
 	filterValues   string
 	portalRefusal  string // a 422 error envelope the Portal download answers with instead
+	notReadyBody   string // the exact 409 body for every not-ready poll; notReadyStates then only sets how many
 	pollCount      int32
 	stateIndex     int32
 }
@@ -133,6 +134,10 @@ func (s *reportServer) handleDownload(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&s.stateIndex, 1)
 		state := s.notReadyStates[i]
 		w.WriteHeader(http.StatusConflict)
+		if s.notReadyBody != "" {
+			fmt.Fprint(w, s.notReadyBody)
+			return
+		}
 		if state == "" {
 			fmt.Fprint(w, `{"error":"NOT_READY","athena_query_state":null}`)
 		} else {
@@ -249,6 +254,24 @@ func TestGetReportNoWaitQueued(t *testing.T) {
 	}
 }
 
+// Captured from GET /api/v1/reports/:id/download against failed runs on the report-service test
+// fixture, so these tests are pinned to what the server emits rather than to what this package
+// expects. The job body comes from the jobs route, which has no Athena query of its own.
+const (
+	failedMappedWire     = `{"error":"NOT_READY","message":"The report is not ready to download.","athena_query_error":"HIVE_EXCEEDED_PARTITION_LIMIT: too many","athena_query_id":"qid-failed","athena_query_state":"failed","athena_query_guidance":"This query covers too many Athena partitions. Narrow it with a date range or one or more applications and run it again."}`
+	failedReasonlessWire = `{"error":"NOT_READY","message":"The report is not ready to download.","athena_query_error":null,"athena_query_id":"qid-failed","athena_query_state":"failed","athena_query_guidance":null}`
+	failedUnmappedWire   = `{"error":"NOT_READY","message":"The report is not ready to download.","athena_query_error":"WEIRD_NEW_CODE: something Athena has not said before","athena_query_id":"qid-failed","athena_query_state":"failed","athena_query_guidance":null}`
+	failedJobWire        = `{"error":"NOT_READY","message":"The job result is not ready to download.","status":"failed"}`
+)
+
+// Synthetic rather than captured: today's server sends null for a reason it has no guidance for,
+// so an empty string is a shape only a later server could produce.
+const failedEmptyGuidanceWire = `{"error":"NOT_READY","message":"The report is not ready to download.","athena_query_error":"WEIRD_NEW_CODE: something Athena has not said before","athena_query_id":"qid-failed","athena_query_state":"failed","athena_query_guidance":""}`
+
+// Synthetic rather than captured: a body from a server that has grown a field this client predates,
+// which the passthrough has to carry without knowing it.
+const failedUnknownFieldWire = `{"error":"NOT_READY","message":"The report is not ready to download.","athena_query_error":"HIVE_EXCEEDED_PARTITION_LIMIT: too many","athena_query_id":"qid-failed","athena_query_state":"failed","athena_query_guidance":"Narrow it.","athena_query_bytes_scanned":1234}`
+
 func TestGetReportTerminalFailure(t *testing.T) {
 	d := newTestDataset(t)
 	rt := "answers"
@@ -261,6 +284,200 @@ func TestGetReportTerminalFailure(t *testing.T) {
 	// Should not poll past the terminal state.
 	if srv.pollCount != 1 {
 		t.Fatalf("terminal failure should not keep polling, polls=%d", srv.pollCount)
+	}
+	// This server sends only the state, as one without the failure fields does.
+	got, err := json.Marshal(cliErr.Envelope())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"athena_query_state":"failed","error":"NOT_READY","message":"run 584 is in terminal state \"failed\"; nothing to download"}`
+	if string(got) != want {
+		t.Errorf("envelope = %s, want %s", got, want)
+	}
+}
+
+func TestGetReportTerminalFailureCarriesTheServersFields(t *testing.T) {
+	d := newTestDataset(t)
+	rt := "answers"
+	srv := newReportServer(t, &reportServer{slug: "student-answers", reportType: &rt, notReadyStates: []string{"failed"}, notReadyBody: failedMappedWire})
+	defer srv.Close()
+
+	_, _, cliErr := runFetch(t, d, srv, fetch1{})
+	if cliErr == nil {
+		t.Fatal("terminal failure should error")
+	}
+	env := cliErr.Envelope()
+	for k, want := range map[string]any{
+		"athena_query_state": "failed",
+		"athena_query_id":    "qid-failed",
+		"athena_query_error": "HIVE_EXCEEDED_PARTITION_LIMIT: too many",
+	} {
+		if env[k] != want {
+			t.Errorf("envelope[%q] = %v, want %v", k, env[k], want)
+		}
+	}
+	if !strings.Contains(env["message"].(string), "terminal state") {
+		t.Errorf("the client's own message was lost: %v", env["message"])
+	}
+}
+
+func TestGetReportReasonlessFailureCarriesNoNullKeys(t *testing.T) {
+	d := newTestDataset(t)
+	rt := "answers"
+	srv := newReportServer(t, &reportServer{slug: "student-answers", reportType: &rt, notReadyStates: []string{"failed"}, notReadyBody: failedReasonlessWire})
+	defer srv.Close()
+
+	_, _, cliErr := runFetch(t, d, srv, fetch1{})
+	if cliErr == nil {
+		t.Fatal("terminal failure should error")
+	}
+	env := cliErr.Envelope()
+	if env["athena_query_state"] != "failed" {
+		t.Errorf("state = %v", env["athena_query_state"])
+	}
+	for _, k := range []string{"athena_query_error", "athena_query_guidance"} {
+		if _, present := env[k]; present {
+			t.Errorf("a null the server sent reached the envelope as %q", k)
+		}
+	}
+}
+
+func wireField(t *testing.T, wire, key string) any {
+	t.Helper()
+	var body map[string]any
+	if err := json.Unmarshal([]byte(wire), &body); err != nil {
+		t.Fatal(err)
+	}
+	return body[key]
+}
+
+func TestGetReportMappedReasonBecomesTheAction(t *testing.T) {
+	d := newTestDataset(t)
+	rt := "answers"
+	srv := newReportServer(t, &reportServer{slug: "student-answers", reportType: &rt, notReadyStates: []string{"failed"}, notReadyBody: failedMappedWire})
+	defer srv.Close()
+
+	_, _, cliErr := runFetch(t, d, srv, fetch1{})
+	if cliErr == nil {
+		t.Fatal("terminal failure should error")
+	}
+	env := cliErr.Envelope()
+	if env["action"] != wireField(t, failedMappedWire, api.FieldAthenaQueryGuidance) {
+		t.Errorf("action = %v, want the guidance the server sent", env["action"])
+	}
+	if _, present := env[api.FieldAthenaQueryGuidance]; present {
+		t.Errorf("the guidance is in the envelope twice: %v", env)
+	}
+	if env["athena_query_error"] != "HIVE_EXCEEDED_PARTITION_LIMIT: too many" || env["athena_query_id"] != "qid-failed" || env["athena_query_state"] != "failed" {
+		t.Errorf("the other fields did not survive the promotion: %v", env)
+	}
+}
+
+func TestGetReportUnmappedReasonLeavesNoAction(t *testing.T) {
+	d := newTestDataset(t)
+	rt := "answers"
+	srv := newReportServer(t, &reportServer{slug: "student-answers", reportType: &rt, notReadyStates: []string{"failed"}, notReadyBody: failedUnmappedWire})
+	defer srv.Close()
+
+	_, _, cliErr := runFetch(t, d, srv, fetch1{})
+	if cliErr == nil {
+		t.Fatal("terminal failure should error")
+	}
+	env := cliErr.Envelope()
+	if _, present := env["action"]; present {
+		t.Errorf("an unmapped reason should leave action absent, not empty: %v", env)
+	}
+	if env["athena_query_error"] != "WEIRD_NEW_CODE: something Athena has not said before" {
+		t.Errorf("the raw reason is the authority and must survive: %v", env)
+	}
+}
+
+func TestGetReportForwardsAFieldThisClientDoesNotKnow(t *testing.T) {
+	d := newTestDataset(t)
+	rt := "answers"
+	srv := newReportServer(t, &reportServer{slug: "student-answers", reportType: &rt, notReadyStates: []string{"failed"}, notReadyBody: failedUnknownFieldWire})
+	defer srv.Close()
+
+	_, _, cliErr := runFetch(t, d, srv, fetch1{})
+	if cliErr == nil {
+		t.Fatal("terminal failure should error")
+	}
+	env := cliErr.Envelope()
+	if env["athena_query_bytes_scanned"] != float64(1234) {
+		t.Errorf("a field the client predates should still reach the envelope: %v", env)
+	}
+	if env["action"] != wireField(t, failedUnknownFieldWire, api.FieldAthenaQueryGuidance) {
+		t.Errorf("action = %v, want the guidance the server sent", env["action"])
+	}
+}
+
+func TestGetReportEmptyGuidanceLeavesNoActionAndNoKey(t *testing.T) {
+	d := newTestDataset(t)
+	rt := "answers"
+	srv := newReportServer(t, &reportServer{slug: "student-answers", reportType: &rt, notReadyStates: []string{"failed"}, notReadyBody: failedEmptyGuidanceWire})
+	defer srv.Close()
+
+	_, _, cliErr := runFetch(t, d, srv, fetch1{})
+	if cliErr == nil {
+		t.Fatal("terminal failure should error")
+	}
+	env := cliErr.Envelope()
+	if _, present := env["action"]; present {
+		t.Errorf("an empty guidance should leave action absent, not empty: %v", env)
+	}
+	if _, present := env[api.FieldAthenaQueryGuidance]; present {
+		t.Errorf("the guidance key reached the caller under its own name: %v", env)
+	}
+	if env["athena_query_error"] != "WEIRD_NEW_CODE: something Athena has not said before" {
+		t.Errorf("the raw reason is the authority and must survive: %v", env)
+	}
+}
+
+// The terminal-failure check runs before the --no-wait branch, so a failed run gets the reason
+// rather than the bare state line --no-wait prints for a run that is merely still working.
+func TestGetReportNoWaitTerminalFailureStillExplains(t *testing.T) {
+	d := newTestDataset(t)
+	rt := "answers"
+	srv := newReportServer(t, &reportServer{slug: "student-answers", reportType: &rt, notReadyStates: []string{"failed"}, notReadyBody: failedMappedWire})
+	defer srv.Close()
+
+	result, _, cliErr := runFetch(t, d, srv, fetch1{noWait: true})
+	if cliErr == nil || cliErr.ExitCode != output.ExitContract {
+		t.Fatalf("a failed run should exit 5 under --no-wait, got %+v", cliErr)
+	}
+	if cliErr.Silent {
+		t.Fatal("the failure envelope must be printed, not silenced by --no-wait")
+	}
+	if result != nil {
+		t.Fatalf("a failed run has no state line to print: %v", result)
+	}
+	env := cliErr.Envelope()
+	if env["action"] != wireField(t, failedMappedWire, api.FieldAthenaQueryGuidance) {
+		t.Errorf("action = %v, want the guidance the server sent", env["action"])
+	}
+	if env["athena_query_error"] != "HIVE_EXCEEDED_PARTITION_LIMIT: too many" {
+		t.Errorf("the reason did not reach the --no-wait caller: %v", env)
+	}
+}
+
+func TestGetReportJobFailureEnvelopeIsUnchanged(t *testing.T) {
+	d := newTestDataset(t)
+	rt := "answers"
+	srv := newReportServer(t, &reportServer{slug: "student-answers", reportType: &rt, notReadyStates: []string{"failed"}, notReadyBody: failedJobWire})
+	defer srv.Close()
+
+	jobID := 3
+	_, _, cliErr := runFetch(t, d, srv, fetch1{jobID: &jobID})
+	if cliErr == nil {
+		t.Fatal("a failed job should error")
+	}
+	got, err := json.Marshal(cliErr.Envelope())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"error":"NOT_READY","message":"run 584 is in terminal state \"failed\"; nothing to download","status":"failed"}`
+	if string(got) != want {
+		t.Errorf("job envelope changed:\n got %s\nwant %s", got, want)
 	}
 }
 
