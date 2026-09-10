@@ -91,7 +91,7 @@ Make a failed Athena run explain itself everywhere, not only in the browser: exp
 
 ### Copy the guidance into `Action`, or move it?
 
-**Context**: `Envelope/0` merges `Extra` after setting `action`, so copying prints the same sentence twice on the one line a human reads and an agent parses (447 characters against 316).
+**Context**: `action` and `athena_query_guidance` are different keys, so copying prints the same sentence twice on the one line a human reads and an agent parses (447 characters against 316).
 **Options considered**: keep both keys and assert in a test that they are equal; promote the key into `Action` and forward the rest; leave `Action` unset and let the wire key stand alone.
 **Decision**: promote. Keeping both was rejected on a contradiction of its own making: the case for two fields was that `Action` may one day say something the server did not, and the proposed guard was a test asserting the two are always equal, which forbids exactly that divergence. Leaving `Action` unset loses the field the exit-code contract already defines for the next step.
 
@@ -119,6 +119,11 @@ Make a failed Athena run explain itself everywhere, not only in the browser: exp
 ### Does the client need to know anything about the mapping?
 
 **Decision**: one thing, the wire key's name, which is unavoidable and is a named constant (`api.FieldAthenaQueryGuidance`) rather than a literal in the middle of a function. The wording stays the server's, and the wire captures verify the name still matches.
+
+### Which wins in `Envelope/0` when a forwarded body carries `error`, `message` or `action`?
+
+**Context**: forwarding unknown keys made a collision reachable that the merge order had made moot. `decodeAPIError` strips `error` and `message` into their own fields but leaves an `action` key in `Extra`, and `AsWriteCLIError` sets `Action` to the advice that a `reports create` or `reports duplicate` may have landed anyway. Nothing pins the error bodies those two routes return.
+**Decision**: the client's three fields win, set after the merge rather than before it, so the precedence is stated rather than a side effect of statement order. Those three name this client's exit-code contract, and a server with something new to say adds a key the forwarding now carries. Losing the write advice is the case that decided it: it invites the duplicate run it exists to prevent.
 
 ### Must the nil-drop in `Envelope/0` distinguish nil from falsy?
 
