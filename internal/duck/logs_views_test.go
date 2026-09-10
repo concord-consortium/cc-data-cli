@@ -423,10 +423,16 @@ func TestReportsViewSQLIsUnchanged(t *testing.T) {
 			Columns: map[string]string{"event": dataset.TypeVARCHAR, "time": dataset.TypeBIGINT}, ColumnOrder: []string{"event", "time"}},
 	}}}
 	st := vs.reportsView()
-	if got := strings.ReplaceAll(st.primary, dir, "DIR"); got != reportsGolden {
+	// csvScan builds the path with filepath.Join, so substituting the joined path rather
+	// than the directory keeps the golden literal on a platform whose separator is not /.
+	scanned := filepath.Join(dir, "a.csv")
+	if !strings.Contains(st.primary, scanned) {
+		t.Fatalf("the statement does not name %s, so the substitution below proves nothing:\n%s", scanned, st.primary)
+	}
+	if got := strings.ReplaceAll(st.primary, scanned, "DIR/a.csv"); got != reportsGolden {
 		t.Errorf("reports primary changed:\ngot  %s\nwant %s", got, reportsGolden)
 	}
-	if got := strings.ReplaceAll(st.fallback, dir, "DIR"); got != reportsFallbackGolden {
-		t.Errorf("reports fallback changed:\ngot  %s\nwant %s", got, reportsFallbackGolden)
+	if st.fallback != reportsFallbackGolden {
+		t.Errorf("reports fallback changed:\ngot  %s\nwant %s", st.fallback, reportsFallbackGolden)
 	}
 }
