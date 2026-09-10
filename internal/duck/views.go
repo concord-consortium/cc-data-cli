@@ -57,6 +57,7 @@ func (vs viewSet) statements() []viewStmt {
 	var stmts []viewStmt
 	stmts = append(stmts, vs.reportsView())
 	stmts = append(stmts, vs.reportPromptsView())
+	stmts = append(stmts, vs.logsView())
 	stmts = append(stmts, vs.storeView(store.TypeAnswers))
 	stmts = append(stmts, vs.storeView(store.TypeHistory))
 	stmts = append(stmts, vs.runMembershipView())
@@ -94,13 +95,23 @@ func (vs viewSet) reportPromptsView() viewStmt {
 	})
 }
 
-// derivedColumn is an output column appended to every member of a report union.
-// The expression takes the download so a member can substitute a typed NULL for a
-// source column its own CSV lacks.
+// derivedColumn is an output column appended to every member of a report union,
+// derived from the src column of the CSV. A member whose CSV lacks src contributes a
+// typed NULL instead, so typ is declared once and cannot disagree with what the
+// member emits.
 type derivedColumn struct {
 	name string
 	typ  string
-	expr func(dl dataset.Download) string
+	src  string
+	expr func(col string) string
+}
+
+// sql renders the column for one download, where col is the quoted source identifier.
+func (d derivedColumn) sql(dl dataset.Download) string {
+	if _, ok := dl.Columns[d.src]; !ok {
+		return fmt.Sprintf("CAST(NULL AS %s)", d.typ)
+	}
+	return d.expr(sqlIdent(d.src))
 }
 
 // derivedFor drops any derived column whose name the CSV already records. A duplicate
@@ -115,6 +126,49 @@ func derivedFor(dl dataset.Download, derived []derivedColumn) []derivedColumn {
 		kept = append(kept, d)
 	}
 	return kept
+}
+
+// logsView unions the log-type report CSVs with parameters and extras parsed as JSON
+// and both of the row's clocks rendered as timestamps. Admission is by report type
+// rather than slug because reindex recovers the type from a CSV whose slug is gone,
+// and a slug test would drop rows the reports view still shows.
+func (vs viewSet) logsView() viewStmt {
+	// keepData is inert here; it only gates the answers-type pseudo-header filter.
+	return vs.reportUnionView(`"logs"`, true, logDerived, func(dl dataset.Download) bool {
+		return dl.ReportType == dataset.ReportTypeLog
+	})
+}
+
+// logDerived are the columns logsView appends to every member. time and timestamp are
+// different clocks rather than one instant at two resolutions: the ingester sets time
+// from the client's own clock, rounded to seconds, and timestamp to server receipt in
+// milliseconds. Hence the divisor on one and not the other.
+var logDerived = []derivedColumn{
+	{"parameters_json", store.TypeJSON, "parameters", jsonExpr},
+	{"extras_json", store.TypeJSON, "extras", jsonExpr},
+	{"event_time", store.TypeTIMESTAMP, "time", epochExpr(1)},
+	{"received_time", store.TypeTIMESTAMP, "timestamp", epochExpr(1000)},
+}
+
+// jsonExpr parses a column as JSON, yielding NULL rather than an error for a value
+// that is not valid JSON.
+func jsonExpr(col string) string {
+	return fmt.Sprintf("TRY_CAST(%s AS %s)", col, store.TypeJSON)
+}
+
+// epochExpr converts a UNIX epoch column counting perSecond units per second to a UTC
+// timestamp. The TRY_CAST is what tolerates DetectCSV typing the column per file, since
+// to_timestamp on a VARCHAR is a binder error that would fail the whole view rather than
+// null one column; AT TIME ZONE 'UTC' keeps the result a TIMESTAMP, so the type does not
+// depend on whether a CSV is present and it compares directly to the store's _fetched_at.
+func epochExpr(perSecond int) func(string) string {
+	return func(col string) string {
+		seconds := fmt.Sprintf("TRY_CAST(%s AS DOUBLE)", col)
+		if perSecond != 1 {
+			seconds = fmt.Sprintf("%s / %d", seconds, perSecond)
+		}
+		return fmt.Sprintf("to_timestamp(%s) AT TIME ZONE 'UTC'", seconds)
+	}
 }
 
 // reportUnionView builds a union over the report CSVs the include predicate
@@ -200,7 +254,7 @@ func (vs viewSet) csvScan(dl dataset.Download, keepData bool, derived []derivedC
 	}
 	var extra strings.Builder
 	for _, d := range derivedFor(dl, derived) {
-		fmt.Fprintf(&extra, ", %s AS %s", d.expr(dl), sqlIdent(d.name))
+		fmt.Fprintf(&extra, ", %s AS %s", d.sql(dl), sqlIdent(d.name))
 	}
 	scan := fmt.Sprintf("SELECT %d AS run_id, *%s FROM read_csv(%s, auto_detect=false, header=true, delim=%s, quote=%s, escape=%s, columns=%s)",
 		dl.RunID, extra.String(), vs.file(dl.Files[0]), sqlStr(dialect.Delim), sqlStr(dialect.Quote), sqlStr(dialect.Escape), orderedColumnsClause(dl.Columns, dl.ColumnOrder))

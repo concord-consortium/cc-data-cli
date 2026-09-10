@@ -76,6 +76,32 @@ like `wildfire_2026.answers`):
   (`student_name::VARCHAR`) when comparing or grouping it across runs.
 - `report_prompts` — the prompt and correct-answer text keyed by the
   `res_<N>_<question_id>_*` columns.
+- `logs`: the log-type report CSVs (`student-actions`,
+  `student-actions-with-metadata`, `teacher-actions`) unioned with `run_id`, plus
+  four parsed columns. The original `parameters`, `extras`, `time` and `timestamp`
+  columns are retained unchanged alongside them.
+  `parameters_json` and `extras_json` are the payload and the UI-state snapshot as
+  JSON, so `extras_json->>'selectedNavTab'` works directly. Both are NULL when the
+  source string is not valid JSON, so a NULL means unparsable, not absent; `->>`
+  on them is always safe.
+  **`event_time` and `received_time` are different clocks, not one instant at two
+  resolutions.** `event_time` comes from `time`, the client device's own clock
+  rounded to seconds, which the ingester replaces with the server clock when the
+  client sends nothing usable. `received_time` comes from `timestamp`, server
+  receipt in milliseconds. Ordering or measuring intervals on `event_time` alone
+  ties a large share of adjacent events and mixes two clocks across rows, so
+  prefer `received_time` for sequence and interval work and read the difference
+  between them as device-clock skew rather than as latency. Both are timezone-naive
+  `TIMESTAMP` holding **UTC** by convention, which is what makes them comparable to
+  each other and to the stores' `_fetched_at`.
+  The three reports do not have the same shape, so **`username` means up to five
+  different things here**: absent for `student-actions`, the student's for
+  `student-actions-with-metadata`, the teacher's for `teacher-actions`, and a
+  salted hash instead of either where the run hid names (`student_name` then holds
+  the student id). Before counting or grouping any name-bearing column, join
+  `downloads` type-qualified for **both** `slug` and `hide_names`, since neither
+  alone distinguishes the five: `logs l JOIN downloads d ON d.run_id = l.run_id AND
+  d.type = 'report'`.
 - `answers`, `history` — the identity-keyed stores (double-decoded
   `report_state`; no dedup needed).
 - `run_membership` — one row per membership line with `run_id` and `type`. Join
