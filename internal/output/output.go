@@ -49,6 +49,10 @@ func (e *CLIError) Envelope() map[string]any {
 		m["action"] = e.Action
 	}
 	for k, v := range e.Extra {
+		// A key the server sent as JSON null is an absence, like an empty message or action.
+		if v == nil {
+			continue
+		}
 		m[k] = v
 	}
 	return m

@@ -46,6 +46,23 @@ func TestEnvelopeOmitsEmptyFields(t *testing.T) {
 	}
 }
 
+func TestEnvelopeDropsNilExtraButKeepsFalsyValues(t *testing.T) {
+	e := &CLIError{
+		Code:  "NOT_READY",
+		Extra: map[string]any{"reason": nil, "count": 0, "hidden": false, "label": ""},
+	}
+	env := e.Envelope()
+
+	if _, ok := env["reason"]; ok {
+		t.Errorf("a nil value should be absent, not null: %v", env)
+	}
+	for _, k := range []string{"count", "hidden", "label"} {
+		if _, ok := env[k]; !ok {
+			t.Errorf("%q is a value, not an absence, and should survive: %v", k, env)
+		}
+	}
+}
+
 func TestNotAuthenticated(t *testing.T) {
 	e := NotAuthenticated()
 	if e.ExitCode != ExitNotAuth || e.Code != "NOT_AUTHENTICATED" {

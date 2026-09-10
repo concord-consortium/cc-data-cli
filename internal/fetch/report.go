@@ -189,11 +189,13 @@ func pollUntilReady(ctx context.Context, opts ReportOptions) (*api.DownloadEnvel
 		state := extractState(apiErr, isJob)
 
 		if isTerminalFailure(state, isJob) {
+			// The NOT_READY body is a caller-visible contract, pinned server-side, so it is
+			// forwarded whole: a field the server adds reaches the envelope with no client release.
 			return nil, nil, &output.CLIError{
 				ExitCode: output.ExitContract,
 				Code:     api.CodeNotReady,
 				Message:  fmt.Sprintf("run %d is in terminal state %q; nothing to download", opts.RunID, state),
-				Extra:    stateExtra(state, isJob),
+				Extra:    apiErr.Extra,
 			}
 		}
 		if opts.NoWait {
@@ -270,13 +272,6 @@ func isTerminalFailure(state string, isJob bool) bool {
 		return state == "failed"
 	}
 	return state == "failed" || state == "cancelled"
-}
-
-func stateExtra(state string, isJob bool) map[string]any {
-	if isJob {
-		return map[string]any{"status": state}
-	}
-	return map[string]any{"athena_query_state": state}
 }
 
 func notReadyResult(opts ReportOptions, state string) map[string]any {
