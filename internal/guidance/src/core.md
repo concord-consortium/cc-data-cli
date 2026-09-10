@@ -81,9 +81,12 @@ like `wildfire_2026.answers`):
   four parsed columns. The original `parameters`, `extras`, `time` and `timestamp`
   columns are retained unchanged alongside them.
   `parameters_json` and `extras_json` are the payload and the UI-state snapshot as
-  JSON, so `extras_json->>'selectedNavTab'` works directly. Both are NULL when the
-  source string is not valid JSON, so a NULL means unparsable, not absent; `->>`
-  on them is always safe.
+  JSON, so `extras_json->>'selectedNavTab'` works directly, and `->>` on them is
+  always safe. Each parsed column keeps its source string beside it, and that is the
+  discriminator whenever a NULL matters: `parameters IS NOT NULL AND parameters_json
+  IS NULL` is a value that was present and did not parse, while a NULL source column
+  means there was nothing to parse (an empty field, or a run whose CSV never carried
+  that column at all).
   **`event_time` and `received_time` are different clocks, not one instant at two
   resolutions.** `event_time` comes from `time`, the client device's own clock
   rounded to seconds, which the ingester replaces with the server clock when the

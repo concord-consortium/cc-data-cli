@@ -107,8 +107,12 @@ func TestLogsMalformedExtrasIsNullNotAnError(t *testing.T) {
 		fmt.Sprintf(`bad,%d,%d,"{""tileId"":""t8""}",not json`, pinnedSeconds, pinnedMillis))})
 	e, _ := openWithWarnings(t, d)
 
-	if got := queryString(t, e, `SELECT coalesce(extras_json->>'selectedNavTab', '<NULL>') FROM logs WHERE event = 'bad'`); got != "<NULL>" {
-		t.Errorf("unparsable extras yielded %q, want a null", got)
+	if n := queryInt(t, e, `SELECT count(*) FROM logs WHERE event = 'bad' AND extras_json IS NULL`); n != 1 {
+		t.Errorf("unparsable extras did not yield a null extras_json")
+	}
+	// The unparsable string itself is retained.
+	if got := queryString(t, e, `SELECT extras FROM logs WHERE event = 'bad'`); got != "not json" {
+		t.Errorf("extras = %q, want the unparsable string retained", got)
 	}
 	// The same row's other JSON column still parses, so the failure is per column.
 	if got := queryString(t, e, `SELECT parameters_json->>'tileId' FROM logs WHERE event = 'bad'`); got != "t8" {
@@ -145,8 +149,8 @@ func TestLogsTimestampsAreUTCValuedTimestamps(t *testing.T) {
 			t.Errorf("%s is %s, want TIMESTAMP", col, got)
 		}
 	}
-	if got := queryString(t, e, `SELECT (event_time = TIMESTAMP '`+pinnedUTC+`')::VARCHAR FROM logs`); got != "true" {
-		t.Errorf("event_time did not equal the UTC instant as a naive timestamp (got %q)", got)
+	if n := queryInt(t, e, `SELECT count(*) FROM logs WHERE event_time = TIMESTAMP '`+pinnedUTC+`'`); n != 1 {
+		t.Errorf("event_time did not equal the UTC instant as a naive timestamp")
 	}
 	// The stores declare their own time column the same way, which is what makes the two
 	// directly comparable; a TIMESTAMPTZ here would be an offset apart from _fetched_at.
@@ -209,15 +213,15 @@ func TestLogsMemberLackingParametersStillContributes(t *testing.T) {
 		fmt.Sprintf("noparams,%d,\"{\"\"selectedNavTab\"\":\"\"x\"\"}\"\n", pinnedSeconds)})
 	e, _ := openWithWarnings(t, d)
 
-	if got := queryString(t, e, `SELECT coalesce(parameters_json->>'tileId', '<NULL>') FROM logs WHERE event = 'noparams'`); got != "<NULL>" {
-		t.Errorf("parameters_json on a member with no parameters column = %q, want a null", got)
+	if n := queryInt(t, e, `SELECT count(*) FROM logs WHERE event = 'noparams' AND parameters_json IS NULL`); n != 1 {
+		t.Errorf("parameters_json on a member with no parameters column was not null")
 	}
 	if got := queryString(t, e, `SELECT extras_json->>'selectedNavTab' FROM logs WHERE event = 'noparams'`); got != "x" {
 		t.Errorf("the member's own columns did not survive: selectedNavTab = %q", got)
 	}
 	// timestamp is absent from that CSV too, so the other typed-NULL branch is covered.
-	if got := queryString(t, e, `SELECT coalesce(strftime(received_time, '%Y-%m-%d'), '<NULL>') FROM logs WHERE event = 'noparams'`); got != "<NULL>" {
-		t.Errorf("received_time with no timestamp column = %q, want a null", got)
+	if n := queryInt(t, e, `SELECT count(*) FROM logs WHERE event = 'noparams' AND received_time IS NULL`); n != 1 {
+		t.Errorf("received_time with no timestamp column was not null")
 	}
 }
 
@@ -241,6 +245,42 @@ func TestLogsAdmitsASluglessRecoveredCSV(t *testing.T) {
 	}
 	if n := queryInt(t, e, `SELECT count(*) FROM logs`); n != 1 {
 		t.Errorf("a slugless log CSV contributed %d rows, want 1", n)
+	}
+}
+
+// Each parsed column keeps its source beside it, which is what lets a caller separate a
+// value that was present and did not parse from one that was never there. The catalog entry
+// hands out this predicate, so it is pinned here rather than left to prose.
+func TestLogsSourceColumnDiscriminatesTheNullCauses(t *testing.T) {
+	d := newDS(t, "ds")
+	addLogCSV(t, d, logFixture{run: 1, csv: "event,time,parameters\n" +
+		fmt.Sprintf("valid,%d,\"{\"\"a\"\":1}\"\n", pinnedSeconds) +
+		fmt.Sprintf("unparsable,%d,not json\n", pinnedSeconds) +
+		fmt.Sprintf("emptyfield,%d,\n", pinnedSeconds) +
+		fmt.Sprintf("quotedempty,%d,\"\"\n", pinnedSeconds)})
+	addLogCSV(t, d, logFixture{run: 2, csv: "event,time,extras\n" +
+		fmt.Sprintf("absentcolumn,%d,{}\n", pinnedSeconds)})
+
+	m, err := d.ReadManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, dl := range m.Downloads {
+		_, has := dl.Columns["parameters"]
+		if (dl.RunID == 1) != has {
+			t.Fatalf("run %d records parameters=%v, so the fixture does not cover both cases", dl.RunID, has)
+		}
+	}
+
+	e, _ := openWithWarnings(t, d)
+	got := queryStrings(t, e, `SELECT event FROM logs WHERE parameters IS NOT NULL AND parameters_json IS NULL ORDER BY event`)
+	if len(got) != 1 || got[0] != "unparsable" {
+		t.Errorf("the documented predicate matched %v, want exactly [unparsable]", got)
+	}
+	// Every other cause is equally null in parameters_json, so counting nulls proves nothing
+	// on its own; the predicate is the only thing that separates them.
+	if n := queryInt(t, e, `SELECT count(*) FROM logs WHERE parameters_json IS NULL`); n != 4 {
+		t.Errorf("%d rows have a null parameters_json, want 4; the fixture no longer covers every cause", n)
 	}
 }
 
@@ -327,7 +367,7 @@ func TestLogsOnADatasetWithNoLogRuns(t *testing.T) {
 	d := newDS(t, "ds")
 	e, _ := openWithWarnings(t, d)
 
-	for _, col := range []string{"run_id", "parameters_json", "extras_json", "event_time", "received_time"} {
+	for _, col := range append([]string{"run_id"}, derivedNames...) {
 		if n := queryInt(t, e, fmt.Sprintf(`SELECT count(*) FROM (DESCRIBE logs) WHERE column_name = '%s'`, col)); n != 1 {
 			t.Errorf("logs does not declare %s before any log run has been downloaded", col)
 		}
@@ -337,8 +377,8 @@ func TestLogsOnADatasetWithNoLogRuns(t *testing.T) {
 		t.Errorf("empty logs returned %d rows, want 0", len(got))
 	}
 	// It declares no source columns: those depend on what was downloaded.
-	if n := queryInt(t, e, `SELECT count(*) FROM (DESCRIBE logs)`); n != 5 {
-		t.Errorf("empty logs declares %d columns, want run_id plus the four derived", n)
+	if n := queryInt(t, e, `SELECT count(*) FROM (DESCRIBE logs)`); n != 1+len(derivedNames) {
+		t.Errorf("empty logs declares %d columns, want 1+len(derivedNames)", n)
 	}
 }
 
