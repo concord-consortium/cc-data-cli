@@ -68,6 +68,7 @@ This is not hypothetical. The `metadata-test` dataset holds run 186 (`student-ac
 - The `reports` view behaves exactly as before, asserted rather than assumed.
 - A catalog entry lands in the same change as the view, per REPORT-94's atomic rule, in REPORT-104's entry structure under `internal/guidance/src/`, plus the researcher-guide view-table row the same guard checks.
 - The entry names all three log reports as members, states what `username` can mean across them, and gives the join to `downloads` on `run_id` selecting both `slug` and `hide_names` as the way to interpret any name-bearing column. See the resolved question below.
+- A NULL in a parsed column is disambiguated by its source column, which is retained beside it: `parameters IS NOT NULL AND parameters_json IS NULL` is a value that was present and did not parse. The catalog entry states this and a test pins it, so the documented predicate cannot drift from the behavior. See the resolved question below.
 - Tests: a CLUE row's `extras_json->>'navTabsOpen'` is queryable; a malformed `extras` yields null rather than an error; a run whose `time` column detected as `VARCHAR` still produces a correct `event_time`; each of the two epoch readings is pinned so neither the missing nor the spurious factor of 1000 can be introduced silently.
 
 ## Technical Notes
@@ -130,13 +131,13 @@ This belongs in `reportUnionView` rather than in `logs`, so `reports` and `repor
 
 So each member emits the derived columns explicitly, substituting a typed NULL where its own recorded schema lacks the source column: `CAST(NULL AS JSON) AS parameters_json`. `UNION ALL BY NAME` does fill an absent column with NULL rather than erroring, verified, so this is not about the union binding; it is about the member's own `SELECT` not referencing a column its CSV does not have. It also keeps `logs` carrying all four derived columns regardless of which runs are in the dataset, so a query written against one dataset does not fail against another.
 
-#### RESOLVED: duplicate output column names are silently allowed, so the derived names need a guard
+#### RESOLVED: a derived name colliding with a source column needs a guard, and the failure differs by member count
 
 Verified on the embedded engine, and the answer differs by member count, which matters because only one of the two outcomes is survivable.
 
 A bare `SELECT 1 AS event_time, 2 AS event_time` binds without error and yields one row with two columns of that name, but `CREATE VIEW` over the same select does not keep them both: DuckDB renames the second to `event_time_1`. So a dataset holding exactly one log CSV, where `strings.Join` emits no `UNION` keyword at all, would resolve `SELECT event_time` to the CSV's own column and file the derived timestamp under a name nothing documents. But with two or more members the union is real, and `UNION ALL BY NAME` rejects the duplicate outright: `Binder Error: UNION (ALL) BY NAME operation doesn't support duplicate names in the SELECT list`. That failure is not confined to the view. The `fallback` statement is a `UNION ALL BY NAME` over the same members, so it carries the same duplicate and fails the same way, and `Open` returns `registering view %s: ... (fallback also failed: ...)` (`internal/duck/engine.go:88-91`), which takes down the whole dataset rather than one view.
 
-So the guard is what keeps a single server-side column addition from making every affected dataset unopenable, and the tests have to cover both member counts: the one-member case fails by counting columns, since the duplicate binds, and the multi-member case fails by the view not installing.
+So the guard is what keeps a single server-side column addition from making every affected dataset unopenable, and the tests have to cover both member counts. Neither can assert on the exact name, which stays unique either way: the one-member case is caught by counting columns whose name *begins* `event_time`, since an unskipped duplicate appears as `event_time_1`, and the multi-member case by the view not installing at all.
 
 None of the four names appears in the authoritative log column list today (`report_query.ex:67`), so this is a guard against a later server change rather than a present defect. The requirement is that a member does not append a derived column whose name its own recorded schema already contains, in both the populated member and the typed-empty stand-in, and that the guard is exercised at one member and at two, since only the two-member case reaches the union.
 
@@ -156,6 +157,22 @@ That makes exposing only one a research decision rather than a formatting one, a
 
 Both source columns are retained unchanged as `BIGINT`, not as strings: `DetectCSV` typed both `BIGINT` on all three staging log datasets. The earlier draft's claim that `timestamp` is "retained unchanged as a string column" came from Scott's build declaring `timestamp: 'VARCHAR'` in its own `columns=` map, which is his forced declaration rather than what cc-data detects.
 
+
+### RESOLVED: what does a NULL in a parsed column mean, and where is that recorded?
+
+**Context**: an earlier catalog entry read "a NULL means unparsable, not absent". The code produces one in three cases: the source string did not parse, the field was empty, or the run's CSV never carried that column, which is reachable because `recoverReportType` admits a CSV on `event` and `time` alone. `core.md` renders into the MCP instructions, so the sentence would have turned a run with no `parameters` column into a report of malformed payloads, which is a wrong finding about a researcher's data rather than a missing one.
+
+**Options considered**: enumerate the three causes in the entry; add a companion column such as `parameters_parse_failed`; or state the invariant that the retained source column is the discriminator, and pin it with a test.
+
+**Decision**: state the invariant and pin it.
+
+The companion column was rejected as redundant state: it would be a pure function of two columns already in the same row, which trades one problem for a worse one. The "make the bad state impossible" rule does not apply here, because nothing is lost: `parameters` sits beside `parameters_json` in every row, so the information is complete and local.
+
+The enumeration was rejected because lists rot. A fourth cause, or a later parsed column with a different absence rule, leaves it stale. The invariant does not: every parsed column keeps its source string beside it, which covers `extras_json` and anything a later story adds, and it is shorter than the sentence it replaced.
+
+Verified on a fixture carrying all four cases at once (a valid value, an unparsable one, an unquoted-empty field, and a run whose CSV has no such column): `parameters IS NOT NULL AND parameters_json IS NULL` is true for exactly the unparsable row and false for the other four, which are all equally NULL in `parameters_json`. The finest distinction, whether a given run's CSV carried the column at all, is separately reachable through `DESCRIBE report_<N>`.
+
+The pinning matters as much as the wording. A predicate that lives only in markdown would keep being handed out after the behavior changed, with nothing to go red, which is the same failure `TestGuidanceDocumentsEveryStaticView` exists to prevent for view names. The test fails if the source column stops being retained and if an unparsable value stops yielding NULL.
 
 ### RESOLVED: does `logs` carry a provenance column so a caller can tell the three reports apart?
 

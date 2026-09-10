@@ -98,7 +98,7 @@ The entry has to earn its length the way the `reports` entry does, by naming wha
 - `parameters_json`/`extras_json` are null when the source string is not valid JSON, so `->>` on them is safe, but a null means unparsable rather than absent.
 - `event_time` and `received_time` are **different clocks**, not one instant at two resolutions. `event_time` comes from `time`, the client's device clock rounded to seconds by the ingester, which falls back to the server clock when the client sends nothing usable. `received_time` comes from `timestamp`, server receipt in milliseconds. A reader who assumes they are the same field at two resolutions will read device-clock skew as latency, so the entry has to say this outright.
 - Both are timezone-naive `TIMESTAMP` holding **UTC**. That is a convention rather than a type, so it has to be written down, and it is what makes them comparable to `_fetched_at`.
-- The original `parameters`, `extras`, `time` and `timestamp` columns are retained, so nothing is lost by the parse.
+- The original `parameters`, `extras`, `time` and `timestamp` columns are retained, so nothing is lost by the parse, and the retained source is what disambiguates a NULL in the parsed column: `parameters IS NOT NULL AND parameters_json IS NULL` is a value that was present and did not parse. State the invariant rather than enumerating the causes of a NULL, which would go stale.
 - `logs` unions all three log reports, whose shapes differ. `username` can be absent, a student's, a student's salted hash, a teacher's, or a teacher's hash, and `student_name` holds `student_id` when the run hid names. Interpreting any name-bearing column takes a join to `downloads` on `run_id` selecting **both** `slug` and `hide_names`; the entry gives that join, because neither attribute alone is enough and the view deliberately carries neither inline.
 
 The entry must not name a `cc-data` command: `TestCoreNamesNoCommand` (`guard_test.go:105-110`) fails on any occurrence of `` `cc-data `` in the core, because the core renders into the MCP instructions where there is no shell.
@@ -126,6 +126,7 @@ Written against real CSV files through the real view builder, since the whole su
 - **The stand-in skips a colliding name too**: the same single-CSV fixture with its file absent on disk, so `csvEmptyMember` is the sole member, plus the generated `fallback` string asserted to declare one `event_time`. Fails if the skip predicate is wired into `csvScan` only, which is the half-implementation that would take the whole dataset down at two members.
 - **The corrupt-CSV fallback carries the derived columns**: the `logs` statement's `fallback` string declares `parameters_json`, `extras_json`, `event_time` and `received_time`. Asserted on the generated statement rather than by corrupting a CSV, since the fallback is only reached when the primary `CREATE VIEW` fails at install time and `views_test.go` is `package duck`, so `viewStmt.fallback` is in scope. Fails if `csvEmptyMember` appends the descriptor but the fallback is assembled from something else.
 - **An empty dataset still binds the documented query**: with no log downloads, `logs` declares `run_id`, `parameters_json`, `extras_json`, `event_time` and `received_time`, and `SELECT extras_json->>'selectedNavTab' FROM logs` returns no rows rather than erroring. Fails if the zero-member short-circuit is left emitting `run_id` alone.
+- **The retained source column discriminates the NULL causes**: one fixture carrying a valid value, an unparsable one, an unquoted-empty field and a run whose CSV has no such column, asserting that `parameters IS NOT NULL AND parameters_json IS NULL` matches exactly the unparsable row while all four others are equally NULL. This is the predicate the catalog entry hands out, so it is a tested contract rather than prose. Fails if the source column stops being retained, and if an unparsable value stops yielding NULL.
 - **A slugless recovered CSV is admitted**: a log download recorded with no slug, which is what `reindex` produces when provenance is gone. The fixture asserts the slug really is empty before querying. Its row parses and contributes. Fails if admission tests the slug rather than the report type.
 - **An oversized `parameters` field loads with no option set**: a row whose `parameters` holds a 130 KB value round-trips through `parameters_json->>` at full length. This is the boundary that makes a CSV line-size option unnecessary, so it fails only if DuckDB's own 2,000,000-byte line cap ever moves below it.
 - **`reports` is unchanged**: the generated `CREATE VIEW` statement for `reports` is byte-identical to what the same manifest produced before the derived-column parameter existed. This is the assertion that fails if the generalization leaks into the callers that pass no derived columns.
@@ -144,12 +145,12 @@ A second note: `TRY_CAST(... AS JSON)` needs no extension load. `attachmentConte
 | `event_time`/`received_time` correct for BIGINT, DOUBLE and VARCHAR sources | add the `logs` view; tests |
 | `event_time` is seconds and `received_time` milliseconds, each pinned by a test | tests |
 | Both derived timestamps are UTC-valued `TIMESTAMP`, stable across present/missing/absent CSVs | add the `logs` view; generalize the report union; tests |
-| A slugless recovered log CSV is admitted | add the `logs` view (type-based predicate) |
+| A slugless recovered log CSV is admitted | add the `logs` view (type-based predicate); tests |
 | Missing CSV contributes zero rows and keeps its columns | generalize the report union; tests |
 | A dataset with no log runs still declares the derived columns | generalize the report union; tests |
 | A derived name colliding with a source column costs neither the view nor the dataset | add the `logs` view; tests |
-| A slugless recovered log CSV is admitted | add the `logs` view; tests |
 | A row over 128 KB loads with no line-size option set | tests |
+| A NULL in a parsed column is disambiguated by its retained source column | document the view in both guarded surfaces; tests |
 | `reports` behaves exactly as before | generalize the report union; tests |
 | Catalog entry plus researcher-guide row, same change | document the view in both guarded surfaces |
 | Tests for `navTabsOpen`, malformed extras, VARCHAR `time` | tests |
@@ -162,7 +163,7 @@ A second note: `TRY_CAST(... AS JSON)` needs no extension load. `attachmentConte
 
 ### Gaps found, step no requirement asked for
 
-**Orphan 1: the duplicate-name skip.** No requirement asks for it; it came out of the stage 3 review. The check that produced it found only half the behavior: DuckDB does accept two output columns of the same name silently, but only where there is no `UNION`, and under `UNION ALL BY NAME` the same duplicate is a binder error that fails the fallback too and so costs the whole dataset. It is a few lines in two functions and three tests, and the alternative is a failure mode that is either silent or total depending on how many CSVs happen to be in the dataset.
+**Orphan 1: the duplicate-name skip.** No requirement asks for it; it came out of the stage 3 review. The check that produced it found only half the behavior: without a `UNION`, `CREATE VIEW` accepts the duplicate by quietly renaming the second column to `event_time_1`, while under `UNION ALL BY NAME` the same duplicate is a binder error that fails the fallback too and so costs the whole dataset. It is a few lines in two functions and three tests, and the alternative is a failure mode that is either silent or total depending on how many CSVs happen to be in the dataset.
 
 **Orphan 2: generalizing `reportUnionView` rather than writing a second union.** No requirement asks for either shape. It is the smaller change and it keeps the missing-file, corrupt-CSV and quarantine behaviors in one place, but it does edit a function two shipped views depend on, which is why the byte-identical `reports` assertion is in the test list.
 
