@@ -104,7 +104,8 @@ like `wildfire_2026.answers`):
   the student id). Before counting or grouping any name-bearing column, join
   `downloads` type-qualified for **both** `slug` and `hide_names`, since neither
   alone distinguishes the five: `logs l JOIN downloads d ON d.run_id = l.run_id AND
-  d.type = 'report'`.
+  d.type = 'report'`. `hide_names` is NULL where the run's filter is not on disk,
+  which the `reports` entry above explains and which is not the same as false.
 - `answers`, `history` — the identity-keyed stores (double-decoded
   `report_state`; no dedup needed).
 - `run_membership` — one row per membership line with `run_id` and `type`. Join
