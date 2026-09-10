@@ -24,13 +24,20 @@ That re-run covered the client only. The server citations were re-measured separ
 
 The requirements define the `NOT_READY` body as caller-visible, and this is where that becomes enforceable: a test asserts the body's keys are exactly the intended set, for the report route and the job route separately, since the two bodies differ and only one has Athena fields.
 
+The key set is a module attribute rather than an inline list, which is how `@run_keys` and
+`@filter_keys` are already written in the same file, and it gives the next step one place to edit:
+
 ```elixir
-  # cc-data forwards this body verbatim into the error it prints and into the MCP tool result, so
-  # a key added here is disclosed to every API caller. This test is the place that decision gets
-  # made; it fails on an addition rather than letting one through silently.
-  test "the not-ready body carries exactly the caller-visible keys" do
-    assert body |> Map.keys() |> Enum.sort() ==
-             ~w(athena_query_error athena_query_id athena_query_state error message)
+  # cc-data forwards this body into the error it prints and into its MCP tool result, so a key
+  # added here reaches every API caller.
+  @not_ready_keys ~w(athena_query_error athena_query_id athena_query_state error message)
+
+  test "the NOT_READY body carries exactly the caller-visible keys", %{raw_token: raw_token, user: user} do
+    run = run_fixture(user, %{athena_query_id: "qid-failed", athena_query_state: "failed"})
+
+    body = json_response(get(authed_conn(raw_token), ~p"/api/v1/reports/#{run.id}/download"), 409)
+
+    assert Enum.sort(Map.keys(body)) == Enum.sort(@not_ready_keys)
   end
 ```
 
@@ -115,6 +122,7 @@ These tests establish the guard rather than protect one, and the step should be 
 - `internal/fetch/report.go`: promote the guidance out of the forwarded `Extra` into `Action`.
 - `internal/api/types.go`: the wire key as a named constant.
 - `internal/fetch/report_test.go`: extend.
+- `internal/mcpserver/server_test.go`: extend, for the CLI and MCP parity assertion.
 
 **Estimated diff size**: ~70 lines
 
@@ -164,7 +172,7 @@ Tests: a failed run with a mapped reason sets `action` in the envelope and carri
 
 **Estimated diff size**: ~90 lines
 
-Three pointer fields with `omitempty`, so a server that does not send them produces a payload identical to today's, and a Portal run, which has no Athena query, carries none of them.
+Three pointer fields, so a server that does not send them produces a payload identical to today's, and a Portal run, which has no Athena query, carries none of them. `omitempty` goes on `RunJSON`, which is encoded; `api.ReportRun` is only ever decoded, and its existing `AthenaQueryState` carries no such tag, so the new fields there match it rather than the payload.
 
 `ToRunJSON` is the one shaping function, so this reaches six surfaces rather than the listing alone: `reports list --json`, `reports create` and `reports duplicate` (`cmd/reports.go:67,179`), and the `reports_list`, `reports_create` and `reports_duplicate` MCP payloads (`tools.go:49,105,118`). Nothing appears on a newly created or duplicated run, which has no query yet, so those four payloads are unchanged in practice. Measured with the fields in place: a create payload is `{"run":{"run_id":90070,"slug":"student-answers","state":"queued","execution":"async","filter_labels":null}}`, byte for byte what it is today. That case needs no test of its own, because the mutation that would break it, a field added without `omitempty`, is what the byte-identity assertion below already catches.
 
