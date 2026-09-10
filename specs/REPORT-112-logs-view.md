@@ -2,8 +2,6 @@
 
 **Jira**: https://concord-consortium.atlassian.net/browse/REPORT-112
 
-**Source Spec**: [specs/REPORT-112-logs-view/](specs/REPORT-112-logs-view/)
-
 **Status**: **Closed**
 
 ## Overview
