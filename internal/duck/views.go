@@ -114,19 +114,21 @@ func (d derivedColumn) sql(dl dataset.Download) string {
 	return d.expr(sqlIdent(d.src))
 }
 
-// derivedFor drops any derived column whose name the CSV already records. Left in, a lone
-// member has its second column quietly renamed to <name>_1 by CREATE VIEW, and two or more
-// members are a binder error under UNION ALL BY NAME that the fallback hits too, costing
-// the whole dataset rather than one view.
-func derivedFor(dl dataset.Download, derived []derivedColumn) []derivedColumn {
-	kept := make([]derivedColumn, 0, len(derived))
+// sourceSuffix renames a CSV column whose name a derived column already claims. The derived
+// name is what the catalog entry documents, so it wins and the source is still reachable;
+// leaving both would retype the column to VARCHAR across the whole union, or, with two or more
+// members, be a binder error that the fallback hits too and costs the whole dataset.
+const sourceSuffix = "_source"
+
+// collisions returns the CSV columns a derived column would shadow, in recorded order.
+func collisions(dl dataset.Download, derived []derivedColumn) []string {
+	var names []string
 	for _, d := range derived {
 		if _, taken := dl.Columns[d.name]; taken {
-			continue
+			names = append(names, d.name)
 		}
-		kept = append(kept, d)
 	}
-	return kept
+	return names
 }
 
 // logsView unions the log-type report CSVs with parameters and extras parsed as JSON
@@ -158,17 +160,20 @@ func jsonExpr(col string) string {
 }
 
 // epochExpr converts a UNIX epoch column counting perSecond units per second to a UTC
-// timestamp. The TRY_CAST is what tolerates DetectCSV typing the column per file, since
-// to_timestamp on a VARCHAR is a binder error that would fail the whole view rather than
-// null one column; AT TIME ZONE 'UTC' turns to_timestamp's TIMESTAMPTZ into a TIMESTAMP, so it
-// does not depend on whether a CSV is present and compares directly to the store's _fetched_at.
+// timestamp. Two guards, for two different failures. TRY_CAST tolerates DetectCSV typing the
+// column per file, since to_timestamp on a VARCHAR is a binder error that would fail the whole
+// view rather than null one column. TRY catches the conversion itself: nan, inf and any value
+// outside the TIMESTAMP epoch range cast to DOUBLE happily and then throw, which surfaces at
+// query time on a view that installed cleanly, so no fallback and no warning would fire.
+// AT TIME ZONE 'UTC' turns to_timestamp's TIMESTAMPTZ into a TIMESTAMP, so the type does not
+// depend on whether a CSV is present and compares directly to the store's _fetched_at.
 func epochExpr(perSecond int) func(string) string {
 	return func(col string) string {
 		seconds := fmt.Sprintf("TRY_CAST(%s AS DOUBLE)", col)
 		if perSecond != 1 {
 			seconds = fmt.Sprintf("%s / %d", seconds, perSecond)
 		}
-		return fmt.Sprintf("to_timestamp(%s) AT TIME ZONE 'UTC'", seconds)
+		return fmt.Sprintf("TRY(to_timestamp(%s) AT TIME ZONE 'UTC')", seconds)
 	}
 }
 
@@ -230,12 +235,22 @@ func (vs viewSet) csvEmptyMember(dl dataset.Download, derived []derivedColumn) s
 		}
 		sort.Strings(order)
 	}
-	for _, k := range order {
-		if t, ok := dl.Columns[k]; ok {
-			cols = append(cols, fmt.Sprintf("CAST(NULL AS %s) AS %s", t, sqlIdent(k)))
-		}
+	shadowed := map[string]bool{}
+	for _, name := range collisions(dl, derived) {
+		shadowed[name] = true
 	}
-	for _, d := range derivedFor(dl, derived) {
+	for _, k := range order {
+		t, ok := dl.Columns[k]
+		if !ok {
+			continue
+		}
+		name := k
+		if shadowed[k] {
+			name = k + sourceSuffix
+		}
+		cols = append(cols, fmt.Sprintf("CAST(NULL AS %s) AS %s", t, sqlIdent(name)))
+	}
+	for _, d := range derived {
 		cols = append(cols, fmt.Sprintf("CAST(NULL AS %s) AS %s", d.typ, sqlIdent(d.name)))
 	}
 	return "SELECT " + strings.Join(cols, ", ") + " WHERE false"
@@ -253,12 +268,21 @@ func (vs viewSet) csvScan(dl dataset.Download, keepData bool, derived []derivedC
 	if dl.CSVDialect != nil {
 		dialect = *dl.CSVDialect
 	}
+	star := "*"
 	var extra strings.Builder
-	for _, d := range derivedFor(dl, derived) {
+	if shadowed := collisions(dl, derived); len(shadowed) > 0 {
+		quoted := make([]string, len(shadowed))
+		for i, name := range shadowed {
+			quoted[i] = sqlIdent(name)
+			fmt.Fprintf(&extra, ", %s AS %s", sqlIdent(name), sqlIdent(name+sourceSuffix))
+		}
+		star = "* EXCLUDE (" + strings.Join(quoted, ", ") + ")"
+	}
+	for _, d := range derived {
 		fmt.Fprintf(&extra, ", %s AS %s", d.sql(dl), sqlIdent(d.name))
 	}
-	scan := fmt.Sprintf("SELECT %d AS run_id, *%s FROM read_csv(%s, auto_detect=false, header=true, delim=%s, quote=%s, escape=%s, columns=%s)",
-		dl.RunID, extra.String(), vs.file(dl.Files[0]), sqlStr(dialect.Delim), sqlStr(dialect.Quote), sqlStr(dialect.Escape), orderedColumnsClause(dl.Columns, dl.ColumnOrder))
+	scan := fmt.Sprintf("SELECT %d AS run_id, %s%s FROM read_csv(%s, auto_detect=false, header=true, delim=%s, quote=%s, escape=%s, columns=%s)",
+		dl.RunID, star, extra.String(), vs.file(dl.Files[0]), sqlStr(dialect.Delim), sqlStr(dialect.Quote), sqlStr(dialect.Escape), orderedColumnsClause(dl.Columns, dl.ColumnOrder))
 	if dl.ReportType == dataset.ReportTypeAnswers {
 		if keepData {
 			return scan + " WHERE student_id::VARCHAR NOT IN ('Prompt', 'Correct answer')"

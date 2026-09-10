@@ -93,8 +93,10 @@ like `wildfire_2026.answers`):
   client sends nothing usable. `received_time` comes from `timestamp`, server
   receipt in milliseconds. Ordering or measuring intervals on `event_time` alone
   ties a large share of adjacent events and mixes two clocks across rows, so
-  prefer `received_time` for sequence and interval work and read the difference
-  between them as device-clock skew rather than as latency. Both are timezone-naive
+  prefer `received_time` for sequence and interval work. Their difference is
+  server receipt minus client event time, so it combines device-clock offset with
+  network and ingestion delay and **cannot separate them**; a negative difference
+  is the one readable case, since delay cannot be negative. Both are timezone-naive
   `TIMESTAMP` holding **UTC** by convention, which is what makes them comparable to
   each other and to the stores' `_fetched_at`.
   The three reports do not have the same shape, so **`username` means up to five

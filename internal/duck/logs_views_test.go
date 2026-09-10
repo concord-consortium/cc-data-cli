@@ -302,26 +302,41 @@ func TestLogsMissingCSVKeepsTheDerivedColumns(t *testing.T) {
 	}
 }
 
-// An unskipped duplicate fails differently by member count, so one case without the other
-// tests half the guard: a lone member has no UNION and CREATE VIEW renames the second column
-// to event_time_1, while two members are a binder error that fails the fallback too. Both are
-// asserted on the name prefix, since the exact name stays unique either way.
-func TestLogsDoesNotDuplicateACollidingSourceColumn(t *testing.T) {
+// A derived name is what the catalog entry documents, so it wins and the CSV's own column is
+// renamed rather than dropped. Left colliding, a lone member has its second column quietly
+// renamed to event_time_1 by CREATE VIEW while the source takes the documented name, and two
+// or more members are a binder error that fails the fallback too and costs the whole dataset.
+func TestLogsRenamesACollidingSourceColumn(t *testing.T) {
 	collides := "event,time,event_time\n" + fmt.Sprintf("z,%d,2025-01-01\n", pinnedSeconds)
 
-	t.Run("one member binds and yields one column", func(t *testing.T) {
+	// The derived column keeps its documented name and type, and the source is still reachable.
+	assertShape := func(t *testing.T, e *Engine) {
+		t.Helper()
+		if got := queryString(t, e, `SELECT column_type FROM (DESCRIBE logs) WHERE column_name = 'event_time'`); got != "TIMESTAMP" {
+			t.Errorf("event_time is %s, want TIMESTAMP: the source column took the documented name", got)
+		}
+		if got := queryString(t, e, `SELECT column_type FROM (DESCRIBE logs) WHERE column_name = 'event_time_source'`); got != dataset.TypeVARCHAR {
+			t.Errorf("event_time_source is %q, want the CSV's own %s", got, dataset.TypeVARCHAR)
+		}
+		if n := queryInt(t, e, `SELECT count(*) FROM (DESCRIBE logs) WHERE column_name LIKE 'event_time%'`); n != 2 {
+			t.Errorf("logs declares %d event_time columns, want exactly the derived one and the renamed source", n)
+		}
+	}
+
+	t.Run("one member", func(t *testing.T) {
 		d := newDS(t, "ds")
 		addLogCSV(t, d, logFixture{run: 1, csv: collides})
 		e, _ := openWithWarnings(t, d)
-		if n := queryInt(t, e, `SELECT count(*) FROM (DESCRIBE logs) WHERE column_name LIKE 'event_time%'`); n != 1 {
-			t.Errorf("logs declares %d event_time columns, want 1; a second would be renamed event_time_1", n)
+		assertShape(t, e)
+		if got := queryString(t, e, `SELECT event_time_source FROM logs`); got != "2025-01-01" {
+			t.Errorf("the renamed source lost its value: %q", got)
 		}
-		if got := queryString(t, e, `SELECT column_type FROM (DESCRIBE logs) WHERE column_name = 'event_time'`); got != dataset.TypeVARCHAR {
-			t.Errorf("event_time is %s, want the CSV's own %s: the derived column displaced the source one", got, dataset.TypeVARCHAR)
+		if got := queryString(t, e, `SELECT strftime(event_time, '%Y-%m-%dT%H:%M:%S') FROM logs`); got != pinnedUTC {
+			t.Errorf("event_time = %q, want the value derived from time (%q)", got, pinnedUTC)
 		}
 	})
 
-	t.Run("two members still install the view", func(t *testing.T) {
+	t.Run("two members", func(t *testing.T) {
 		d := newDS(t, "ds")
 		addLogCSV(t, d, logFixture{run: 1, csv: collides})
 		addLogCSV(t, d, logFixture{run: 2, csv: clueCSV()})
@@ -329,24 +344,68 @@ func TestLogsDoesNotDuplicateACollidingSourceColumn(t *testing.T) {
 		if n := queryInt(t, e, `SELECT count(*) FROM logs`); n != 2 {
 			t.Errorf("logs returned %d rows, want 2; a duplicate name would have failed both statements", n)
 		}
-		if n := queryInt(t, e, `SELECT count(*) FROM (DESCRIBE logs) WHERE column_name LIKE 'event_time%'`); n != 1 {
-			t.Errorf("logs declares %d event_time columns, want 1", n)
+		assertShape(t, e)
+		// The run without the colliding column keeps a correct derived value rather than
+		// being coerced to the other member's type.
+		if n := queryInt(t, e, `SELECT count(*) FROM logs WHERE event = 'clickTile' AND event_time = TIMESTAMP '`+pinnedUTC+`'`); n != 1 {
+			t.Errorf("the non-colliding run's event_time did not survive the union")
 		}
 	})
 
-	// csvEmptyMember builds the fallback, so the skip has to run there too or the fallback
-	// carries the duplicate and Open refuses the whole dataset rather than one view.
-	t.Run("the stand-in skips it too", func(t *testing.T) {
+	// csvEmptyMember builds the fallback, so the rename has to run there too or the fallback
+	// declares a different shape from the primary.
+	t.Run("the stand-in mirrors it", func(t *testing.T) {
 		d := newDS(t, "ds")
 		addLogCSV(t, d, logFixture{run: 1, csv: collides, absent: true})
 		e, _ := openWithWarnings(t, d)
-		if n := queryInt(t, e, `SELECT count(*) FROM (DESCRIBE logs) WHERE column_name LIKE 'event_time%'`); n != 1 {
-			t.Errorf("the stand-in declares %d event_time columns, want 1", n)
-		}
-		if got := strings.Count(logsStmt(t, d).fallback, "AS \"event_time\""); got != 1 {
+		assertShape(t, e)
+		fallback := logsStmt(t, d).fallback
+		if got := strings.Count(fallback, "AS \"event_time\""); got != 1 {
 			t.Errorf("the fallback declares event_time %d times, want 1", got)
 		}
+		if !strings.Contains(fallback, "AS \"event_time_source\"") {
+			t.Errorf("the fallback does not declare the renamed source:\n%s", fallback)
+		}
 	})
+}
+
+// nan, inf and any value outside the epoch range cast to DOUBLE happily and then make
+// to_timestamp throw. DetectCSV types all of them DOUBLE, and the throw surfaces at query time
+// on a view that installed cleanly, so neither the fallback nor a warning would fire.
+func TestLogsOutOfRangeEpochIsNullNotAnError(t *testing.T) {
+	d := newDS(t, "ds")
+	addLogCSV(t, d, logFixture{run: 1, csv: "event,time,timestamp,extras\n" +
+		fmt.Sprintf("good,%d,%d,{}\n", pinnedSeconds, pinnedMillis) +
+		fmt.Sprintf("nan,nan,%d,{}\n", pinnedMillis) +
+		fmt.Sprintf("inf,inf,%d,{}\n", pinnedMillis) +
+		fmt.Sprintf("huge,1e300,%d,{}\n", pinnedMillis) +
+		fmt.Sprintf("hugems,%d,1e300,{}\n", pinnedSeconds)})
+
+	m, err := d.ReadManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := m.Downloads[0].Columns["time"]; got != dataset.TypeDOUBLE {
+		t.Fatalf("time detected as %q, want DOUBLE; the fixture does not reach the conversion", got)
+	}
+
+	e, _ := openWithWarnings(t, d)
+	// Reading the column at all is what throws, so this query is the regression.
+	if n := queryInt(t, e, `SELECT count(*) FROM (SELECT event_time, received_time FROM logs)`); n != 5 {
+		t.Errorf("reading the derived timestamps returned %d rows, want 5", n)
+	}
+	for _, event := range []string{"nan", "inf", "huge"} {
+		if n := queryInt(t, e, `SELECT count(*) FROM logs WHERE event = '`+event+`' AND event_time IS NULL`); n != 1 {
+			t.Errorf("event_time for %q is not null", event)
+		}
+	}
+	if n := queryInt(t, e, `SELECT count(*) FROM logs WHERE event = 'hugems' AND received_time IS NULL`); n != 1 {
+		t.Errorf("received_time for an out-of-range timestamp is not null")
+	}
+	// The usable row is unaffected: one bad value costs its own cell, not the column.
+	if got := queryString(t, e, `SELECT strftime(event_time, '%Y-%m-%dT%H:%M:%S') FROM logs WHERE event = 'good'`); got != pinnedUTC {
+		t.Errorf("event_time on the good row = %q, want %q", got, pinnedUTC)
+	}
 }
 
 // The fallback only runs when the primary CREATE VIEW fails at install time, so it is

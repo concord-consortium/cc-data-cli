@@ -33,11 +33,13 @@ The shipped expressions:
 ```sql
 TRY_CAST(parameters AS JSON) AS parameters_json,
 TRY_CAST(extras AS JSON)     AS extras_json,
-to_timestamp(TRY_CAST(time AS DOUBLE))             AT TIME ZONE 'UTC' AS event_time,
-to_timestamp(TRY_CAST(timestamp AS DOUBLE) / 1000) AT TIME ZONE 'UTC' AS received_time
+TRY(to_timestamp(TRY_CAST(time AS DOUBLE))             AT TIME ZONE 'UTC') AS event_time,
+TRY(to_timestamp(TRY_CAST(timestamp AS DOUBLE) / 1000) AT TIME ZONE 'UTC') AS received_time
 ```
 
-**A log row carries two clocks, not one instant at two resolutions.** The Kinesis ingester (`cloud-formation/log-ingester.json`) sets `time` from the client device's own clock, rounded to seconds, falling back to the server clock when the client sends nothing usable, and sets `timestamp` to server receipt in milliseconds. Measured on staging run 187, ordering within a session by `time` leaves 29.4% of adjacent event pairs tied against 0.3% on `timestamp`, and observed client-to-server skew reaches 872 ms.
+**A log row carries two clocks, not one instant at two resolutions.** The Kinesis ingester (`cloud-formation/log-ingester.json`) sets `time` from the client device's own clock, rounded to seconds, falling back to the server clock when the client sends nothing usable, and sets `timestamp` to server receipt in milliseconds. Measured on staging run 187, ordering within a session by `time` leaves 29.4% of adjacent event pairs tied against 0.3% on `timestamp`. The observed delta between the two columns runs -474 to +872 ms; it is server receipt minus client event time, so it combines device-clock offset with network and ingestion delay and cannot separate them, though a negative delta can only be clock offset.
+
+**A derived timestamp is guarded twice, for two different failures.** `TRY_CAST` tolerates `DetectCSV` typing the column per file, since `to_timestamp` on a `VARCHAR` is a binder error that would fail the whole view. The outer `TRY` catches the conversion itself: `nan`, `inf` and any value outside the epoch range cast to `DOUBLE` happily and then throw `Conversion Error: Epoch seconds out of range`, and `DetectCSV` types all three `DOUBLE`. That failure surfaces at **query time** on a view that installed cleanly, so neither the corrupt-CSV fallback nor a warning fires; the query simply errors, and only for queries whose scan happens to include the bad row. Found by Copilot's review on PR #15.
 
 **The Go driver returns a JSON column as `map[string]interface{}`.** Scanning a bare `TRY_CAST(... AS JSON)` into a `*string` fails with "unsupported Scan", so tests assert through `->>`, which returns `VARCHAR`.
 
@@ -78,11 +80,13 @@ The Jira's acceptance criterion ("a row over 128 KB loads") rests on Python's `c
 
 ---
 
-### A derived name colliding with a source column needs a guard, and the failure differs by member count
+### A derived name colliding with a source column renames the source, rather than yielding to it
 
-If a log CSV ever carried a column named `event_time`, `received_time`, `parameters_json` or `extras_json`, an unskipped duplicate fails two different ways. With one member there is no `UNION` and `CREATE VIEW` quietly renames the second to `event_time_1`, so `SELECT event_time` resolves to the CSV's own column and the derived value hides under a name nothing documents. With two or more, `UNION ALL BY NAME` rejects it outright, and because the fallback unions the same members it fails too, so `Open` refuses the **whole dataset** rather than one view. **A member skips a derived column whose name its own schema already contains, in both the populated member and the typed-empty stand-in.**
+If a log CSV ever carried a column named `event_time`, `received_time`, `parameters_json` or `extras_json`, leaving both fails two different ways. With one member there is no `UNION` and `CREATE VIEW` quietly renames the second to `event_time_1`, so `SELECT event_time` resolves to the CSV's own column and the derived value hides under a name nothing documents. With two or more, `UNION ALL BY NAME` rejects it outright, and because the fallback unions the same members it fails too, so `Open` refuses the **whole dataset** rather than one view.
 
-Nothing in cc-data can detect the server-side change that would cause this: it holds no copy of the log column list and derives none, so a test asserting the four names against a transcript would fail only when a person edited the transcript. The runtime skip is the whole defense, tested by behavior at both member counts. What the skip cannot prevent is accepted rather than solved: a member keeping its own `event_time` puts a `VARCHAR` and a `TIMESTAMP` under one name and the union resolves it to `VARCHAR` silently, which is the better half of the trade against a dataset that will not open.
+**The derived name wins and the CSV's column is re-emitted as `<name>_source`**, in the populated member and the typed-empty stand-in alike. An earlier revision did the opposite, skipping the derived column so the source kept the name, and recorded the cost as accepted: a `VARCHAR` and a `TIMESTAMP` under one name, which `UNION ALL BY NAME` resolves to `VARCHAR` for the **whole view**, silently retyping a documented column for every run including those that never collided. Copilot's review on PR #15 pushed back on that, correctly. The catalog entry promises `event_time` is a UTC timestamp, so the fix is to make that promise hold unconditionally rather than to document when it does not. Nothing is lost either way, since the source column is still queryable under its suffixed name.
+
+Nothing in cc-data can detect the server-side change that would cause this: it holds no copy of the log column list and derives none, so a test asserting the four names against a transcript would fail only when a person edited the transcript. The rename is the whole defense, tested by behavior at one member, at two, and on the stand-in.
 
 ---
 
