@@ -189,13 +189,16 @@ func pollUntilReady(ctx context.Context, opts ReportOptions) (*api.DownloadEnvel
 		state := extractState(apiErr, isJob)
 
 		if isTerminalFailure(state, isJob) {
-			// The NOT_READY body is a caller-visible contract, pinned server-side, so it is
-			// forwarded whole: a field the server adds reaches the envelope with no client release.
+			// The NOT_READY body is a caller-visible contract, pinned server-side, so every key
+			// except the rendered guidance is forwarded: a field the server adds later reaches the
+			// envelope with no client release.
+			extra, guidance := promoteGuidance(apiErr.Extra)
 			return nil, nil, &output.CLIError{
 				ExitCode: output.ExitContract,
 				Code:     api.CodeNotReady,
 				Message:  fmt.Sprintf("run %d is in terminal state %q; nothing to download", opts.RunID, state),
-				Extra:    apiErr.Extra,
+				Action:   guidance,
+				Extra:    extra,
 			}
 		}
 		if opts.NoWait {
@@ -272,6 +275,23 @@ func isTerminalFailure(state string, isJob bool) bool {
 		return state == "failed"
 	}
 	return state == "failed" || state == "cancelled"
+}
+
+// promoteGuidance renders the server's guidance into the envelope's action field and forwards every
+// other key untouched, so the sentence reaches the caller once rather than under two names.
+func promoteGuidance(extra map[string]any) (map[string]any, string) {
+	guidance, _ := extra[api.FieldAthenaQueryGuidance].(string)
+	if guidance == "" {
+		return extra, ""
+	}
+	out := make(map[string]any, len(extra)-1)
+	for k, v := range extra {
+		if k == api.FieldAthenaQueryGuidance {
+			continue
+		}
+		out[k] = v
+	}
+	return out, guidance
 }
 
 func notReadyResult(opts ReportOptions, state string) map[string]any {

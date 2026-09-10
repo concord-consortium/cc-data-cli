@@ -12,6 +12,9 @@ const (
 	ExecutionAsync = "async"
 	// ExecutionSync is a Portal run, whose CSV is computed and streamed when it is asked for.
 	ExecutionSync = "sync"
+	// FieldAthenaQueryGuidance is the NOT_READY body's key for the suggested next step. The client
+	// renders its value and holds no copy of the wording.
+	FieldAthenaQueryGuidance = "athena_query_guidance"
 )
 
 // ReportRun is a run's metadata as served by GET /reports and /reports/:id.

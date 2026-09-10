@@ -260,8 +260,13 @@ func TestGetReportNoWaitQueued(t *testing.T) {
 const (
 	failedMappedWire     = `{"error":"NOT_READY","message":"The report is not ready to download.","athena_query_error":"HIVE_EXCEEDED_PARTITION_LIMIT: too many","athena_query_id":"qid-failed","athena_query_state":"failed","athena_query_guidance":"This query covers too many Athena partitions. Narrow it with a date range or one or more applications and run it again."}`
 	failedReasonlessWire = `{"error":"NOT_READY","message":"The report is not ready to download.","athena_query_error":null,"athena_query_id":"qid-failed","athena_query_state":"failed","athena_query_guidance":null}`
+	failedUnmappedWire   = `{"error":"NOT_READY","message":"The report is not ready to download.","athena_query_error":"WEIRD_NEW_CODE: something Athena has not said before","athena_query_id":"qid-failed","athena_query_state":"failed","athena_query_guidance":null}`
 	failedJobWire        = `{"error":"NOT_READY","message":"The job result is not ready to download.","status":"failed"}`
 )
+
+// Synthetic rather than captured: a body from a server that has grown a field this client predates,
+// which the passthrough has to carry without knowing it.
+const failedUnknownFieldWire = `{"error":"NOT_READY","message":"The report is not ready to download.","athena_query_error":"HIVE_EXCEEDED_PARTITION_LIMIT: too many","athena_query_id":"qid-failed","athena_query_state":"failed","athena_query_guidance":"Narrow it.","athena_query_bytes_scanned":1234}`
 
 func TestGetReportTerminalFailure(t *testing.T) {
 	d := newTestDataset(t)
@@ -330,6 +335,75 @@ func TestGetReportReasonlessFailureCarriesNoNullKeys(t *testing.T) {
 		if _, present := env[k]; present {
 			t.Errorf("a null the server sent reached the envelope as %q", k)
 		}
+	}
+}
+
+func wireField(t *testing.T, wire, key string) any {
+	t.Helper()
+	var body map[string]any
+	if err := json.Unmarshal([]byte(wire), &body); err != nil {
+		t.Fatal(err)
+	}
+	return body[key]
+}
+
+func TestGetReportMappedReasonBecomesTheAction(t *testing.T) {
+	d := newTestDataset(t)
+	rt := "answers"
+	srv := newReportServer(t, &reportServer{slug: "student-answers", reportType: &rt, notReadyStates: []string{"failed"}, notReadyBody: failedMappedWire})
+	defer srv.Close()
+
+	_, _, cliErr := runFetch(t, d, srv, fetch1{})
+	if cliErr == nil {
+		t.Fatal("terminal failure should error")
+	}
+	env := cliErr.Envelope()
+	if env["action"] != wireField(t, failedMappedWire, api.FieldAthenaQueryGuidance) {
+		t.Errorf("action = %v, want the guidance the server sent", env["action"])
+	}
+	if _, present := env[api.FieldAthenaQueryGuidance]; present {
+		t.Errorf("the guidance is in the envelope twice: %v", env)
+	}
+	if env["athena_query_error"] != "HIVE_EXCEEDED_PARTITION_LIMIT: too many" || env["athena_query_id"] != "qid-failed" || env["athena_query_state"] != "failed" {
+		t.Errorf("the other fields did not survive the promotion: %v", env)
+	}
+}
+
+func TestGetReportUnmappedReasonLeavesNoAction(t *testing.T) {
+	d := newTestDataset(t)
+	rt := "answers"
+	srv := newReportServer(t, &reportServer{slug: "student-answers", reportType: &rt, notReadyStates: []string{"failed"}, notReadyBody: failedUnmappedWire})
+	defer srv.Close()
+
+	_, _, cliErr := runFetch(t, d, srv, fetch1{})
+	if cliErr == nil {
+		t.Fatal("terminal failure should error")
+	}
+	env := cliErr.Envelope()
+	if _, present := env["action"]; present {
+		t.Errorf("an unmapped reason should leave action absent, not empty: %v", env)
+	}
+	if env["athena_query_error"] != "WEIRD_NEW_CODE: something Athena has not said before" {
+		t.Errorf("the raw reason is the authority and must survive: %v", env)
+	}
+}
+
+func TestGetReportForwardsAFieldThisClientDoesNotKnow(t *testing.T) {
+	d := newTestDataset(t)
+	rt := "answers"
+	srv := newReportServer(t, &reportServer{slug: "student-answers", reportType: &rt, notReadyStates: []string{"failed"}, notReadyBody: failedUnknownFieldWire})
+	defer srv.Close()
+
+	_, _, cliErr := runFetch(t, d, srv, fetch1{})
+	if cliErr == nil {
+		t.Fatal("terminal failure should error")
+	}
+	env := cliErr.Envelope()
+	if env["athena_query_bytes_scanned"] != float64(1234) {
+		t.Errorf("a field the client predates should still reach the envelope: %v", env)
+	}
+	if env["action"] != wireField(t, failedUnknownFieldWire, api.FieldAthenaQueryGuidance) {
+		t.Errorf("action = %v, want the guidance the server sent", env["action"])
 	}
 }
 

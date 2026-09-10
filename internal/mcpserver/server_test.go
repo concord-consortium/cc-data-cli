@@ -206,6 +206,40 @@ func TestMCPUnauthenticatedResponseCarriesTheCodeAndAction(t *testing.T) {
 	}
 }
 
+// An MCP caller has to see the same code, message and action a terminal user does, which is the
+// whole reason tool errors are rendered as the CLI envelope rather than as Error() alone.
+func TestMCPGetReportFailureCarriesTheSameEnvelopeAsTheCLI(t *testing.T) {
+	setupEnv(t)
+	const guidance = "This query ran out of time."
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/download") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusConflict)
+			fmt.Fprintf(w, `{"error":"NOT_READY","message":"The report is not ready to download.","athena_query_error":"Query timeout: exhausted resources","athena_query_id":"qid-1","athena_query_state":"failed","athena_query_guidance":%q}`, guidance)
+			return
+		}
+		fmt.Fprint(w, `{"id":584,"report_slug":"student-answers","report_type":"answers","athena_query_state":"failed","execution":"async","report_filter":null,"report_filter_values":{}}`)
+	}))
+	defer srv.Close()
+	if err := (creds.Store{}).Save(config.MustPortal("learn.concord.org"), "test-token", srv.URL); err != nil {
+		t.Fatal(err)
+	}
+
+	cs := connect(t)
+	if res, _ := callJSON(t, cs, "dataset_create", map[string]any{"portal": "learn.concord.org", "name": "ds"}); res.IsError {
+		t.Fatalf("dataset_create failed: %s", errorText(res))
+	}
+	res, _ := callJSON(t, cs, "get_report", map[string]any{"dataset": "learn.concord.org/ds", "run_id": 584})
+	if !res.IsError {
+		t.Fatal("a failed run should be an error")
+	}
+
+	want := fmt.Sprintf(`{"action":%q,"athena_query_error":"Query timeout: exhausted resources","athena_query_id":"qid-1","athena_query_state":"failed","error":"NOT_READY","message":"run 584 is in terminal state \"failed\"; nothing to download"}`, guidance)
+	if got := errorText(res); got != want {
+		t.Errorf("tool result:\n got %s\nwant %s", got, want)
+	}
+}
+
 // A run whose report_filter is a real object has to survive the library's output-schema
 // validation. Held as json.RawMessage it typed as an array of bytes, so the call failed at the
 // protocol level and the model got no runs at all, from the tool a run_id comes from.
