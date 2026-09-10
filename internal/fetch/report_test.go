@@ -433,6 +433,33 @@ func TestGetReportEmptyGuidanceLeavesNoActionAndNoKey(t *testing.T) {
 	}
 }
 
+// The terminal-failure check runs before the --no-wait branch, so a failed run gets the reason
+// rather than the bare state line --no-wait prints for a run that is merely still working.
+func TestGetReportNoWaitTerminalFailureStillExplains(t *testing.T) {
+	d := newTestDataset(t)
+	rt := "answers"
+	srv := newReportServer(t, &reportServer{slug: "student-answers", reportType: &rt, notReadyStates: []string{"failed"}, notReadyBody: failedMappedWire})
+	defer srv.Close()
+
+	result, _, cliErr := runFetch(t, d, srv, fetch1{noWait: true})
+	if cliErr == nil || cliErr.ExitCode != output.ExitContract {
+		t.Fatalf("a failed run should exit 5 under --no-wait, got %+v", cliErr)
+	}
+	if cliErr.Silent {
+		t.Fatal("the failure envelope must be printed, not silenced by --no-wait")
+	}
+	if result != nil {
+		t.Fatalf("a failed run has no state line to print: %v", result)
+	}
+	env := cliErr.Envelope()
+	if env["action"] != wireField(t, failedMappedWire, api.FieldAthenaQueryGuidance) {
+		t.Errorf("action = %v, want the guidance the server sent", env["action"])
+	}
+	if env["athena_query_error"] != "HIVE_EXCEEDED_PARTITION_LIMIT: too many" {
+		t.Errorf("the reason did not reach the --no-wait caller: %v", env)
+	}
+}
+
 func TestGetReportJobFailureEnvelopeIsUnchanged(t *testing.T) {
 	d := newTestDataset(t)
 	rt := "answers"
