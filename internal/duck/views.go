@@ -114,9 +114,10 @@ func (d derivedColumn) sql(dl dataset.Download) string {
 	return d.expr(sqlIdent(d.src))
 }
 
-// derivedFor drops any derived column whose name the CSV already records. A duplicate
-// output name binds silently in a lone member but is a hard error under UNION ALL BY
-// NAME, which the fallback hits too, costing the whole dataset rather than one view.
+// derivedFor drops any derived column whose name the CSV already records. Left in, a lone
+// member has its second column quietly renamed to <name>_1 by CREATE VIEW, and two or more
+// members are a binder error under UNION ALL BY NAME that the fallback hits too, costing
+// the whole dataset rather than one view.
 func derivedFor(dl dataset.Download, derived []derivedColumn) []derivedColumn {
 	kept := make([]derivedColumn, 0, len(derived))
 	for _, d := range derived {
@@ -159,8 +160,8 @@ func jsonExpr(col string) string {
 // epochExpr converts a UNIX epoch column counting perSecond units per second to a UTC
 // timestamp. The TRY_CAST is what tolerates DetectCSV typing the column per file, since
 // to_timestamp on a VARCHAR is a binder error that would fail the whole view rather than
-// null one column; AT TIME ZONE 'UTC' keeps the result a TIMESTAMP, so the type does not
-// depend on whether a CSV is present and it compares directly to the store's _fetched_at.
+// null one column; AT TIME ZONE 'UTC' turns to_timestamp's TIMESTAMPTZ into a TIMESTAMP, so it
+// does not depend on whether a CSV is present and compares directly to the store's _fetched_at.
 func epochExpr(perSecond int) func(string) string {
 	return func(col string) string {
 		seconds := fmt.Sprintf("TRY_CAST(%s AS DOUBLE)", col)
@@ -196,15 +197,15 @@ func (vs viewSet) reportUnionView(bare string, keepData bool, derived []derivedC
 		files = append(files, dl.Files...)
 	}
 	name := vs.prefix + bare
-	// A stand-in may only declare columns every populated schema also has, so the
-	// zero-member shape carries the derived columns and no source ones.
-	emptyCols := []string{"CAST(NULL AS BIGINT) AS run_id"}
-	for _, d := range derived {
-		emptyCols = append(emptyCols, fmt.Sprintf("CAST(NULL AS %s) AS %s", d.typ, sqlIdent(d.name)))
-	}
-	emptyStmt := fmt.Sprintf("CREATE VIEW %s AS SELECT %s WHERE false", name, strings.Join(emptyCols, ", "))
 	if len(members) == 0 {
-		return viewStmt{name: name, primary: emptyStmt, fallback: emptyStmt}
+		// A stand-in may only declare columns every populated schema also has, so this
+		// carries the derived columns and no source ones.
+		cols := []string{"CAST(NULL AS BIGINT) AS run_id"}
+		for _, d := range derived {
+			cols = append(cols, fmt.Sprintf("CAST(NULL AS %s) AS %s", d.typ, sqlIdent(d.name)))
+		}
+		stmt := fmt.Sprintf("CREATE VIEW %s AS SELECT %s WHERE false", name, strings.Join(cols, ", "))
+		return viewStmt{name: name, primary: stmt, fallback: stmt}
 	}
 	primary := fmt.Sprintf("CREATE VIEW %s AS %s", name, strings.Join(members, "\nUNION ALL BY NAME\n"))
 	// Per-member binding cannot be validated here (no live connection), so the

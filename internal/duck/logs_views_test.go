@@ -22,6 +22,8 @@ const (
 // The columns logs promises regardless of what any one CSV recorded.
 var derivedNames = []string{"parameters_json", "extras_json", "event_time", "received_time"}
 
+var noSlug = new(string)
+
 type logFixture struct {
 	run    int
 	slug   *string
@@ -155,14 +157,16 @@ func TestLogsTimestampsAreUTCValuedTimestamps(t *testing.T) {
 	}
 }
 
-// DetectCSV types each column per file, so one dataset can hold a BIGINT time and a VARCHAR one.
+// DetectCSV types each column over the values of one file, so runs in one dataset can disagree.
 // to_timestamp on a VARCHAR is a binder error, which would cost the whole view rather than a column.
-func TestLogsHandlesVarcharTimeColumn(t *testing.T) {
+func TestLogsHandlesEveryDetectedTimeType(t *testing.T) {
 	d := newDS(t, "ds")
 	addLogCSV(t, d, logFixture{run: 1, csv: clueCSV()})
 	addLogCSV(t, d, logFixture{run: 2, csv: "event,time,timestamp,parameters,extras\n" +
 		fmt.Sprintf("numeric,%d,%d,{},{}\n", pinnedSeconds, pinnedMillis) +
 		fmt.Sprintf("notanumber,notatime,%d,{},{}\n", pinnedMillis)})
+	addLogCSV(t, d, logFixture{run: 3, csv: "event,time,timestamp,parameters,extras\n" +
+		fmt.Sprintf("fractional,%d.5,%d,{},{}\n", pinnedSeconds, pinnedMillis)})
 
 	m, err := d.ReadManifest()
 	if err != nil {
@@ -172,8 +176,11 @@ func TestLogsHandlesVarcharTimeColumn(t *testing.T) {
 	for _, dl := range m.Downloads {
 		types[dl.RunID] = dl.Columns["time"]
 	}
-	if types[1] != dataset.TypeBIGINT || types[2] != dataset.TypeVARCHAR {
-		t.Fatalf("fixture did not produce the two detected types (run 1 %q, run 2 %q), so the test proves nothing", types[1], types[2])
+	want := map[int]string{1: dataset.TypeBIGINT, 2: dataset.TypeVARCHAR, 3: dataset.TypeDOUBLE}
+	for run, w := range want {
+		if types[run] != w {
+			t.Fatalf("run %d detected time as %q, want %q; the fixture does not exercise all three types", run, types[run], w)
+		}
 	}
 
 	e, _ := openWithWarnings(t, d)
@@ -182,6 +189,10 @@ func TestLogsHandlesVarcharTimeColumn(t *testing.T) {
 	}
 	if got := queryString(t, e, `SELECT coalesce(strftime(event_time, '%Y-%m-%dT%H:%M:%S'), '<NULL>') FROM logs WHERE event = 'notanumber'`); got != "<NULL>" {
 		t.Errorf("a non-numeric time yielded %q, want a null", got)
+	}
+	wantFractional := pinnedUTC + ".500"
+	if got := queryString(t, e, `SELECT strftime(event_time, '%Y-%m-%dT%H:%M:%S.%g') FROM logs WHERE event = 'fractional'`); got != wantFractional {
+		t.Errorf("event_time from a DOUBLE-typed column = %q, want %q", got, wantFractional)
 	}
 	// The run that could not type its time still contributes its other columns.
 	if n := queryInt(t, e, `SELECT count(*) FROM logs WHERE run_id = 2`); n != 2 {
@@ -214,7 +225,7 @@ func TestLogsMemberLackingParametersStillContributes(t *testing.T) {
 // report type. A slug test here would drop rows the reports view still shows.
 func TestLogsAdmitsASluglessRecoveredCSV(t *testing.T) {
 	d := newDS(t, "ds")
-	addLogCSV(t, d, logFixture{run: 1, slug: new(string), csv: clueCSV()})
+	addLogCSV(t, d, logFixture{run: 1, slug: noSlug, csv: clueCSV()})
 
 	m, err := d.ReadManifest()
 	if err != nil {
@@ -255,7 +266,7 @@ func TestLogsMissingCSVKeepsTheDerivedColumns(t *testing.T) {
 // tests half the guard: a lone member has no UNION and CREATE VIEW renames the second column
 // to event_time_1, while two members are a binder error that fails the fallback too. Both are
 // asserted on the name prefix, since the exact name stays unique either way.
-func TestLogsDoesNotDuplicateAColidingSourceColumn(t *testing.T) {
+func TestLogsDoesNotDuplicateACollidingSourceColumn(t *testing.T) {
 	collides := "event,time,event_time\n" + fmt.Sprintf("z,%d,2025-01-01\n", pinnedSeconds)
 
 	t.Run("one member binds and yields one column", func(t *testing.T) {
