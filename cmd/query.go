@@ -10,6 +10,27 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// staticViewList renders the views every dataset gets, wrapped for help output. It is derived
+// rather than written out so the help cannot drift from what the engine registers, which is the
+// same reason the catalog and the researcher guide are checked against StaticViewNames.
+func staticViewList() string {
+	const width = 76
+	var lines []string
+	line := " "
+	for i, name := range duck.StaticViewNames() {
+		word := " " + name
+		if i < len(duck.StaticViewNames())-1 {
+			word += ","
+		}
+		if len(line)+len(word) > width {
+			lines = append(lines, line)
+			line = " "
+		}
+		line += word
+	}
+	return strings.Join(append(lines, line), "\n")
+}
+
 func newQueryCmd() *cobra.Command {
 	var datasetRefs, allowDirs []string
 	var format string
@@ -19,9 +40,8 @@ func newQueryCmd() *cobra.Command {
 		Long: `Run a SQL query over one or more datasets via an ephemeral in-memory DuckDB.
 
 Views (single dataset: unqualified; multiple: schema-qualified per dataset):
-  reports, report_prompts, answers, history, run_membership, downloads,
-  attachment_files, attachment_states, and per-run views (report_<run>,
-  answers_<run>, history_<run>).
+` + staticViewList() + `
+  plus per-run views (report_<run>, answers_<run>, history_<run>).
 
 The session is sandboxed to the named dataset folders. --allow-dir adds a
 directory to the allowlist for this invocation only (never persisted), so joining

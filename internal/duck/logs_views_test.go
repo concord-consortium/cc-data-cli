@@ -369,6 +369,47 @@ func TestLogsRenamesACollidingSourceColumn(t *testing.T) {
 	})
 }
 
+// A CSV carrying both the derived name and the name the rename targets would emit that target
+// twice, failing the primary and the fallback alike, which leaves the dataset unopenable rather
+// than degrading one view: views register up front, so even `SELECT 1` fails.
+func TestLogsRenameSkipsAnAlreadyTakenTargetName(t *testing.T) {
+	// The CSV's own event_time_source is what forces the rename to look past its first choice.
+	collides := "event,time,event_time,event_time_source\n" +
+		fmt.Sprintf("z,%d,orig_event_time,orig_event_time_source\n", pinnedSeconds)
+
+	for _, tc := range []struct {
+		name   string
+		absent bool
+	}{{"file present", false}, {"file missing", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := newDS(t, "ds")
+			addLogCSV(t, d, logFixture{run: 1, csv: collides, absent: tc.absent})
+			// A second member makes the union real, which is where a duplicate is fatal.
+			addLogCSV(t, d, logFixture{run: 2, csv: clueCSV()})
+			e, _ := openWithWarnings(t, d)
+
+			// Every name is distinct, so the view installed rather than falling back.
+			if n := queryInt(t, e, `SELECT count(DISTINCT column_name) FROM (DESCRIBE logs) WHERE column_name LIKE 'event_time%'`); n != 3 {
+				t.Fatalf("logs declares %d distinct event_time columns, want 3", n)
+			}
+			if got := queryString(t, e, `SELECT column_type FROM (DESCRIBE logs) WHERE column_name = 'event_time'`); got != "TIMESTAMP" {
+				t.Errorf("event_time is %s, want the derived TIMESTAMP", got)
+			}
+			if tc.absent {
+				return
+			}
+			// Neither source value is lost: the CSV's own _source column keeps its name, and
+			// the shadowed column moves one suffix further out.
+			if got := queryString(t, e, `SELECT event_time_source FROM logs WHERE event = 'z'`); got != "orig_event_time_source" {
+				t.Errorf("event_time_source = %q, want the CSV's own column", got)
+			}
+			if got := queryString(t, e, `SELECT event_time_source_source FROM logs WHERE event = 'z'`); got != "orig_event_time" {
+				t.Errorf("event_time_source_source = %q, want the shadowed column", got)
+			}
+		})
+	}
+}
+
 // nan, inf and any value outside the epoch range cast to DOUBLE happily and then make
 // to_timestamp throw. DetectCSV types all of them DOUBLE, and the throw surfaces at query time
 // on a view that installed cleanly, so neither the fallback nor a warning would fire.

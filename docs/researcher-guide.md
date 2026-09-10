@@ -496,8 +496,10 @@ GROUP BY user_id;
 
 > Log timestamps come in two columns with different units: `time` is epoch
 > **seconds** (`to_timestamp(time)`) and `timestamp` is epoch **milliseconds**
-> (`to_timestamp(timestamp/1000)`). Order an event trace by one of these, not by
-> row order.
+> (`to_timestamp(timestamp/1000)`). They are also different clocks, not one instant
+> at two resolutions: `time` is the client device's clock and `timestamp` is server
+> receipt, so prefer `timestamp` for ordering within a session. Order an event trace
+> by one of these, not by row order.
 
 ### Broken down by class, school, or teacher (action logs with metadata)
 

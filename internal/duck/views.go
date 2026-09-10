@@ -120,7 +120,7 @@ func (d derivedColumn) sql(dl dataset.Download) string {
 // members, be a binder error that the fallback hits too and costs the whole dataset.
 const sourceSuffix = "_source"
 
-// collisions returns the CSV columns a derived column would shadow, in recorded order.
+// collisions returns the CSV columns a derived column would shadow, in derived-column order.
 func collisions(dl dataset.Download, derived []derivedColumn) []string {
 	var names []string
 	for _, d := range derived {
@@ -129,6 +129,23 @@ func collisions(dl dataset.Download, derived []derivedColumn) []string {
 		}
 	}
 	return names
+}
+
+// sourceName is the free name a shadowed CSV column is re-emitted under. A CSV carrying both
+// the derived name and the suffixed one would otherwise emit the target twice, which fails the
+// primary and the fallback alike and leaves the dataset unopenable.
+//
+// The target is only checked against the CSV's own columns, not against names other renames
+// took. Two renames cannot converge while no derived name is another with sourceSuffix repeated
+// on the end, which is worth re-checking if a fifth derived column is ever added.
+func sourceName(dl dataset.Download, col string) string {
+	name := col + sourceSuffix
+	for {
+		if _, taken := dl.Columns[name]; !taken {
+			return name
+		}
+		name += sourceSuffix
+	}
 }
 
 // logsView unions the log-type report CSVs with parameters and extras parsed as JSON
@@ -246,7 +263,7 @@ func (vs viewSet) csvEmptyMember(dl dataset.Download, derived []derivedColumn) s
 		}
 		name := k
 		if shadowed[k] {
-			name = k + sourceSuffix
+			name = sourceName(dl, k)
 		}
 		cols = append(cols, fmt.Sprintf("CAST(NULL AS %s) AS %s", t, sqlIdent(name)))
 	}
@@ -274,7 +291,7 @@ func (vs viewSet) csvScan(dl dataset.Download, keepData bool, derived []derivedC
 		quoted := make([]string, len(shadowed))
 		for i, name := range shadowed {
 			quoted[i] = sqlIdent(name)
-			fmt.Fprintf(&extra, ", %s AS %s", sqlIdent(name), sqlIdent(name+sourceSuffix))
+			fmt.Fprintf(&extra, ", %s AS %s", sqlIdent(name), sqlIdent(sourceName(dl, name)))
 		}
 		star = "* EXCLUDE (" + strings.Join(quoted, ", ") + ")"
 	}

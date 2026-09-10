@@ -30,8 +30,9 @@
   obvious.
   - The two time columns are in different units: `time` is epoch **seconds**
     (`to_timestamp(time)`), `timestamp` is epoch **milliseconds**
-    (`to_timestamp(timestamp/1000)`). Both resolve to the same instant; use
-    `timestamp` for sub-second ordering within a session. Order an event trace by
+    (`to_timestamp(timestamp/1000)`). They are different clocks, not one instant at
+    two resolutions: `time` is the client device's clock and `timestamp` is server
+    receipt, so prefer `timestamp` for ordering within a session. Order an event trace by
     `timestamp` (or `time`), not row order. Passing `timestamp` straight to
     `to_timestamp` gives year 57814, and dividing `time` by 1000 gives 1970, so
     match the unit. `parameters` and `extras` are VARCHAR holding JSON: parse with
