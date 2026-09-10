@@ -78,7 +78,7 @@ func (vs viewSet) file(rel string) string {
 // file is missing degrades to a typed-empty stand-in from its recorded columns
 // (contributing zero rows) rather than collapsing the whole union.
 func (vs viewSet) reportsView() viewStmt {
-	return vs.reportUnionView(`"reports"`, true, func(dl dataset.Download) bool {
+	return vs.reportUnionView(`"reports"`, true, nil, func(dl dataset.Download) bool {
 		if !dataset.IsAllowedReportType(dl.ReportType) {
 			vs.warnf("run %d report_type %q is unknown to this cc-data version; excluded from the reports view (upgrade suggested)", dl.RunID, dl.ReportType)
 			return false
@@ -89,15 +89,38 @@ func (vs viewSet) reportsView() viewStmt {
 
 // reportPromptsView exposes the two pseudo-header rows of answers-type CSVs.
 func (vs viewSet) reportPromptsView() viewStmt {
-	return vs.reportUnionView(`"report_prompts"`, false, func(dl dataset.Download) bool {
+	return vs.reportUnionView(`"report_prompts"`, false, nil, func(dl dataset.Download) bool {
 		return dl.ReportType == dataset.ReportTypeAnswers
 	})
+}
+
+// derivedColumn is an output column appended to every member of a report union.
+// The expression takes the download so a member can substitute a typed NULL for a
+// source column its own CSV lacks.
+type derivedColumn struct {
+	name string
+	typ  string
+	expr func(dl dataset.Download) string
+}
+
+// derivedFor drops any derived column whose name the CSV already records. A duplicate
+// output name binds silently in a lone member but is a hard error under UNION ALL BY
+// NAME, which the fallback hits too, costing the whole dataset rather than one view.
+func derivedFor(dl dataset.Download, derived []derivedColumn) []derivedColumn {
+	kept := make([]derivedColumn, 0, len(derived))
+	for _, d := range derived {
+		if _, taken := dl.Columns[d.name]; taken {
+			continue
+		}
+		kept = append(kept, d)
+	}
+	return kept
 }
 
 // reportUnionView builds a union over the report CSVs the include predicate
 // admits, using a typed-empty stand-in for any CSV whose file is missing so one
 // broken artifact costs its rows, never the session or the union's schema.
-func (vs viewSet) reportUnionView(bare string, keepData bool, include func(dataset.Download) bool) viewStmt {
+func (vs viewSet) reportUnionView(bare string, keepData bool, derived []derivedColumn, include func(dataset.Download) bool) viewStmt {
 	var members []string
 	var emptyMembers []string
 	var files []string
@@ -110,18 +133,24 @@ func (vs viewSet) reportUnionView(bare string, keepData bool, include func(datas
 		}
 		if fileMissing(filepath.Join(vs.canonDir, dl.Files[0])) {
 			vs.warnf("report CSV %s is missing on disk; contributing zero rows to %s (run cc-data dataset reindex)", dl.Files[0], strings.Trim(bare, `"`))
-			members = append(members, vs.csvEmptyMember(dl))
+			members = append(members, vs.csvEmptyMember(dl, derived))
 		} else {
-			members = append(members, vs.csvScan(dl, keepData))
+			members = append(members, vs.csvScan(dl, keepData, derived))
 		}
 		// The typed-empty schema for every admitted member (present or missing).
-		emptyMembers = append(emptyMembers, vs.csvEmptyMember(dl))
+		emptyMembers = append(emptyMembers, vs.csvEmptyMember(dl, derived))
 		files = append(files, dl.Files...)
 	}
 	name := vs.prefix + bare
-	runOnly := fmt.Sprintf("CREATE VIEW %s AS SELECT CAST(NULL AS BIGINT) AS run_id WHERE false", name)
+	// A stand-in may only declare columns every populated schema also has, so the
+	// zero-member shape carries the derived columns and no source ones.
+	emptyCols := []string{"CAST(NULL AS BIGINT) AS run_id"}
+	for _, d := range derived {
+		emptyCols = append(emptyCols, fmt.Sprintf("CAST(NULL AS %s) AS %s", d.typ, sqlIdent(d.name)))
+	}
+	emptyStmt := fmt.Sprintf("CREATE VIEW %s AS SELECT %s WHERE false", name, strings.Join(emptyCols, ", "))
 	if len(members) == 0 {
-		return viewStmt{name: name, primary: runOnly, fallback: runOnly}
+		return viewStmt{name: name, primary: emptyStmt, fallback: emptyStmt}
 	}
 	primary := fmt.Sprintf("CREATE VIEW %s AS %s", name, strings.Join(members, "\nUNION ALL BY NAME\n"))
 	// Per-member binding cannot be validated here (no live connection), so the
@@ -134,9 +163,10 @@ func (vs viewSet) reportUnionView(bare string, keepData bool, include func(datas
 }
 
 // csvEmptyMember is a zero-row scan carrying the CSV's recorded schema plus
-// run_id, so a missing CSV keeps its columns in the union.
-func (vs viewSet) csvEmptyMember(dl dataset.Download) string {
-	cols := make([]string, 0, len(dl.Columns)+1)
+// run_id and the derived columns, so a missing CSV keeps its columns in the union
+// and the fallback declares the same shape the primary does.
+func (vs viewSet) csvEmptyMember(dl dataset.Download, derived []derivedColumn) string {
+	cols := make([]string, 0, len(dl.Columns)+len(derived)+1)
 	cols = append(cols, fmt.Sprintf("CAST(%d AS BIGINT) AS run_id", dl.RunID))
 	order := dl.ColumnOrder
 	if len(order) == 0 {
@@ -150,6 +180,9 @@ func (vs viewSet) csvEmptyMember(dl dataset.Download) string {
 			cols = append(cols, fmt.Sprintf("CAST(NULL AS %s) AS %s", t, sqlIdent(k)))
 		}
 	}
+	for _, d := range derivedFor(dl, derived) {
+		cols = append(cols, fmt.Sprintf("CAST(NULL AS %s) AS %s", d.typ, sqlIdent(d.name)))
+	}
 	return "SELECT " + strings.Join(cols, ", ") + " WHERE false"
 }
 
@@ -160,13 +193,17 @@ func fileMissing(path string) bool {
 
 // csvScan builds one per-run CSV SELECT. When keepData is true the pseudo-header
 // rows are filtered out (answers-type only); when false only they are kept.
-func (vs viewSet) csvScan(dl dataset.Download, keepData bool) string {
+func (vs viewSet) csvScan(dl dataset.Download, keepData bool, derived []derivedColumn) string {
 	dialect := dataset.DefaultCSVDialect()
 	if dl.CSVDialect != nil {
 		dialect = *dl.CSVDialect
 	}
-	scan := fmt.Sprintf("SELECT %d AS run_id, * FROM read_csv(%s, auto_detect=false, header=true, delim=%s, quote=%s, escape=%s, columns=%s)",
-		dl.RunID, vs.file(dl.Files[0]), sqlStr(dialect.Delim), sqlStr(dialect.Quote), sqlStr(dialect.Escape), orderedColumnsClause(dl.Columns, dl.ColumnOrder))
+	var extra strings.Builder
+	for _, d := range derivedFor(dl, derived) {
+		fmt.Fprintf(&extra, ", %s AS %s", d.expr(dl), sqlIdent(d.name))
+	}
+	scan := fmt.Sprintf("SELECT %d AS run_id, *%s FROM read_csv(%s, auto_detect=false, header=true, delim=%s, quote=%s, escape=%s, columns=%s)",
+		dl.RunID, extra.String(), vs.file(dl.Files[0]), sqlStr(dialect.Delim), sqlStr(dialect.Quote), sqlStr(dialect.Escape), orderedColumnsClause(dl.Columns, dl.ColumnOrder))
 	if dl.ReportType == dataset.ReportTypeAnswers {
 		if keepData {
 			return scan + " WHERE student_id::VARCHAR NOT IN ('Prompt', 'Correct answer')"
@@ -315,12 +352,12 @@ func (vs viewSet) perDownloadViews() []viewStmt {
 		case "report":
 			if len(dl.Files) > 0 && dl.Columns != nil {
 				vn := vs.prefix + sqlIdent(fmt.Sprintf("report_%d", dl.RunID))
-				stmts = append(stmts, viewStmt{name: vn, primary: fmt.Sprintf("CREATE VIEW %s AS %s", vn, vs.csvScan(dl, true)), fallback: fmt.Sprintf("CREATE VIEW %s AS %s", vn, vs.csvEmptyMember(dl)), files: dl.Files})
+				stmts = append(stmts, viewStmt{name: vn, primary: fmt.Sprintf("CREATE VIEW %s AS %s", vn, vs.csvScan(dl, true, nil)), fallback: fmt.Sprintf("CREATE VIEW %s AS %s", vn, vs.csvEmptyMember(dl, nil)), files: dl.Files})
 			}
 		case "report_job":
 			if len(dl.Files) > 0 && dl.Columns != nil && dl.JobID != nil {
 				vn := vs.prefix + sqlIdent(fmt.Sprintf("report_%d_job_%d", dl.RunID, *dl.JobID))
-				stmts = append(stmts, viewStmt{name: vn, primary: fmt.Sprintf("CREATE VIEW %s AS %s", vn, vs.csvScan(dl, true)), fallback: fmt.Sprintf("CREATE VIEW %s AS %s", vn, vs.csvEmptyMember(dl)), files: dl.Files})
+				stmts = append(stmts, viewStmt{name: vn, primary: fmt.Sprintf("CREATE VIEW %s AS %s", vn, vs.csvScan(dl, true, nil)), fallback: fmt.Sprintf("CREATE VIEW %s AS %s", vn, vs.csvEmptyMember(dl, nil)), files: dl.Files})
 			}
 		}
 	}
