@@ -69,7 +69,7 @@ Make a failed Athena run explain itself everywhere, not only in the browser: exp
 
 ### Is this sequenced after REPORT-94?
 
-**Decision**: yes. REPORT-94 rewrites `types.go` and `FetchReport`, which this touches. The reason is not conflict avoidance but which spec pays: both were written against code that would change underneath them, and this one is two files where 94's spans the client, engine, manifest and reindexer.
+**Decision**: yes. REPORT-94 rewrites `types.go` and `FetchReport`, which this touches. The reason is not conflict avoidance but which spec pays: both were written against code that would change underneath them, and this one is two files, whereas REPORT-94 spans the client, engine, manifest and reindexer.
 
 ### Do the failure fields belong on the run wire type?
 
@@ -155,4 +155,4 @@ Make a failed Athena run explain itself everywhere, not only in the browser: exp
 
 ### The client half needs the server release, and nothing in Jira says so
 
-**Decision**: an entry was added to `follow-ups.md`, keyed on `cc-data-cli 0.2.0` being cut. Against a server without this story the CLI prints the reason and query id with no advice, which is the intended graceful degradation but leaves the story reading as done while half of it is invisible. Fix versions were verified in Jira rather than assumed: REPORT-127 carries both `cc-data-cli 0.2.0` and `1.11.0`.
+**Decision**: the coordination belongs at release time rather than in code, and the check is stated here so it travels with the spec. **Before `cc-data-cli 0.2.0` is cut, confirm report-server `1.11.0` is deployed to the environment researchers are pointed at.** Against an older server the CLI prints the reason and the query id with no suggested next step, which is the intended graceful degradation but leaves the story reading as done while half of it is invisible to the person it was built for. Fix versions were verified in Jira rather than assumed: REPORT-127 carries both `cc-data-cli 0.2.0` and `1.11.0`, so the two releases are linked where a release manager will look.
