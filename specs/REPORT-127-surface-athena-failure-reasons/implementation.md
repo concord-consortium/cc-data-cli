@@ -97,10 +97,9 @@ The browser-and-API agreement is asserted rather than argued, and it needs no Li
 `pollUntilReady` carries the server's `Extra` forward instead of constructing a new one:
 
 ```go
-	// Forward what the server sent rather than rebuilding it. The reason this function existed in
-	// its old shape is the bug: the server gained athena_query_id and athena_query_error and this
-	// kept returning a map with one key in it. The NOT_READY body is defined as caller-visible and
-	// guarded server-side, so forwarding it is the contract, not an accident.
+	// The NOT_READY body is a caller-visible contract, pinned server-side, so every key
+	// except the rendered guidance is forwarded: a field the server adds later reaches the
+	// envelope with no client release.
 	Extra: apiErr.Extra,
 ```
 
@@ -131,10 +130,8 @@ These tests establish the guard rather than protect one, and the step should be 
 `Envelope/0` merges `Extra` after setting `action` (`output.go:43-55`), so copying the key would print the same sentence twice on the line a human reads and an agent parses: measured, 447 characters against 316 for the mapped-reason envelope, the guidance itself being 91 characters here and about 150 for the slowdown text. The rule is therefore to promote and forward:
 
 ```go
-// promoteGuidance renders the server's guidance into the envelope's action field and forwards
-// every other key untouched. Removing the one key this client has just rendered is not the
-// allowlist a passthrough exists to avoid: an allowlist enumerates what may leave and drops what
-// it does not recognize, which is how the server's fields were lost in the first place.
+// promoteGuidance renders the server's guidance into the envelope's action field and forwards every
+// other key untouched, so the sentence reaches the caller once rather than under two names.
 func promoteGuidance(extra map[string]any) (map[string]any, string) {
 	guidance, _ := extra[api.FieldAthenaQueryGuidance].(string)
 	if guidance == "" {

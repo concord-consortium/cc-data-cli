@@ -71,7 +71,7 @@ type reportServer struct {
 	reportFilter   string // the run's filter and its resolved labels, as the server emits them
 	filterValues   string
 	portalRefusal  string // a 422 error envelope the Portal download answers with instead
-	notReadyBody   string // the exact 409 body to answer with, in place of the state-only default
+	notReadyBody   string // the exact 409 body for every not-ready poll; notReadyStates then only sets how many
 	pollCount      int32
 	stateIndex     int32
 }
