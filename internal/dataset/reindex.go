@@ -23,7 +23,7 @@ var reindexCSVRe = regexp.MustCompile(`^report_(\d+)(?:_job_(\d+))?\.csv$`)
 // from membership files and CSVs (recovering report_type from CSV shape only
 // partially), rebuild the attachment index, and GC unreferenced files.
 func (d *Dataset) Reindex() error {
-	release, err := d.lockMutation()
+	release, err := d.LockMutation()
 	if err != nil {
 		return err
 	}

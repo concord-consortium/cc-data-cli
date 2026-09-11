@@ -411,3 +411,47 @@ func TestRecoverReportTypeDoesNotGuessLogFromAMissingStudentID(t *testing.T) {
 		})
 	}
 }
+
+// TestDerivedSubdirIsInvisible holds the contract that reindex neither adopts
+// files inside a derived subfolder nor reports them as orphans. Each planted
+// name would be adopted at the top level, so the test fails the moment either
+// walk starts descending into subdirectories.
+func TestDerivedSubdirIsInvisible(t *testing.T) {
+	d := newDataset(t)
+	planted := []string{"answers.v99.jsonl", "report_4242.csv", "members_answers_5.v9.jsonl"}
+	os.MkdirAll(d.Path(MaterializedDir), 0o700)
+	for _, name := range planted {
+		os.WriteFile(d.Path(MaterializedDir+"/"+name), []byte("{}\n"), 0o600)
+	}
+
+	if err := d.Reindex(); err != nil {
+		t.Fatal(err)
+	}
+	m, err := d.ReadManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Stores) != 0 || len(m.Membership) != 0 || len(m.Downloads) != 0 {
+		t.Fatalf("reindex adopted files from %s: %+v", MaterializedDir, m)
+	}
+
+	// The same name at the top level is the control: it must be the only orphan
+	// reported, which proves the check fires at all and that the copy inside the
+	// derived subfolder is not what fired it.
+	os.WriteFile(d.Path("report_4242.csv"), []byte("a\n"), 0o600)
+	s := showJSON(t, d)
+	var orphans []string
+	for _, w := range s.Warnings {
+		if strings.HasPrefix(w, "ORPHAN_FILE") {
+			orphans = append(orphans, w)
+		}
+	}
+	if len(orphans) != 1 || !strings.Contains(orphans[0], "report_4242.csv") {
+		t.Fatalf("want exactly the top-level report_4242.csv orphan, got %v", orphans)
+	}
+	for _, name := range planted {
+		if _, err := os.Stat(d.Path(MaterializedDir + "/" + name)); err != nil {
+			t.Fatalf("reindex must leave %s in place: %v", name, err)
+		}
+	}
+}

@@ -226,3 +226,102 @@ func TestAutoName(t *testing.T) {
 		t.Fatalf("counter name = %q", name2)
 	}
 }
+
+func TestPurgeRemovesDerivedSubdir(t *testing.T) {
+	d := newDataset(t)
+	os.MkdirAll(d.Path(MaterializedDir), 0o700)
+	os.WriteFile(d.Path(MaterializedDir+"/answers.parquet"), []byte("PAR1"), 0o600)
+
+	if err := d.Purge(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(d.Path(MaterializedDir)); !os.IsNotExist(err) {
+		t.Fatalf("purge should delete %s, stat err = %v", MaterializedDir, err)
+	}
+}
+
+// TestDeleteRemovesDerivedSubdir passes without production code, because Delete
+// removes the whole dataset directory. It goes red if Delete is ever rewritten to
+// remove known children selectively.
+func TestDeleteRemovesDerivedSubdir(t *testing.T) {
+	d := newDataset(t)
+	os.MkdirAll(d.Path(MaterializedDir), 0o700)
+	os.WriteFile(d.Path(MaterializedDir+"/answers.parquet"), []byte("PAR1"), 0o600)
+
+	if err := d.Delete(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(d.Path(MaterializedDir)); !os.IsNotExist(err) {
+		t.Fatalf("delete should remove %s, stat err = %v", MaterializedDir, err)
+	}
+}
+
+func TestPurgeClearsMaterialized(t *testing.T) {
+	d := newDataset(t)
+	m, err := d.ReadManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.Materialized = map[string]Materialized{
+		"answers": {File: MaterializedDir + "/answers.parquet", Inputs: map[string]string{"answers.v1.jsonl": "3-7"}},
+	}
+	if err := writeManifestFile(d.Dir, m); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := d.Purge(); err != nil {
+		t.Fatal(err)
+	}
+	after, err := d.ReadManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after.Materialized) != 0 {
+		t.Fatalf("purge left materialization entries naming files it deleted: %+v", after.Materialized)
+	}
+}
+
+// TestRenameDeletePurgeRefuseDuringAMaterializeRun pins the coupling that keeps
+// the lifecycle operations off a directory with an open handle inside it, which
+// Windows refuses to move or remove, and which would otherwise leave the
+// manifest renamed and the folder not.
+func TestRenameDeletePurgeRefuseDuringAMaterializeRun(t *testing.T) {
+	root := t.TempDir()
+	ref := Ref{Portal: config.MustPortal("learn.concord.org"), Name: "ds"}
+	d, err := Create(root, ref, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	release, err := d.LockMaterialize()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := d.Rename(root, "moved"); !errors.Is(err, ErrBusy) {
+		release()
+		t.Fatalf("rename during a materialize run should report busy, got %v", err)
+	}
+	if err := d.Delete(); !errors.Is(err, ErrBusy) {
+		release()
+		t.Fatalf("delete during a materialize run should report busy, got %v", err)
+	}
+	if err := d.Purge(); !errors.Is(err, ErrBusy) {
+		release()
+		t.Fatalf("purge during a materialize run should report busy, got %v", err)
+	}
+	// The manifest must not have been rewritten by the refused rename.
+	m, err := d.ReadManifest()
+	if err != nil {
+		release()
+		t.Fatal(err)
+	}
+	if m.Name != "ds" {
+		release()
+		t.Fatalf("a refused rename must leave the manifest name alone, got %q", m.Name)
+	}
+
+	release()
+	if _, err := d.Rename(root, "moved"); err != nil {
+		t.Fatalf("rename should succeed once the run finishes: %v", err)
+	}
+}

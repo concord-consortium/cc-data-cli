@@ -1,6 +1,8 @@
 package duck
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -33,10 +35,18 @@ var membershipColumns = map[string]string{
 
 // viewStmt is one view with its primary SQL and a typed-empty fallback.
 type viewStmt struct {
-	name     string
-	primary  string
-	fallback string
-	files    []string // files the primary reads (for the degradation warning)
+	name         string
+	materialized string // optional read_parquet form, tried before primary
+	primary      string
+	fallback     string
+	files        []string // files the primary reads (for the degradation warning)
+
+	// Set alongside materialized: the file it reads, the manifest entry that
+	// names it, and the signature of the definition the entry was checked
+	// against, so a session can re-check the copy's freshness after it opens.
+	parquet   string
+	record    dataset.Materialized
+	signature string
 }
 
 // viewSet builds the view statements for one dataset under a schema prefix.
@@ -392,7 +402,7 @@ func (vs viewSet) attachmentFilesView() viewStmt {
 // attachmentStatesView exposes offloaded state files as raw text plus TRY_CAST JSON.
 func (vs viewSet) attachmentStatesView() viewStmt {
 	name := vs.prefix + `"attachment_states"`
-	var members []string
+	var members, files []string
 	for _, af := range vs.m.Attachments {
 		if !af.State {
 			continue
@@ -400,6 +410,7 @@ func (vs viewSet) attachmentStatesView() viewStmt {
 		members = append(members, fmt.Sprintf(
 			"SELECT %s AS id12, %s AS name, filename, content FROM read_text(%s)",
 			sqlStr(af.ID12), sqlStr(af.Name), vs.file(af.File)))
+		files = append(files, af.File)
 	}
 	fallback := fmt.Sprintf("CREATE VIEW %s AS SELECT CAST(NULL AS VARCHAR) AS filename, CAST(NULL AS VARCHAR) AS id12, CAST(NULL AS VARCHAR) AS name, CAST(NULL AS VARCHAR) AS content, CAST(NULL AS JSON) AS state WHERE false", name)
 	if len(members) == 0 {
@@ -407,7 +418,7 @@ func (vs viewSet) attachmentStatesView() viewStmt {
 	}
 	inner := strings.Join(members, "\nUNION ALL BY NAME\n")
 	primary := fmt.Sprintf("CREATE VIEW %s AS SELECT filename, id12, name, content, TRY_CAST(content AS JSON) AS state FROM (%s)", name, inner)
-	return viewStmt{name: name, primary: primary, fallback: fallback}
+	return viewStmt{name: name, primary: primary, fallback: fallback, files: files}
 }
 
 // attachmentContentView exposes the text content of every downloaded attachment
@@ -417,7 +428,7 @@ func (vs viewSet) attachmentStatesView() viewStmt {
 // attachment_states stays as the narrow current-answer view for back-compat.
 func (vs viewSet) attachmentContentView() viewStmt {
 	name := vs.prefix + `"attachment_content"`
-	var members []string
+	var members, files []string
 	for _, af := range vs.m.Attachments {
 		// read_text requires valid UTF-8, so binary attachments (audio, images)
 		// cannot be exposed as text; they remain downloadable via attachment_files.
@@ -428,6 +439,7 @@ func (vs viewSet) attachmentContentView() viewStmt {
 		members = append(members, fmt.Sprintf(
 			"SELECT %s AS id12, %s AS name, %s AS source, %s AS public_path, filename, content FROM read_text(%s)",
 			sqlStr(af.ID12), sqlStr(af.Name), sqlStr(af.Source), sqlStr(af.PublicPath), vs.file(af.File)))
+		files = append(files, af.File)
 	}
 	fallback := fmt.Sprintf("CREATE VIEW %s AS SELECT CAST(NULL AS VARCHAR) AS id12, CAST(NULL AS VARCHAR) AS name, CAST(NULL AS VARCHAR) AS source, CAST(NULL AS VARCHAR) AS public_path, CAST(NULL AS VARCHAR) AS filename, CAST(NULL AS VARCHAR) AS content, CAST(NULL AS JSON) AS state WHERE false", name)
 	if len(members) == 0 {
@@ -435,7 +447,7 @@ func (vs viewSet) attachmentContentView() viewStmt {
 	}
 	inner := strings.Join(members, "\nUNION ALL BY NAME\n")
 	primary := fmt.Sprintf("CREATE VIEW %s AS SELECT id12, name, source, public_path, filename, content, TRY_CAST(content AS JSON) AS state FROM (%s)", name, inner)
-	return viewStmt{name: name, primary: primary, fallback: fallback}
+	return viewStmt{name: name, primary: primary, fallback: fallback, files: files}
 }
 
 // perDownloadViews builds report_<run>, answers_<run>, history_<run>, and
@@ -589,6 +601,100 @@ func StaticViewNames() []string {
 		names = append(names, strings.Trim(st.name, `"`))
 	}
 	return names
+}
+
+// applyMaterialized points a view at its Parquet when the manifest records one
+// that is fresh. A stale entry is silent by contract; a missing or unreadable
+// one is not, and the registration loop is what tells those apart.
+func (vs viewSet) applyMaterialized(stmts []viewStmt) []viewStmt {
+	if len(vs.m.Materialized) == 0 {
+		return stmts
+	}
+	eligible := map[string]bool{}
+	for _, n := range materializableFrom(stmts, vs.prefix) {
+		eligible[n] = true
+	}
+	for i, st := range stmts {
+		bare := bareViewName(st.name, vs.prefix)
+		if !eligible[bare] {
+			continue
+		}
+		mat, ok := vs.m.Materialized[bare]
+		signature := viewSignature(st, vs.canonDir, vs.prefix)
+		if !ok || !mat.Fresh(vs.canonDir, st.files, signature) {
+			continue
+		}
+		stmts[i].materialized = fmt.Sprintf("CREATE VIEW %s AS SELECT * FROM read_parquet(%s)",
+			st.name, vs.file(mat.File))
+		stmts[i].parquet = filepath.Join(vs.canonDir, mat.File)
+		stmts[i].record = mat
+		stmts[i].signature = signature
+	}
+	return stmts
+}
+
+// materializableViews returns the views of this dataset that can be
+// materialized: those that scan files, minus the per-run views and the two
+// attachment views. The first two halves are code-derived, so a view added
+// later joins or stays out of the set by its own construction rather than by a
+// list someone updates.
+//
+// It takes the manifest because "declares files" is a property of a populated
+// dataset: over an empty manifest every builder returns its stand-in and no view
+// declares anything.
+func materializableViews(m *dataset.Manifest) []string {
+	vs := viewSet{m: m}
+	return materializableFrom(vs.statements(), vs.prefix)
+}
+
+// neverMaterialized names the views kept out of the set by hand. The attachment
+// views read_text every attachment, so materializing them would copy the
+// attachment corpus a second time for the two views with the largest output.
+var neverMaterialized = map[string]bool{"attachment_states": true, "attachment_content": true}
+
+// materializableFrom takes statements the caller has already built, so Open does
+// not build the full view set twice: applyMaterialized has the slice in hand and
+// passes it straight through. Those statements carry the schema prefix of
+// whichever dataset they were built for, so the caller passes it too and the set
+// stays keyed on bare names.
+func materializableFrom(stmts []viewStmt, prefix string) []string {
+	static := map[string]bool{}
+	for _, n := range StaticViewNames() {
+		static[n] = true
+	}
+	var out []string
+	for _, st := range stmts {
+		bare := bareViewName(st.name, prefix)
+		if len(st.files) > 0 && static[bare] && !neverMaterialized[bare] {
+			out = append(out, bare)
+		}
+	}
+	return out
+}
+
+// viewSignature identifies the definition a Parquet was built from. Two things
+// are neutralized first, because neither changes what the view returns: the
+// dataset directory, since the statement embeds absolute paths and a
+// materialized view has to survive a rename, and the schema prefix, since the
+// same dataset registers unprefixed alone and prefixed in a multi-dataset
+// session.
+func viewSignature(st viewStmt, canonDir, prefix string) string {
+	sql := st.primary
+	if prefix != "" {
+		sql = strings.ReplaceAll(sql, prefix, "")
+	}
+	if canonDir != "" {
+		sql = strings.ReplaceAll(sql, canonDir, "<dataset>")
+	}
+	sum := sha256.Sum256([]byte(sql))
+	return hex.EncodeToString(sum[:])
+}
+
+// bareViewName is a statement's view name with its schema prefix and quoting
+// removed. That is the form StaticViewNames produces and the form the manifest's
+// Materialized map is keyed on, so every lookup against either goes through it.
+func bareViewName(name, prefix string) string {
+	return strings.Trim(strings.TrimPrefix(name, prefix), `"`)
 }
 
 // IdentityColumnNames returns the columns that identify a record across the stores, derived

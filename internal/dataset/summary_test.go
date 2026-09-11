@@ -1,7 +1,10 @@
 package dataset
 
 import (
+	"bytes"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -13,10 +16,7 @@ func TestShowJSONSchema(t *testing.T) {
 	seg := writeFinishedSegment(t, d, "answers", 584, [][]byte{rec("s", "e1", "q1", "", "A")})
 	d.MergeCompact("answers", 584, seg)
 
-	s, err := d.BuildShowJSON(false)
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := showJSON(t, d)
 	if s.Ref != "learn.concord.org/ds" || s.Portal != "learn.concord.org" {
 		t.Fatalf("show ref/portal wrong: %+v", s)
 	}
@@ -38,7 +38,7 @@ func TestShowWarnsOnOrphanFile(t *testing.T) {
 	// Plant an orphan store version not in the manifest.
 	os.WriteFile(d.Path("answers.v9.jsonl"), []byte("{}\n"), 0o600)
 
-	s, _ := d.BuildShowJSON(false)
+	s := showJSON(t, d)
 	found := false
 	for _, w := range s.Warnings {
 		if strings.HasPrefix(w, "ORPHAN_FILE:") {
@@ -57,7 +57,7 @@ func TestPurgeThenShowZeroHoldings(t *testing.T) {
 	if err := d.Purge(); err != nil {
 		t.Fatal(err)
 	}
-	s, _ := d.BuildShowJSON(false)
+	s := showJSON(t, d)
 	if s.Totals["answers"] != 0 || len(s.Downloads) != 0 {
 		t.Fatalf("purge should leave zero holdings: %+v", s)
 	}
@@ -114,7 +114,7 @@ func TestShowWarnsWhatARecoveredDownloadLost(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	s, _ := d.BuildShowJSON(false)
+	s := showJSON(t, d)
 	got := warningsWithPrefix(s.Warnings, "RECOVERED_PROVENANCE:")
 	if len(got) != 1 {
 		t.Fatalf("expected one recovered-provenance warning, got %v", s.Warnings)
@@ -136,8 +136,116 @@ func TestShowDoesNotWarnForARecoveredStoreDownload(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	s, _ := d.BuildShowJSON(false)
+	s := showJSON(t, d)
 	if got := warningsWithPrefix(s.Warnings, "RECOVERED_PROVENANCE:"); len(got) != 0 {
 		t.Fatalf("a store download raised a provenance warning: %v", got)
+	}
+}
+
+func TestMaterializedBytesIsReportedSeparately(t *testing.T) {
+	d := newDataset(t)
+	os.WriteFile(d.Path("answers.v1.jsonl"), []byte("{}\n"), 0o600)
+	os.MkdirAll(d.Path(MaterializedDir), 0o700)
+	body := bytes.Repeat([]byte("x"), 500)
+	os.WriteFile(d.Path(MaterializedDir+"/answers.parquet"), body, 0o600)
+
+	s := showJSON(t, d)
+	if s.MaterializedBytes != int64(len(body)) {
+		t.Fatalf("materialized_bytes = %d, want %d", s.MaterializedBytes, len(body))
+	}
+	if s.SizeBytes <= s.MaterializedBytes {
+		t.Fatalf("size_bytes (%d) must still count everything, including the %d derived bytes",
+			s.SizeBytes, s.MaterializedBytes)
+	}
+
+	list, err := BuildListJSON(filepath.Dir(filepath.Dir(filepath.Dir(d.Dir))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Datasets) != 1 {
+		t.Fatalf("want one dataset listed, got %d", len(list.Datasets))
+	}
+	if list.Datasets[0].MaterializedBytes != int64(len(body)) {
+		t.Fatalf("list materialized_bytes = %d, want %d", list.Datasets[0].MaterializedBytes, len(body))
+	}
+}
+
+// showJSON builds the summary the way both surfaces do, from one manifest read.
+func showJSON(t *testing.T, d *Dataset) *ShowJSON {
+	t.Helper()
+	m, err := d.ReadManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d.BuildShowJSON(m, false)
+}
+
+func TestUnreferencedMaterializedWarning(t *testing.T) {
+	d := newDataset(t)
+	os.MkdirAll(d.Path(MaterializedDir), 0o700)
+	os.WriteFile(d.Path(MaterializedDir+"/logs.parquet"), []byte("PAR1"), 0o600)
+	os.WriteFile(d.Path(MaterializedDir+"/answers.parquet"), []byte("PAR1"), 0o600)
+
+	m, err := d.ReadManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.Materialized["answers"] = Materialized{File: MaterializedDir + "/answers.parquet"}
+	if err := writeManifestFile(d.Dir, m); err != nil {
+		t.Fatal(err)
+	}
+
+	s := showJSON(t, d)
+	var named []string
+	for _, w := range s.Warnings {
+		if strings.HasPrefix(w, "UNREFERENCED_MATERIALIZED") {
+			named = append(named, w)
+		}
+	}
+	if len(named) != 1 || !strings.Contains(named[0], "logs.parquet") {
+		t.Fatalf("want exactly the unrecorded logs.parquet named, got %v", named)
+	}
+	if !strings.Contains(named[0], "dataset materialize") {
+		t.Fatalf("the warning must name the command that re-records a view's copy: %s", named[0])
+	}
+	// Materialize never removes a file it does not recognize, so the warning
+	// must not promise that it clears the condition.
+	if !strings.Contains(named[0], "kept, moved or deleted") {
+		t.Fatalf("the warning must leave the file's fate to the researcher: %s", named[0])
+	}
+	if !sort.StringsAreSorted(s.Warnings) {
+		t.Fatalf("warnings must stay sorted: %v", s.Warnings)
+	}
+}
+
+// TestMissingMaterializedWarning covers the documented action, deleting the
+// folder: the entries stay recorded, so nothing else in show would name the
+// views now reading their raw artifacts.
+func TestMissingMaterializedWarning(t *testing.T) {
+	d := newDataset(t)
+	m, err := d.ReadManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.Materialized["answers"] = Materialized{File: MaterializedDir + "/answers.parquet"}
+	m.Materialized["logs"] = Materialized{File: MaterializedDir + "/logs.parquet"}
+	if err := writeManifestFile(d.Dir, m); err != nil {
+		t.Fatal(err)
+	}
+	os.MkdirAll(d.Path(MaterializedDir), 0o700)
+	os.WriteFile(d.Path(MaterializedDir+"/logs.parquet"), []byte("PAR1"), 0o600)
+
+	s := showJSON(t, d)
+	var named []string
+	for _, w := range s.Warnings {
+		if strings.HasPrefix(w, "MISSING_MATERIALIZED") {
+			named = append(named, w)
+		}
+	}
+	if len(named) != 1 || !strings.Contains(named[0], "view answers") {
+		t.Fatalf("want exactly the missing answers copy named, got %v", named)
+	}
+	if !strings.Contains(named[0], "dataset materialize") {
+		t.Fatalf("the warning must name the command that rebuilds it: %s", named[0])
 	}
 }

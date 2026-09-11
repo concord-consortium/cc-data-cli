@@ -21,6 +21,12 @@ guessing flags.
 - Delete a dataset's data with `cc-data dataset purge <ref>`.
 - `--dataset` is repeatable on `query`/`repl`, which is how a query spans more
   than one dataset.
+- Speed up a large dataset's queries with `cc-data dataset materialize <ref>`,
+  which writes each view to `materialized/<view>.parquet` inside the dataset
+  folder. `--force` rebuilds an unchanged view; `--allow-partial` builds a view
+  whose declared file is missing from disk. It exits non-zero if any view was
+  refused, and `cc-data dataset show <ref>` names a view whose copy has gone
+  stale.
 
 ## Auth
 

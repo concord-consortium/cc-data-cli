@@ -21,6 +21,7 @@ func newDatasetCmd() *cobra.Command {
 		newDatasetPurgeCmd(),
 		newDatasetShowCmd(),
 		newDatasetListCmd(),
+		newDatasetMaterializeCmd(),
 		newReindexCmd(),
 	)
 	return cmd

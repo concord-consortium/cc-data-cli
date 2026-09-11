@@ -3,19 +3,43 @@
 package store
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/gofrs/flock"
 )
+
+// lockRetry is how often a waiting acquisition re-tries its guard.
+const lockRetry = 100 * time.Millisecond
+
+// waitFor re-tries a non-blocking acquisition until it succeeds or the context
+// ends. Both guards wait this way rather than through the flock's own blocking
+// call so that a wait can be abandoned, and so the in-process bookkeeping each
+// TryLock does is the only bookkeeping there is.
+func waitFor(ctx context.Context, try func() (bool, error)) error {
+	for {
+		ok, err := try()
+		if err != nil || ok {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(lockRetry):
+		}
+	}
+}
 
 // Lock file names within a dataset directory. None is ever renamed or unlinked,
 // because unlinking a held flock file detaches it from its inode and a rename
 // detaches held flocks onto a dead inode.
 const (
-	DatasetLockFile  = ".dataset.lock"
-	ActivityLockFile = ".activity.lock"
+	DatasetLockFile     = ".dataset.lock"
+	ActivityLockFile    = ".activity.lock"
+	MaterializeLockFile = ".materialize.lock"
 )
 
 // Each lock is a process-wide guard per path: a sync primitive for goroutine
@@ -27,6 +51,7 @@ var (
 	dsGuards   = map[string]*DatasetLock{}
 	actGuards  = map[string]*ActivityLock{}
 	dlGuards   = map[string]*DownloadLock{}
+	matGuards  = map[string]*DatasetLock{}
 )
 
 // DatasetLockFor returns the process-wide per-dataset guard for a dataset dir.
@@ -53,6 +78,24 @@ func ActivityLockFor(datasetDir string) *ActivityLock {
 	}
 	g := &ActivityLock{flock: flock.New(filepath.Join(key, ActivityLockFile))}
 	actGuards[key] = g
+	return g
+}
+
+// MaterializeLockFor returns the process-wide guard a materialize run holds for
+// its whole duration. It is separate from the mutation guards because a
+// materialize deliberately copies outside those, so that a fetch is never
+// blocked by one; holding this guard for the whole run is what makes a temp file
+// found at the start provably the work of a run that is no longer alive, since
+// the kernel drops an flock when its holder dies however abruptly.
+func MaterializeLockFor(datasetDir string) *DatasetLock {
+	key := filepath.Clean(datasetDir)
+	registryMu.Lock()
+	defer registryMu.Unlock()
+	if g, ok := matGuards[key]; ok {
+		return g
+	}
+	g := &DatasetLock{flock: flock.New(filepath.Join(key, MaterializeLockFile))}
+	matGuards[key] = g
 	return g
 }
 
@@ -148,6 +191,9 @@ func (l *DatasetLock) Lock() error {
 	return nil
 }
 
+// LockContext waits for the guard until the context ends.
+func (l *DatasetLock) LockContext(ctx context.Context) error { return waitFor(ctx, l.TryLock) }
+
 // TryLock acquires the guard without blocking; the bool reports success.
 func (l *DatasetLock) TryLock() (bool, error) {
 	if !l.mu.TryLock() {
@@ -214,6 +260,9 @@ func (l *ActivityLock) RUnlock() {
 		l.flock.Unlock()
 	}
 }
+
+// LockContext waits for the exclusive lock until the context ends.
+func (l *ActivityLock) LockContext(ctx context.Context) error { return waitFor(ctx, l.TryLock) }
 
 // TryLock acquires the exclusive lock without blocking.
 func (l *ActivityLock) TryLock() (bool, error) {

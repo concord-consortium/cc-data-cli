@@ -186,6 +186,31 @@ its own schema. There are no implicit cross-dataset unions — write them
 explicitly with provenance, e.g.
 `SELECT * FROM fall_2026.answers UNION ALL BY NAME SELECT * FROM spring_2027.answers`.
 
+## Materializing a dataset
+
+Every query re-reads the raw JSONL and CSV a fetch produced, which is right for a
+few thousand answers and slow once a dataset reaches gigabytes. Materializing
+writes each view to a Parquet file that queries read instead, while it is fresh.
+
+- It is a speed decision, never a correctness one. A materialized view returns
+  exactly what the raw artifacts return, and a view whose inputs have changed
+  since the copy falls back to them silently, with no error and nothing for the
+  user to do.
+- It is worth doing once a dataset is large and the same questions are being
+  asked repeatedly, and it is worth redoing after a fetch that changes the data
+  a view reads. It buys most on aggregates over a few columns and least on
+  queries that read a wide JSON blob or take an unfiltered `LIMIT`.
+- The Parquet lands at a fixed path inside the dataset folder, so analysis code
+  outside cc-data can open it directly rather than going through a query.
+- The folder is safe for the researcher to delete at any time, and cc-data itself
+  removes a finished Parquet only when purging or deleting the whole dataset, so
+  an external script may rely on the path. The one thing a materialize run does
+  clear is the half-written file a previous run left behind if it was
+  interrupted.
+- A dataset with only some of its views materialized is an ordinary state, not a
+  fault: freshness is per view, and a view can also be refused when a file it
+  reads is missing from disk.
+
 ## Sensitive data
 
 Datasets hold sensitive student data. You may auto-read a dataset's summary; do

@@ -1,6 +1,7 @@
 package dataset
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -29,6 +30,7 @@ type Dataset struct {
 	Dir     string
 	dsLock  *store.DatasetLock
 	actLock *store.ActivityLock
+	matLock *store.DatasetLock
 }
 
 // Open returns a handle for a ref under a data root; it does not create anything.
@@ -39,6 +41,7 @@ func Open(dataRoot string, ref Ref) *Dataset {
 		Dir:     dir,
 		dsLock:  store.DatasetLockFor(dir),
 		actLock: store.ActivityLockFor(dir),
+		matLock: store.MaterializeLockFor(dir),
 	}
 }
 
@@ -101,9 +104,11 @@ func Create(dataRoot string, ref Ref, description string) (*Dataset, error) {
 	return d, nil
 }
 
-// lockMutation acquires the activity (exclusive) then per-dataset lock, both
-// non-blocking, returning a release func or ErrBusy.
-func (d *Dataset) lockMutation() (func(), error) {
+// LockMutation acquires the activity (exclusive) then per-dataset lock, both
+// non-blocking, returning a release func or ErrBusy. Callers outside this package
+// hold it only for as long as they are reading or repointing the manifest: a
+// command that holds it for a long copy makes every concurrent get fail as busy.
+func (d *Dataset) LockMutation() (func(), error) {
 	ok, err := d.actLock.TryLock()
 	if err != nil {
 		return nil, err
@@ -126,9 +131,43 @@ func (d *Dataset) lockMutation() (func(), error) {
 	}, nil
 }
 
+// LockMutationWait is LockMutation for a caller that would rather wait than
+// fail: a materialize run committing minutes of copies while a fetch holds the
+// activity lock. It is the only waiting acquisition, and it must stay the only
+// one: Rename, Delete and Purge take the materialize guard while holding these
+// locks, so if they waited for the guard a run waiting here would deadlock them.
+func (d *Dataset) LockMutationWait(ctx context.Context) (func(), error) {
+	if err := d.actLock.LockContext(ctx); err != nil {
+		return nil, err
+	}
+	if err := d.dsLock.LockContext(ctx); err != nil {
+		d.actLock.Unlock()
+		return nil, err
+	}
+	return func() {
+		d.dsLock.Unlock()
+		d.actLock.Unlock()
+	}, nil
+}
+
+// LockMaterialize takes the materialize guard without blocking, returning a
+// release func or ErrBusy. A materialize run holds it from start to finish,
+// which both keeps two runs off the same dataset and makes any temp file left in
+// the derived folder provably the work of a run that has died.
+func (d *Dataset) LockMaterialize() (func(), error) {
+	ok, err := d.matLock.TryLock()
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, ErrBusy
+	}
+	return d.matLock.Unlock, nil
+}
+
 // Edit updates the dataset description under the mutation locks.
 func (d *Dataset) Edit(description string) error {
-	release, err := d.lockMutation()
+	release, err := d.LockMutation()
 	if err != nil {
 		return err
 	}
@@ -146,27 +185,40 @@ func (d *Dataset) Rename(dataRoot string, newName string) (*Dataset, error) {
 	if err := ValidateName(newName); err != nil {
 		return nil, err
 	}
-	release, err := d.lockMutation()
+	release, err := d.LockMutation()
 	if err != nil {
+		return nil, err
+	}
+	// A materialize run holds its guard, whose lock file lives inside this
+	// directory, across copies that take no mutation lock. Windows cannot rename
+	// a directory with an open handle inside it, so the move has to wait for that
+	// run rather than fail after the manifest has already been rewritten.
+	releaseMat, err := d.LockMaterialize()
+	if err != nil {
+		release()
 		return nil, err
 	}
 	newRef := Ref{Portal: d.Ref.Portal, Name: newName}
 	newDir := newRef.Dir(dataRoot)
 	if _, statErr := os.Stat(newDir); statErr == nil {
+		releaseMat()
 		release()
 		return nil, fmt.Errorf("dataset %s already exists", newRef)
 	}
 	m, err := d.ReadManifest()
 	if err != nil {
+		releaseMat()
 		release()
 		return nil, err
 	}
 	m.Name = newName
 	if err := writeManifestFile(d.Dir, m); err != nil {
+		releaseMat()
 		release()
 		return nil, err
 	}
 	// Release locks before moving the folder (the lock files move with it).
+	releaseMat()
 	release()
 	if err := os.Rename(d.Dir, newDir); err != nil {
 		return nil, err
@@ -184,6 +236,14 @@ func (d *Dataset) Delete() error {
 	if !ok {
 		return ErrBusy
 	}
+	// Same reason Rename takes it: a materialize run's guard file lives inside
+	// this directory and its copies hold no activity lock.
+	releaseMat, err := d.LockMaterialize()
+	if err != nil {
+		d.actLock.Unlock()
+		return err
+	}
+	releaseMat()
 	// Release the flock handle before renaming: the lock file lives inside d.Dir,
 	// and Windows cannot rename a directory that still has an open handle inside
 	// it. Then tombstone-rename so the live directory vanishes atomically before
@@ -256,11 +316,18 @@ func sameDownload(a, b Download) bool {
 // Purge deletes all downloaded artifacts and clears the manifest holdings while
 // keeping the dataset shell. Lock files are never removed.
 func (d *Dataset) Purge() error {
-	release, err := d.lockMutation()
+	release, err := d.LockMutation()
 	if err != nil {
 		return err
 	}
 	defer release()
+	// A materialize run's copies take no mutation lock and are written into the
+	// derived folder this removes, so the run has to be over first.
+	releaseMat, err := d.LockMaterialize()
+	if err != nil {
+		return err
+	}
+	defer releaseMat()
 
 	m, err := d.ReadManifest()
 	if err != nil {
@@ -275,6 +342,7 @@ func (d *Dataset) Purge() error {
 	m.Membership = map[string]MembershipRef{}
 	m.Downloads = nil
 	m.Attachments = nil
+	m.Materialized = map[string]Materialized{}
 	if err := purgeCommitManifest(d.Dir, m); err != nil {
 		return err
 	}
@@ -286,8 +354,22 @@ func (d *Dataset) Purge() error {
 // and prove Purge deletes nothing when the commit fails.
 var purgeCommitManifest = writeManifestFile
 
-// deleteArtifacts removes stores, segments, membership files, CSVs, and the
-// attachments directory, but never a lock file.
+// MaterializedDir holds a dataset's Parquet query surface.
+const MaterializedDir = "materialized"
+
+// derivedSubdirs are subfolders holding data cc-data generated from the dataset's
+// own artifacts: never adopted as artifacts, never reported as orphans, removed
+// wholesale by purge and delete. Reindex is deliberately not on that list, since
+// the files stay readable by tools outside cc-data after cc-data stops vouching
+// for them.
+var derivedSubdirs = map[string]bool{MaterializedDir: true}
+
+// IsDerivedSubdir reports whether a directory name inside a dataset holds
+// derived data.
+func IsDerivedSubdir(name string) bool { return derivedSubdirs[name] }
+
+// deleteArtifacts removes stores, segments, membership files, CSVs, derived
+// subfolders and the attachments directory, but never a lock file.
 func (d *Dataset) deleteArtifacts() error {
 	entries, err := os.ReadDir(d.Dir)
 	if err != nil {
@@ -299,7 +381,7 @@ func (d *Dataset) deleteArtifacts() error {
 			continue
 		}
 		if e.IsDir() {
-			if name == "segments" || name == "attachments" {
+			if name == "segments" || name == "attachments" || IsDerivedSubdir(name) {
 				if err := os.RemoveAll(filepath.Join(d.Dir, name)); err != nil {
 					return err
 				}
