@@ -280,3 +280,43 @@ func TestPurgeClearsMaterialized(t *testing.T) {
 		t.Fatalf("purge left materialization entries naming files it deleted: %+v", after.Materialized)
 	}
 }
+
+// TestRenameWaitsForAMaterializeRun pins the coupling that keeps a rename from
+// moving a directory with an open lock handle inside it, which Windows refuses
+// and which would otherwise leave the manifest renamed and the folder not.
+func TestRenameWaitsForAMaterializeRun(t *testing.T) {
+	root := t.TempDir()
+	ref := Ref{Portal: config.MustPortal("learn.concord.org"), Name: "ds"}
+	d, err := Create(root, ref, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	release, err := d.LockMaterialize()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := d.Rename(root, "moved"); !errors.Is(err, ErrBusy) {
+		release()
+		t.Fatalf("rename during a materialize run should report busy, got %v", err)
+	}
+	if err := d.Delete(); !errors.Is(err, ErrBusy) {
+		release()
+		t.Fatalf("delete during a materialize run should report busy, got %v", err)
+	}
+	// The manifest must not have been rewritten by the refused rename.
+	m, err := d.ReadManifest()
+	if err != nil {
+		release()
+		t.Fatal(err)
+	}
+	if m.Name != "ds" {
+		release()
+		t.Fatalf("a refused rename must leave the manifest name alone, got %q", m.Name)
+	}
+
+	release()
+	if _, err := d.Rename(root, "moved"); err != nil {
+		t.Fatalf("rename should succeed once the run finishes: %v", err)
+	}
+}

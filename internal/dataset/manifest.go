@@ -40,9 +40,13 @@ type Manifest struct {
 // Freshness is per input rather than per store version because report CSVs have
 // no version: report_<run>.csv is a fixed name overwritten on re-fetch.
 type Materialized struct {
-	File    string            `json:"file"`   // dataset-relative
-	Inputs  map[string]string `json:"inputs"` // dataset-relative path -> fingerprint
-	BuiltAt time.Time         `json:"built_at"`
+	File   string            `json:"file"`   // dataset-relative
+	Inputs map[string]string `json:"inputs"` // dataset-relative path -> fingerprint
+	// Signature identifies the view definition the Parquet was built from, so a
+	// release that changes a view's projection, derived columns or ordering does
+	// not leave an older copy looking current over unchanged input files.
+	Signature string    `json:"signature,omitempty"`
+	BuiltAt   time.Time `json:"built_at"`
 }
 
 type Store struct {

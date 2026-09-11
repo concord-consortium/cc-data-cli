@@ -117,18 +117,17 @@ func Materialize(ctx context.Context, d *dataset.Dataset, opts MaterializeOption
 	if err != nil {
 		return res, err
 	}
-	canon, err := canonicalize(d.Dir)
+	declared, err := declaredViews(d.Dir, m)
 	if err != nil {
 		return res, err
 	}
-	vs := viewSet{canonDir: canon, m: m}
-	stmts := vs.statements()
-	views := materializableFrom(stmts, vs.prefix)
-	sort.Strings(views)
+	views := make([]string, 0, len(declared))
 	filesByView := map[string][]string{}
-	for _, st := range stmts {
-		filesByView[bareViewName(st.name, vs.prefix)] = st.files
+	for view, decl := range declared {
+		views = append(views, view)
+		filesByView[view] = decl.files
 	}
+	sort.Strings(views)
 	warnIncompleteDownloads(m, views, filesByView, warnOut)
 
 	if err := os.MkdirAll(d.Path(dataset.MaterializedDir), 0o700); err != nil {
@@ -169,7 +168,12 @@ func Materialize(ctx context.Context, d *dataset.Dataset, opts MaterializeOption
 				view, len(files)-len(missing), len(files))
 		}
 		if !opts.Force {
-			if rec, ok := m.Materialized[view]; ok && rec.Fresh(d.Dir, files) {
+			// The recorded copy has to still be readable, not merely recorded. The
+			// folder is documented as safe to delete at any time, and without this
+			// a deleted or truncated Parquet reads as fresh forever while queries
+			// quietly fall back to the raw artifacts.
+			if rec, ok := m.Materialized[view]; ok && rec.Fresh(d.Dir, files, declared[view].signature) &&
+				parquetReadable(ctx, e, d.Path(rec.File)) {
 				record(view, StatusFresh, "")
 				continue
 			}
@@ -201,7 +205,7 @@ func Materialize(ctx context.Context, d *dataset.Dataset, opts MaterializeOption
 				continue
 			}
 		}
-		built[view] = builtView{tmp: tmp, inputs: inputs}
+		built[view] = builtView{tmp: tmp, inputs: inputs, signature: declared[view].signature}
 	}
 
 	testHookBeforeRepoint()
@@ -226,8 +230,9 @@ var testHookBeforeRepoint = func() {}
 // builtView is one finished copy waiting to be committed: its temp file, and the
 // input fingerprints taken just before it was made.
 type builtView struct {
-	tmp    string
-	inputs map[string]string
+	tmp       string
+	inputs    map[string]string
+	signature string
 }
 
 func readManifestLocked(d *dataset.Dataset) (*dataset.Manifest, error) {
@@ -257,18 +262,23 @@ func repointManifest(d *dataset.Dataset, built map[string]builtView, record func
 	if err != nil {
 		return err
 	}
-	current := declaredFiles(m)
+	current, err := declaredViews(d.Dir, m)
+	if err != nil {
+		return err
+	}
 	now := time.Now().UTC()
 	for view, b := range built {
-		files, stillAView := current[view]
-		if !stillAView || !sameFingerprints(b.inputs, dataset.FingerprintInputs(d.Dir, files)) {
-			record(view, StatusDiscarded, "its inputs changed while the copy was running")
+		decl, stillAView := current[view]
+		if !stillAView || decl.signature != b.signature ||
+			!sameFingerprints(b.inputs, dataset.FingerprintInputs(d.Dir, decl.files)) {
+			record(view, StatusDiscarded, "its inputs or its view definition changed while the copy was running")
 			continue
 		}
 		rec := dataset.Materialized{
-			File:    filepath.ToSlash(filepath.Join(dataset.MaterializedDir, view+".parquet")),
-			Inputs:  b.inputs,
-			BuiltAt: now,
+			File:      filepath.ToSlash(filepath.Join(dataset.MaterializedDir, view+".parquet")),
+			Inputs:    b.inputs,
+			Signature: b.signature,
+			BuiltAt:   now,
 		}
 		if err := fsutil.RenameAtomic(d.Path(b.tmp), d.Path(rec.File)); err != nil {
 			return err
@@ -280,21 +290,34 @@ func repointManifest(d *dataset.Dataset, built map[string]builtView, record func
 	return d.WriteManifest(m)
 }
 
-// declaredFiles maps each materializable view to the files it currently reads.
-func declaredFiles(m *dataset.Manifest) map[string][]string {
-	vs := viewSet{m: m}
+// viewDecl is what a materializable view currently declares: the files it reads
+// and the signature of the statement that reads them.
+type viewDecl struct {
+	files     []string
+	signature string
+}
+
+// declaredViews maps each materializable view to what it currently declares. The
+// directory is canonicalized here so the signatures match the ones the engine
+// computes when it decides whether to read a Parquet.
+func declaredViews(dir string, m *dataset.Manifest) (map[string]viewDecl, error) {
+	canon, err := canonicalize(dir)
+	if err != nil {
+		return nil, err
+	}
+	vs := viewSet{canonDir: canon, m: m}
 	stmts := vs.statements()
-	out := map[string][]string{}
 	eligible := map[string]bool{}
 	for _, view := range materializableFrom(stmts, vs.prefix) {
 		eligible[view] = true
 	}
+	out := map[string]viewDecl{}
 	for _, st := range stmts {
 		if bare := bareViewName(st.name, vs.prefix); eligible[bare] {
-			out[bare] = st.files
+			out[bare] = viewDecl{files: st.files, signature: viewSignature(st, canon, vs.prefix)}
 		}
 	}
-	return out
+	return out, nil
 }
 
 func sameFingerprints(a, b map[string]string) bool {
@@ -369,6 +392,17 @@ func removeCopyArtifacts(d *dataset.Dataset, tmp string) {
 			os.Remove(filepath.Join(dir, entry.Name()))
 		}
 	}
+}
+
+// parquetReadable reports whether the engine can open the file and read its
+// footer, which is what separates a recorded copy that is still usable from one
+// that has been deleted or truncated.
+func parquetReadable(ctx context.Context, e *Engine, path string) bool {
+	if _, err := os.Stat(path); err != nil {
+		return false
+	}
+	_, err := parquetRowCount(ctx, e, path)
+	return err == nil
 }
 
 func parquetRowCount(ctx context.Context, e *Engine, path string) (int, error) {
@@ -521,11 +555,14 @@ func StaleMaterializedViews(d *dataset.Dataset) ([]string, error) {
 	if len(m.Materialized) == 0 {
 		return nil, nil
 	}
-	current := declaredFiles(m)
+	current, err := declaredViews(d.Dir, m)
+	if err != nil {
+		return nil, err
+	}
 	var stale []string
 	for view, rec := range m.Materialized {
-		files, ok := current[view]
-		if !ok || !rec.Fresh(d.Dir, files) {
+		decl, ok := current[view]
+		if !ok || !rec.Fresh(d.Dir, decl.files, decl.signature) {
 			stale = append(stale, view)
 		}
 	}

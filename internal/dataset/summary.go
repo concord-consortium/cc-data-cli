@@ -229,9 +229,8 @@ func driftWarnings(d *Dataset, m *Manifest) []string {
 			warnings = append(warnings, "UNKNOWN_TYPE: run "+itoa(dl.RunID)+" report_type "+dl.ReportType+" is unknown to this cc-data version and excluded from the reports view; upgrade suggested")
 		}
 	}
-	// A Parquet in a derived subfolder that no manifest entry names. This is what
-	// a reindex leaves, and what a materialize run leaves if it discards a view
-	// after copying it. Deciding it needs no view knowledge, only the folder
+	// A Parquet in a derived subfolder that no manifest entry names, which is the
+	// state a reindex leaves. Deciding it needs no view knowledge, only the folder
 	// listing against Materialized.
 	for _, name := range unreferencedMaterialized(d, m) {
 		warnings = append(warnings, "UNREFERENCED_MATERIALIZED: "+name+" is on disk but the manifest no longer records it; queries are reading the raw artifacts, run cc-data dataset materialize "+d.Ref.String()+" to restore it (external tools can still read the file)")

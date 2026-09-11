@@ -169,23 +169,36 @@ func (d *Dataset) Rename(dataRoot string, newName string) (*Dataset, error) {
 	if err != nil {
 		return nil, err
 	}
+	// A materialize run holds its guard, whose lock file lives inside this
+	// directory, across copies that take no mutation lock. Windows cannot rename
+	// a directory with an open handle inside it, so the move has to wait for that
+	// run rather than fail after the manifest has already been rewritten.
+	releaseMat, err := d.LockMaterialize()
+	if err != nil {
+		release()
+		return nil, err
+	}
 	newRef := Ref{Portal: d.Ref.Portal, Name: newName}
 	newDir := newRef.Dir(dataRoot)
 	if _, statErr := os.Stat(newDir); statErr == nil {
+		releaseMat()
 		release()
 		return nil, fmt.Errorf("dataset %s already exists", newRef)
 	}
 	m, err := d.ReadManifest()
 	if err != nil {
+		releaseMat()
 		release()
 		return nil, err
 	}
 	m.Name = newName
 	if err := writeManifestFile(d.Dir, m); err != nil {
+		releaseMat()
 		release()
 		return nil, err
 	}
 	// Release locks before moving the folder (the lock files move with it).
+	releaseMat()
 	release()
 	if err := os.Rename(d.Dir, newDir); err != nil {
 		return nil, err
@@ -203,6 +216,14 @@ func (d *Dataset) Delete() error {
 	if !ok {
 		return ErrBusy
 	}
+	// Same reason Rename takes it: a materialize run's guard file lives inside
+	// this directory and its copies hold no activity lock.
+	releaseMat, err := d.LockMaterialize()
+	if err != nil {
+		d.actLock.Unlock()
+		return err
+	}
+	releaseMat()
 	// Release the flock handle before renaming: the lock file lives inside d.Dir,
 	// and Windows cannot rename a directory that still has an open handle inside
 	// it. Then tombstone-rename so the live directory vanishes atomically before

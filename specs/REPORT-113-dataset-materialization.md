@@ -25,16 +25,18 @@ cc-data answers every query by re-reading the raw JSONL and CSV a fetch produced
 - Materialization refuses outright, with no flag to override it, for a view that registered from its typed-empty fallback rather than its primary statement. That is total loss rather than a shortfall.
 - After copying a store-backed view, the run asserts the Parquet's row count against the manifest's recorded store count and fails the view if they disagree. The union views get no such check: pseudo-header filtering makes the arithmetic inexact, and an approximate assertion is worse than none.
 - `--force` re-materializes a view whose recorded inputs are unchanged. It does not override the missing-input refusal; that is `--allow-partial`'s job alone.
-- Freshness is one rule for every view: the manifest records each materialized view's input files with a fingerprint, and the view's Parquet is used only while every input still matches. Otherwise the view is registered from its raw artifacts, with no error and no user action required.
+- Freshness is one rule for every view: the manifest records each materialized view's input files with a fingerprint and the signature of the view definition it was built from, and the view's Parquet is used only while every input still matches and the definition still agrees. Otherwise the view is registered from its raw artifacts, with no error and no user action required.
+- The signature covers what the input fingerprints cannot see. A cc-data release that changes a view's projection, derived columns or ordering leaves every input byte untouched, as does a reindex that re-stamps a zero `FetchedAt` and so reorders a dimension view's dedupe. It is taken over the view's statement with the dataset directory and the schema prefix neutralized, because a materialized view has to survive a rename and has to resolve the same alone as in a multi-dataset session.
+- A recorded view is only skipped as fresh when its Parquet is still readable. The folder is documented as safe to delete at any time, so without that check a deleted or truncated copy reads as fresh forever while queries quietly fall back to the raw artifacts, repairable only through `--force`.
 - An input that cannot be stat-ed records a reserved sentinel fingerprint, which no real fingerprint can collide with because a real one is always `<size>-<mtime>`. The sentinel compares like any other fingerprint, so an input absent at build time and absent still reads as fresh, while one that has since appeared or gone missing reads as stale.
 - A Parquet the manifest names but that is absent on disk falls back to the raw artifacts, with a warning.
 - Materialization does its copies outside the dataset's mutation locks, holding them only to read the manifest at the start and repoint it at the end, and discards a result whose inputs moved in between. A materialize run must not make a concurrent `get` fail as busy.
-- A run holds a separate, dataset-scoped materialize guard for its whole duration, so two runs never work the same dataset at once and a second fails as busy. `get` never takes this guard. Because the kernel drops an `flock` when its holder dies however abruptly, any temp file present when a run acquires the guard is provably the work of a run that is no longer alive.
+- A run holds a separate, dataset-scoped materialize guard for its whole duration, so two runs never work the same dataset at once and a second fails as busy. `get` never takes this guard. `dataset rename` and `dataset delete` do take it, because the guard's lock file lives inside the directory they move and Windows cannot rename a directory with an open handle inside it; without that coupling a rename would fail after having already rewritten the manifest name. Because the kernel drops an `flock` when its holder dies however abruptly, any temp file present when a run acquires the guard is provably the work of a run that is no longer alive.
 - A run sweeps those temp files unconditionally before it starts copying, which is the whole answer to an interrupted run.
 - `dataset show` reports a view whose Parquet is stale, naming the command that refreshes it, and reports the materialized bytes separately from the dataset's total size. `dataset list` reports the same separate figure.
 - `dataset purge` and `dataset delete` remove `materialized/`, and `Purge` clears `m.Materialized` alongside the four maps it already resets.
 - `dataset reindex` drops the manifest's materialization entries rather than carrying them forward, and never deletes `materialized/`. Nothing except purge and delete removes it. The derived-subfolder contract is "never adopted, never reported as orphans, removed wholesale by purge and delete".
-- `dataset show` names any Parquet in `materialized/` that no manifest entry references. The message states what cc-data can and cannot vouch for rather than telling the researcher to clear it.
+- `dataset show` names any Parquet in `materialized/` that no manifest entry references, which is the state a reindex leaves. The message states what cc-data can and cannot vouch for rather than telling the researcher to clear it.
 - Materialization reads only raw artifacts, never an existing Parquet. Copying a view that was itself reading a stale Parquet would write that stale data back out with fresh fingerprints attached.
 - Each Parquet carries its own provenance in the file footer: the view it holds and when it was built. Nothing in cc-data reads it back.
 - A materialized view survives `dataset rename`, and resolves correctly in a multi-dataset session under its schema prefix. Both asserted by tests.
@@ -315,6 +317,30 @@ Freshness cannot key on a version, because report CSVs do not have one: `report_
 - C) Drop the entries, keep the files, and warn from the folder listing.
 
 **Decision**: C. A was rejected because reindex has narrow paths that change a view's output while every input still fingerprints the same, notably a zero `FetchedAt` re-stamped from the clock silently reordering the dimension dedupe; trading that against a rebuild measured in seconds is the wrong trade in the one command whose purpose is recovery. B is what the "make the bad state impossible" rule points at, and was rejected for a reason that outranks it here: `materialized/<view>.parquet` is this story's deliverable to tools outside cc-data, so deleting a still-correct file over cc-data's internal bookkeeping would break a running study script.
+
+---
+
+### What does freshness have to cover beyond the input files?
+
+**Context**: The first design keyed freshness on the input fingerprints alone. Those see every byte a view reads and nothing about the view itself.
+
+**Options considered**:
+- A) Input fingerprints only.
+- B) Fingerprints plus a signature of the view definition the copy was built from.
+
+**Decision**: B. A cc-data release that changes a view's projection, derived columns or ordering leaves every input byte untouched, so under A the older Parquet keeps reading as fresh and queries return the previous release's columns indefinitely, which breaks the feature's central promise that materializing never changes an answer. The same hole covers a manifest-only change racing a run: a dimension view embeds its download's fetch time as a SQL literal to break ties, so a reindex re-stamping a zero `FetchedAt` reorders the dedupe without touching a file. The signature is taken over the view's statement with the dataset directory and the schema prefix neutralized, since neither changes what the view returns and both would otherwise break rename survival and multi-dataset resolution. It is compared on the read path, on the skip-if-fresh path, at the repoint re-check, and by the staleness warning.
+
+---
+
+### Is a recorded entry enough to call a view fresh?
+
+**Context**: The guidance tells researchers the folder is safe to delete at any time.
+
+**Options considered**:
+- A) Trust the manifest entry; `--force` repairs anything else.
+- B) Require the recorded Parquet to be readable before skipping the view.
+
+**Decision**: B. Under A, deleting a Parquet, which the documentation invites, leaves the entry fresh, `materialize` reporting "already fresh" and doing nothing, no warning anywhere, and queries silently falling back to the raw artifacts. The only recourse was a flag that nothing pointed the researcher at. The check is a stat plus a footer read through the engine already open, which is metadata-only and costs about 2ms even on a 313 MB Parquet.
 
 ---
 

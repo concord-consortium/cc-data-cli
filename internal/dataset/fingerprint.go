@@ -39,16 +39,24 @@ func FingerprintInputs(dir string, files []string) map[string]string {
 	return out
 }
 
-// Fresh reports whether the Parquet may be read: the view's current inputs are
-// exactly the recorded ones, and each still fingerprints the same. The caller
-// supplies the current list because only the engine knows which files a view
-// reads.
+// Fresh reports whether the Parquet may be read: it was built from the view
+// definition the caller now has, the view's current inputs are exactly the
+// recorded ones, and each still fingerprints the same. The caller supplies the
+// current list and signature because only the engine knows either.
 //
 // Comparing the set, not just the recorded entries, is load-bearing. A run
 // downloaded since the materialization adds a file to a union view, and a
 // Parquet built without it is stale even though every recorded input still
 // matches perfectly.
-func (mat Materialized) Fresh(dir string, current []string) bool {
+//
+// The signature is what the input fingerprints cannot see. A cc-data release
+// that changes a view's SQL, or a reindex that re-stamps a zero FetchedAt and so
+// reorders a dimension view's dedupe, both leave every input byte untouched
+// while changing what the view returns.
+func (mat Materialized) Fresh(dir string, current []string, signature string) bool {
+	if mat.Signature != signature {
+		return false
+	}
 	seen := make(map[string]bool, len(current))
 	for _, rel := range current {
 		if seen[rel] {

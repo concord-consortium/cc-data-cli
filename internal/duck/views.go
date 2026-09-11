@@ -1,6 +1,8 @@
 package duck
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -614,7 +616,7 @@ func (vs viewSet) applyMaterialized(stmts []viewStmt) []viewStmt {
 			continue
 		}
 		mat, ok := vs.m.Materialized[bare]
-		if !ok || !mat.Fresh(vs.canonDir, st.files) {
+		if !ok || !mat.Fresh(vs.canonDir, st.files, viewSignature(st, vs.canonDir, vs.prefix)) {
 			continue
 		}
 		stmts[i].materialized = fmt.Sprintf("CREATE VIEW %s AS SELECT * FROM read_parquet(%s)",
@@ -654,6 +656,24 @@ func materializableFrom(stmts []viewStmt, prefix string) []string {
 		}
 	}
 	return out
+}
+
+// viewSignature identifies the definition a Parquet was built from. Two things
+// are neutralized first, because neither changes what the view returns: the
+// dataset directory, since the statement embeds absolute paths and a
+// materialized view has to survive a rename, and the schema prefix, since the
+// same dataset registers unprefixed alone and prefixed in a multi-dataset
+// session.
+func viewSignature(st viewStmt, canonDir, prefix string) string {
+	sql := st.primary
+	if prefix != "" {
+		sql = strings.ReplaceAll(sql, prefix, "")
+	}
+	if canonDir != "" {
+		sql = strings.ReplaceAll(sql, canonDir, "<dataset>")
+	}
+	sum := sha256.Sum256([]byte(sql))
+	return hex.EncodeToString(sum[:])
 }
 
 // bareViewName is a statement's view name with its schema prefix and quoting

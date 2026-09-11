@@ -37,12 +37,19 @@ func plantParquet(t *testing.T, d *dataset.Dataset, view, selectSQL string, inpu
 	}
 	vs := viewSet{canonDir: canon, m: mustManifest(t, d)}
 	ctx := context.Background()
+	var signature string
 	for _, st := range vs.statements() {
+		if bareViewName(st.name, vs.prefix) == view {
+			signature = viewSignature(st, canon, vs.prefix)
+		}
 		if _, err := db.ExecContext(ctx, st.primary); err != nil {
 			if _, ferr := db.ExecContext(ctx, st.fallback); ferr != nil {
 				t.Fatalf("registering %s: %v", st.name, err)
 			}
 		}
+	}
+	if signature == "" {
+		t.Fatalf("no statement for view %s, so the planted entry could never be read", view)
 	}
 	copySQL := fmt.Sprintf("COPY (%s) TO %s (FORMAT parquet, COMPRESSION zstd)", selectSQL, sqlStr(d.Path(rel)))
 	if _, err := db.ExecContext(ctx, copySQL); err != nil {
@@ -50,7 +57,7 @@ func plantParquet(t *testing.T, d *dataset.Dataset, view, selectSQL string, inpu
 	}
 
 	m := mustManifest(t, d)
-	m.Materialized[view] = dataset.Materialized{File: rel, Inputs: dataset.FingerprintInputs(d.Dir, inputs)}
+	m.Materialized[view] = dataset.Materialized{File: rel, Inputs: dataset.FingerprintInputs(d.Dir, inputs), Signature: signature}
 	if err := writeManifestUnderLock(d, m); err != nil {
 		t.Fatal(err)
 	}

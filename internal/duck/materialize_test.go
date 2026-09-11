@@ -436,6 +436,37 @@ func TestMaterializeReportsEveryViewExactlyOnce(t *testing.T) {
 	}
 }
 
+// TestMaterializeDiscardsACopyWhoseDefinitionMoved drives the manifest-only race:
+// a change that rewrites no input byte but changes what the view returns. A
+// dimension view embeds its download's fetch time to break ties between runs, so
+// re-stamping that time reorders the dedupe under a copy already taken.
+func TestMaterializeDiscardsACopyWhoseDefinitionMoved(t *testing.T) {
+	d := fullFixture(t)
+	res, err := materializeWithRace(t, d, func() {
+		m := mustManifest(t, d)
+		for i := range m.Downloads {
+			if m.Downloads[i].Slug == "student-id-mapping" {
+				m.Downloads[i].FetchedAt = m.Downloads[i].FetchedAt.Add(time.Hour)
+			}
+		}
+		if err := writeManifestUnderLock(d, m); err != nil {
+			t.Error(err)
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if containsString(res.Written(), "student_id_mapping") {
+		t.Fatalf("a copy whose view definition moved under it must not be recorded: %+v", res.Views)
+	}
+	if !containsString(res.Discarded(), "student_id_mapping") {
+		t.Fatalf("it should be discarded, got %+v", res.Views)
+	}
+	if _, ok := mustManifest(t, d).Materialized["student_id_mapping"]; ok {
+		t.Fatal("a discarded copy must leave no manifest entry")
+	}
+}
+
 // materializeWithRace runs between() in the window after every copy is made and
 // before the manifest is repointed, which is when the mutation locks are free.
 func materializeWithRace(t *testing.T, d *dataset.Dataset, between func()) (MaterializeResult, error) {
@@ -641,4 +672,97 @@ func TestMaterializeReleasesItsGuard(t *testing.T) {
 		t.Fatalf("the guard should be free once a run finishes: %v", err)
 	}
 	release()
+}
+
+// TestMaterializeRebuildsAViewWhoseParquetIsGone covers the state a researcher
+// creates by following the documentation: the folder is safe to delete at any
+// time. The recorded inputs are untouched, so the entry still reads as fresh,
+// and without a readability check the view would be skipped forever while
+// queries quietly fell back to the raw artifacts.
+func TestMaterializeRebuildsAViewWhoseParquetIsGone(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		damage func(t *testing.T, path string)
+	}{
+		{"deleted", func(t *testing.T, path string) {
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"truncated", func(t *testing.T, path string) {
+			if err := os.WriteFile(path, []byte("PAR1"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := fullFixture(t)
+			materialize(t, d, MaterializeOptions{})
+			path := d.Path(filepath.Join(dataset.MaterializedDir, "answers.parquet"))
+			tc.damage(t, path)
+
+			res, _ := materialize(t, d, MaterializeOptions{})
+			if containsString(res.Fresh(), "answers") {
+				t.Fatalf("a view whose Parquet is unusable must not read as fresh: %+v", res.Views)
+			}
+			if !containsString(res.Written(), "answers") {
+				t.Fatalf("it should be rebuilt without --force, got %+v", res.Views)
+			}
+			if _, err := os.Stat(path); err != nil {
+				t.Fatalf("the Parquet should be back: %v", err)
+			}
+		})
+	}
+}
+
+// TestMaterializeRebuildsWhenTheViewDefinitionChanges is the axis the input
+// fingerprints cannot see. A cc-data release that changes a view's SQL leaves
+// every input byte untouched, so without the signature the older copy would keep
+// being read, and queries would return the old view's columns indefinitely.
+func TestMaterializeRebuildsWhenTheViewDefinitionChanges(t *testing.T) {
+	d := fullFixture(t)
+	materialize(t, d, MaterializeOptions{})
+
+	m := mustManifest(t, d)
+	rec := m.Materialized["answers"]
+	if rec.Signature == "" {
+		t.Fatal("a materialized view must record the definition it was built from")
+	}
+	rec.Signature = "what an older release produced"
+	m.Materialized["answers"] = rec
+	if err := writeManifestUnderLock(d, m); err != nil {
+		t.Fatal(err)
+	}
+
+	stale, err := StaleMaterializedViews(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsString(stale, "answers") {
+		t.Fatalf("a copy built from a different view definition is stale, got %v", stale)
+	}
+	res, _ := materialize(t, d, MaterializeOptions{})
+	if !containsString(res.Written(), "answers") {
+		t.Fatalf("it should be rebuilt, got %+v", res.Views)
+	}
+}
+
+// TestMaterializedViewIsIgnoredWhenTheDefinitionMoved is the read-path half: the
+// engine must not serve a Parquet built from a definition it no longer uses.
+func TestMaterializedViewIsIgnoredWhenTheDefinitionMoved(t *testing.T) {
+	d, _, storeFile := answersFixture(t, "ds")
+	plantAnswersSentinel(t, d, storeFile)
+
+	m := mustManifest(t, d)
+	rec := m.Materialized["answers"]
+	rec.Signature = "what an older release produced"
+	m.Materialized["answers"] = rec
+	if err := writeManifestUnderLock(d, m); err != nil {
+		t.Fatal(err)
+	}
+
+	e := openEngine(t, []DatasetSpec{{DS: d}}, nil)
+	if n := sentinelCount(t, e, "answers"); n != 0 {
+		t.Fatalf("sentinel rows = %d, want 0: a Parquet from an older view definition must not be read", n)
+	}
 }
