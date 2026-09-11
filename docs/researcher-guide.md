@@ -243,8 +243,12 @@ cc-data reports create --report-slug student-answers --report-filter '{"cohort":
 
 Use `--report-filter-file <path>` when the filter is too long to quote. To take a
 fresh snapshot of a run you already have, `cc-data reports duplicate <run-id>`.
-Portal reports are computed live, so re-reading one with `get report` gives you
-current data and duplicating one needs `--force`.
+Portal reports are computed live, so re-reading one with `get report --refresh`
+gives you current data and duplicating one needs `--force`.
+
+To pull a whole cohort's work without authoring an Athena report at all, create a
+`student-id-mapping` run and fetch answers, history and attachments by its run
+id; the two Portal reports below describe that path.
 
 ### A complete session
 

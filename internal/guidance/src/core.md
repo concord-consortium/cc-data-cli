@@ -84,8 +84,8 @@ like `wildfire_2026.answers`):
   (`student_name::VARCHAR`) when comparing or grouping it across runs.
 - `report_prompts` — the prompt and correct-answer text keyed by the
   `res_<N>_<question_id>_*` columns.
-- `logs`: the log-type report CSVs (`student-actions`,
-  `student-actions-with-metadata`, `teacher-actions`) unioned with `run_id`, plus
+- `logs`: the log-type report CSVs, all Athena (`student-actions`,
+  `student-actions-with-metadata`, `teacher-actions`), unioned with `run_id`, plus
   four parsed columns. The original `parameters`, `extras`, `time` and `timestamp`
   columns are retained unchanged alongside them.
   `parameters_json` and `extras_json` are the payload and the UI-state snapshot as
