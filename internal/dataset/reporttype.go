@@ -47,8 +47,9 @@ func AllowedReportTypes() []string {
 	return append([]string(nil), allowedReportTypes...)
 }
 
-// RunReportTypes returns what the server sends as a run's report_type. A Portal run sends
-// none, which is why execution and not this list identifies one.
+// RunReportTypes returns the distinct report types in cc-data's known Athena slug map. It
+// does not enumerate or validate the server's vocabulary. A Portal run carries no
+// report_type at all, which is why execution and not this list identifies one.
 func RunReportTypes() []string {
 	seen := map[string]bool{}
 	var out []string

@@ -433,14 +433,14 @@ its result never changes once it succeeds. **Portal reports** (`execution`
 The three `log` reports share the same clickstream columns; `student-answers` and
 `student-assignment-usage` share the same per-student, per-resource shape.
 
-**Portal reports, computed live.** Two of them name a set of learners, and are
-what you use to pull those learners' answers, history and attachments without
+**Portal reports, computed live.** Two of them name a set of learners, and a run
+of either is a valid run id for `get answers`, `get history` and
+`get attachments`, so they are what you use to pull those learners' work without
 authoring an Athena report first:
 
 - **Student ID Mapping** (slug `student-id-mapping`): the portal ids and the
   `run_remote_endpoint` that joins each learner to their stored records, and no
-  names. A run of this report is a valid run id for `get answers`, `get history`
-  and `get attachments`. It also becomes the `student_id_mapping` view.
+  names. It becomes the `student_id_mapping` view.
 - **Student Metadata** (slug `student-metadata`): the human-readable context
   (name, username, class, school, teachers, permission forms), joining to
   Student ID Mapping on `learner_id`. Names are hidden unless you are an admin

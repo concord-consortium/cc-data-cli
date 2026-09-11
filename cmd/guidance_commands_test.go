@@ -37,11 +37,11 @@ func TestGuidanceNamesOnlyRealCommands(t *testing.T) {
 		// signal.
 		found, rest, err := root.Find(words)
 		if err != nil {
-			t.Errorf("the skill names `cc-data %s`, which is not a command: %v", strings.Join(words, " "), err)
+			t.Errorf("the guidance names `cc-data %s`, which is not a command: %v", strings.Join(words, " "), err)
 			continue
 		}
 		if len(rest) > 0 {
-			t.Errorf("the skill names `cc-data %s`, but %q is not a subcommand of %q",
+			t.Errorf("the guidance names `cc-data %s`, but %q is not a subcommand of %q",
 				strings.Join(words, " "), rest[0], found.CommandPath())
 		}
 	}

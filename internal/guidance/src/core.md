@@ -139,28 +139,27 @@ like `wildfire_2026.answers`):
 - `student_id_mapping` — one row per `learner_id` from Student ID Mapping runs
   (slug `student-id-mapping`), deduplicated across runs with the latest fetch
   winning. Such a run's id is a valid source for fetching answers, history and
-  attachments. Join to `answers` and
-  `history` on `run_remote_endpoint = remote_endpoint`. A NULL
-  `run_remote_endpoint` is a learner with no secure key, not missing data: every
-  such learner carries the same endpoint string, so the join key is withheld
-  rather than attributing one learner's answers to all of them. To check whether
-  one run repeated a learner, compare that run's own row count with its distinct
-  learner count: `SELECT count(*), count(DISTINCT learner_id) FROM
-  report_<run_id>`. Do not compare against this view's rows for that run: it
-  deduplicates **across** runs, so a learner a later run also holds is absent
-  here without the earlier run having repeated anything.
+  attachments. Join to `answers` and `history` on `run_remote_endpoint =
+  remote_endpoint`. A NULL `run_remote_endpoint` is a learner with no secure
+  key, not missing data: every such learner carries the same endpoint string, so
+  the join key is withheld rather than attributing one learner's answers to all
+  of them. To check whether one run repeated a learner, compare that run's own
+  row count with its distinct learner count: `SELECT count(*), count(DISTINCT
+  learner_id) FROM report_<run_id>`. Do not compare against this view's rows for
+  that run: it deduplicates **across** runs, so a learner a later run also holds
+  is absent here without the earlier run having repeated anything.
 - `student_metadata` — one row per `learner_id` from Student Metadata runs (slug
   `student-metadata`), same dedupe and the same `run_remote_endpoint` rule,
-  carrying the names and roster labels the mapping view deliberately has none of.
-  Such a run's id is a valid source for fetching answers, history and attachments. Join to
-  `student_id_mapping` on `learner_id`. `hide_names` is the run's own setting:
-  where it is true, `student_name` holds the student id and `username` a hash,
-  so a dataset holding runs fetched under different roles is filterable rather
-  than silently mixed. It is NULL for any download whose filter was not
-  recorded, which includes every download made before cc-data recorded filters
-  and any recovered by a reindex with no manifest. The same rows also reach
-  `reports`, which has no such column, so name-sensitive work belongs on this
-  view or on a type-qualified `downloads` join.
+  carrying the names and roster labels the mapping view deliberately has none
+  of. Such a run's id is a valid source for fetching answers, history and
+  attachments. Join to `student_id_mapping` on `learner_id`. `hide_names` is the
+  run's own setting: where it is true, `student_name` holds the student id and
+  `username` a hash, so a dataset holding runs fetched under different roles is
+  filterable rather than silently mixed. It is NULL for any download whose
+  filter was not recorded, which includes every download made before cc-data
+  recorded filters and any recovered by a reindex with no manifest. The same
+  rows also reach `reports`, which has no such column, so name-sensitive work
+  belongs on this view or on a type-qualified `downloads` join.
 - `downloads` — a manifest dimension table: `run_id`, `type`, `slug`,
   `report_type`, `hide_names` and `complete`. A download's `report_type`
   (`answers`, `log`, `usage`, `portal`, `recovered`) is cc-data's own, not the
@@ -185,14 +184,14 @@ cross-portal identity is out of scope.
 ## Report slugs
 
 A run is created from a report's slug. These are the ones a data pull starts
-from. The Portal also offers aggregate metrics reports whose slugs cc-data
-cannot enumerate; take one from a run that already exists.
+from. A run of either Portal report is a valid run id for fetching answers,
+history and attachments. The Portal also offers aggregate metrics reports whose
+slugs cc-data cannot enumerate; take one from a run that already exists.
 
-- `student-id-mapping` — the learners' portal ids and the key that joins them to
-  stored records, with no names. A run of it is a valid run id for fetching
-  answers, history and attachments.
-- `student-metadata` — the same learners with names and roster labels, joined on
-  `learner_id`.
+- `student-id-mapping` — Portal, live: the learners' portal ids and the key that
+  joins them to stored records, with no names.
+- `student-metadata` — Portal, live: the same learners with names and roster
+  labels, joined on `learner_id`.
 - `student-answers`, `student-assignment-usage` — per-student Athena reports.
 - `student-actions`, `student-actions-with-metadata`, `teacher-actions` — Athena
   clickstream logs.
