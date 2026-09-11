@@ -308,7 +308,11 @@ func TestMaterializeRefusesAStoreViewShortOfItsCount(t *testing.T) {
 func TestMaterializeWarnsOnIncompleteDownloadWithoutBlocking(t *testing.T) {
 	d := fullFixture(t)
 	m := mustManifest(t, d)
-	m.Downloads = append(m.Downloads, dataset.Download{Type: "answers", RunID: 901, Complete: false})
+	// Two incomplete store downloads for one run: run_membership maps by type, so
+	// both reach it and the run must still be named once.
+	m.Downloads = append(m.Downloads,
+		dataset.Download{Type: "answers", RunID: 901, Complete: false},
+		dataset.Download{Type: "history", RunID: 901, Complete: false})
 	if err := writeManifestUnderLock(d, m); err != nil {
 		t.Fatal(err)
 	}
@@ -316,6 +320,9 @@ func TestMaterializeWarnsOnIncompleteDownloadWithoutBlocking(t *testing.T) {
 	res, warn := materialize(t, d, MaterializeOptions{})
 	if !strings.Contains(warn, "run 901") {
 		t.Fatalf("an incomplete download must be named: %q", warn)
+	}
+	if strings.Contains(warn, "901, 901") {
+		t.Fatalf("a run reached through two downloads must be named once: %q", warn)
 	}
 	if len(res.Refused) != 0 {
 		t.Fatalf("an incomplete download must block nothing, refused = %v", res.Refused)

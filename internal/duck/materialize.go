@@ -341,18 +341,25 @@ func plural(n int, one, many string) string {
 func warnIncompleteDownloads(m *dataset.Manifest, views []string, filesByView map[string][]string, warnOut io.Writer) {
 	for _, view := range views {
 		var runs []int
+		seen := map[int]bool{}
+		add := func(run int) {
+			if !seen[run] {
+				seen[run] = true
+				runs = append(runs, run)
+			}
+		}
 		for _, dl := range m.Downloads {
 			if dl.Complete {
 				continue
 			}
 			if isStoreType(dl.Type) {
 				if view == dl.Type || view == "run_membership" {
-					runs = append(runs, dl.RunID)
+					add(dl.RunID)
 				}
 				continue
 			}
 			if intersects(dl.Files, filesByView[view]) {
-				runs = append(runs, dl.RunID)
+				add(dl.RunID)
 			}
 		}
 		if len(runs) > 0 {
