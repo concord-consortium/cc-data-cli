@@ -40,15 +40,16 @@ guessing flags.
 
 ## Making a run
 
-- `cc-data reports list --portal <portal|env>` — the runs you already have.
-- `cc-data reports filter-options --dimension <name> --portal <portal|env>` — the
-  values a filter dimension offers, narrowed by `--report-filter` as selections
-  are made, and by `--report-slug` to a report that offers the dimension.
-- `cc-data reports create --report-slug <slug> --report-filter '<json>' --portal
-  <portal|env>` — a run from a slug and a filter. Use `--report-filter-file` when
-  the filter is too long to quote.
-- `cc-data reports duplicate <run-id> --portal <portal|env>` — a fresh snapshot of
-  an Athena run.
+- `cc-data reports list` — the runs you already have.
+- `cc-data reports filter-options --dimension <name>` — the values a filter
+  dimension offers, narrowed by `--report-filter` as selections are made, and by
+  `--report-slug` to a report that offers the dimension.
+- `cc-data reports create --report-slug <slug> --report-filter '<json>'` — a run
+  from a slug and a filter. Use `--report-filter-file` when the filter is too
+  long to quote.
+- `cc-data reports duplicate <run-id>` — a fresh snapshot of an Athena run.
+
+These take `--portal` when no default portal is configured.
 
 ## Fetching data
 
