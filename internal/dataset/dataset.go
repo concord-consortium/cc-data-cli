@@ -286,8 +286,22 @@ func (d *Dataset) Purge() error {
 // and prove Purge deletes nothing when the commit fails.
 var purgeCommitManifest = writeManifestFile
 
-// deleteArtifacts removes stores, segments, membership files, CSVs, and the
-// attachments directory, but never a lock file.
+// MaterializedDir holds a dataset's Parquet query surface.
+const MaterializedDir = "materialized"
+
+// derivedSubdirs are subfolders holding data cc-data generated from the dataset's
+// own artifacts: never adopted as artifacts, never reported as orphans, removed
+// wholesale by purge and delete. Reindex is deliberately not on that list, since
+// the files stay readable by tools outside cc-data after cc-data stops vouching
+// for them.
+var derivedSubdirs = map[string]bool{MaterializedDir: true}
+
+// IsDerivedSubdir reports whether a directory name inside a dataset holds
+// derived data.
+func IsDerivedSubdir(name string) bool { return derivedSubdirs[name] }
+
+// deleteArtifacts removes stores, segments, membership files, CSVs, derived
+// subfolders and the attachments directory, but never a lock file.
 func (d *Dataset) deleteArtifacts() error {
 	entries, err := os.ReadDir(d.Dir)
 	if err != nil {
@@ -299,7 +313,7 @@ func (d *Dataset) deleteArtifacts() error {
 			continue
 		}
 		if e.IsDir() {
-			if name == "segments" || name == "attachments" {
+			if name == "segments" || name == "attachments" || IsDerivedSubdir(name) {
 				if err := os.RemoveAll(filepath.Join(d.Dir, name)); err != nil {
 					return err
 				}
