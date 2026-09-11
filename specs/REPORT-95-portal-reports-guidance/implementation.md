@@ -34,7 +34,7 @@ Both inputs have landed in this branch's base as of 2026-09-11: it is stacked on
 var leadingNames = regexp.MustCompile("^(?:- |\\| )((?:`[a-z0-9_-]+`(?:, )?)+)")
 ```
 
-The test that matters is not that the new pattern accepts a hyphen, which is true by inspection. It is that the four shipped catalogs parse to the *same* names as before, so this cannot quietly change what the existing guards check. Measured before and after: core Views 11 names, core Identity columns 4, tools Tools 20, researcher-guide table 11, all identical. The test pins those lists.
+The property that matters is not that the new pattern accepts a hyphen, which is true by inspection. It is that the four shipped catalogs parse to the *same* names as before, so this cannot quietly change what the existing guards check. That property needs no new test: `TestGuidanceDocumentsEveryStaticView`, `TestGuidanceDocumentsEveryTool`, `TestGuidanceDocumentsEveryIdentityColumn` and `TestResearcherGuideDocumentsEveryStaticView` already compare each catalog against its code-derived set in both directions, so any name the widened pattern gained or lost fails one of them. A new test asserting the same comparison could not fail unless one of those four also failed. Measured before and after regardless: core Views 12 names, core Identity columns 4, tools Tools 21, researcher-guide table 12, all identical.
 
 A second test covers the failure this exists to prevent: a section of hyphenated names parses to all of them, where the old pattern yielded none and returned no error.
 

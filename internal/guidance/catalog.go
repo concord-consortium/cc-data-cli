@@ -9,8 +9,9 @@ import (
 
 // leadingNames matches the backticked identifiers that open a catalog entry, in either
 // markup the guarded files use: a bulleted list item ("- `x`, `y` — ...") or a markdown
-// table row ("| `x`, `y` | ...").
-var leadingNames = regexp.MustCompile("^(?:- |\\| )((?:`[a-z0-9_]+`(?:, )?)+)")
+// table row ("| `x`, `y` | ..."). Hyphens are allowed because report slugs carry them;
+// without that a slug catalog parses as empty and its guard passes while checking nothing.
+var leadingNames = regexp.MustCompile("^(?:- |\\| )((?:`[a-z0-9_-]+`(?:, )?)+)")
 
 // ParseCatalog returns every name documented in the first section whose heading
 // contains heading. The section runs to the next heading of any level, and a later
