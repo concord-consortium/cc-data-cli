@@ -2,6 +2,7 @@ package duck
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -37,8 +38,12 @@ const (
 	StatusRefused MaterializeStatus = "refused"
 )
 
-// ViewOutcome is one view's result. Reason is set for the statuses that need
-// explaining and empty for the rest.
+// ViewOutcome is one view's result. Reason says why a view was refused or
+// discarded; on a written or fresh view it carries a caveat when there is one,
+// a copy built from fewer inputs than the view declares or one that reads a
+// download marked incomplete, and is empty otherwise. The caveat travels in the
+// outcome rather than as a progress message because the MCP tool returns the
+// outcome and may have nowhere to send progress.
 type ViewOutcome struct {
 	View   string            `json:"view"`
 	Status MaterializeStatus `json:"status"`
@@ -96,7 +101,8 @@ func (r MaterializeResult) Refusals() bool { return len(r.Names(StatusRefused)) 
 // matter: they are held only to read the manifest at the start and repoint it at
 // the end, so a concurrent get does not fail as busy for the whole run. A view
 // whose inputs moved in between is discarded rather than recorded, because its
-// Parquet describes a state that is already gone.
+// Parquet describes a state that is already gone. The repoint waits for a get
+// that is still running, since the copies are worth more than the wait.
 func Materialize(ctx context.Context, d *dataset.Dataset, opts MaterializeOptions, warnOut io.Writer) (MaterializeResult, error) {
 	if warnOut == nil {
 		warnOut = io.Discard
@@ -128,7 +134,6 @@ func Materialize(ctx context.Context, d *dataset.Dataset, opts MaterializeOption
 		filesByView[view] = decl.files
 	}
 	sort.Strings(views)
-	warnIncompleteDownloads(m, views, filesByView, warnOut)
 
 	if err := os.MkdirAll(d.Path(dataset.MaterializedDir), 0o700); err != nil {
 		return res, err
@@ -159,14 +164,12 @@ func Materialize(ctx context.Context, d *dataset.Dataset, opts MaterializeOption
 				strings.Join(files, ", "))
 			continue
 		}
-		if missing := missingInputs(d.Dir, files); len(missing) > 0 {
-			if !opts.AllowPartial {
-				record(view, StatusRefused, missingInputReason(d, m, files, missing))
-				continue
-			}
-			fmt.Fprintf(warnOut, "--allow-partial given; building %s from %d of %d declared inputs\n",
-				view, len(files)-len(missing), len(files))
+		missing := missingInputs(d.Dir, files)
+		if len(missing) > 0 && !opts.AllowPartial {
+			record(view, StatusRefused, missingInputReason(d, m, files, missing))
+			continue
 		}
+		caveat := viewCaveat(m, view, files, missing)
 		if !opts.Force {
 			// The recorded copy has to still be readable, not merely recorded. The
 			// folder is documented as safe to delete at any time, and without this
@@ -174,7 +177,7 @@ func Materialize(ctx context.Context, d *dataset.Dataset, opts MaterializeOption
 			// quietly fall back to the raw artifacts.
 			if rec, ok := m.Materialized[view]; ok && rec.Fresh(d.Dir, files, declared[view].signature) &&
 				parquetReadable(ctx, e, d.Path(rec.File)) {
-				record(view, StatusFresh, "")
+				record(view, StatusFresh, caveat)
 				continue
 			}
 		}
@@ -205,11 +208,11 @@ func Materialize(ctx context.Context, d *dataset.Dataset, opts MaterializeOption
 				continue
 			}
 		}
-		built[view] = builtView{tmp: tmp, inputs: inputs, signature: declared[view].signature}
+		built[view] = builtView{tmp: tmp, inputs: inputs, signature: declared[view].signature, caveat: caveat}
 	}
 
 	testHookBeforeRepoint()
-	if err := repointManifest(d, built, record); err != nil {
+	if err := repointManifest(ctx, d, built, record, warnOut); err != nil {
 		return res, err
 	}
 	// Assembled from the view list rather than appended as we go, so the order is
@@ -227,12 +230,14 @@ func Materialize(ctx context.Context, d *dataset.Dataset, opts MaterializeOption
 // the repoint, matching the hook the merge path uses.
 var testHookBeforeRepoint = func() {}
 
-// builtView is one finished copy waiting to be committed: its temp file, and the
-// input fingerprints taken just before it was made.
+// builtView is one finished copy waiting to be committed: its temp file, the
+// input fingerprints taken just before it was made, and the caveat its outcome
+// will carry.
 type builtView struct {
 	tmp       string
 	inputs    map[string]string
 	signature string
+	caveat    string
 }
 
 func readManifestLocked(d *dataset.Dataset) (*dataset.Manifest, error) {
@@ -248,11 +253,22 @@ func readManifestLocked(d *dataset.Dataset) (*dataset.Manifest, error) {
 // fingerprint as they did when the copy started, and renames those into place.
 // The manifest write is the commit point, so a discarded copy leaves nothing
 // behind and a committed one is already on disk under its final name.
-func repointManifest(d *dataset.Dataset, built map[string]builtView, record func(view string, status MaterializeStatus, reason string)) error {
+//
+// The locks are waited for rather than tried once. A fetch holds the activity
+// lock shared for its whole run, and failing busy here would throw away every
+// finished copy because someone started a get; only the caller's context ends
+// the wait. A copy whose rename fails is refused on its own, like a copy that
+// failed, so the views already renamed still reach the manifest.
+func repointManifest(ctx context.Context, d *dataset.Dataset, built map[string]builtView,
+	record func(view string, status MaterializeStatus, reason string), warnOut io.Writer) error {
 	if len(built) == 0 {
 		return nil
 	}
 	release, err := d.LockMutation()
+	if errors.Is(err, dataset.ErrBusy) {
+		fmt.Fprintln(warnOut, "waiting for another cc-data command to finish before committing the copies (interrupt to abandon them)")
+		release, err = d.LockMutationWait(ctx)
+	}
 	if err != nil {
 		return err
 	}
@@ -281,11 +297,12 @@ func repointManifest(d *dataset.Dataset, built map[string]builtView, record func
 			BuiltAt:   now,
 		}
 		if err := fsutil.RenameAtomic(d.Path(b.tmp), d.Path(rec.File)); err != nil {
-			return err
+			record(view, StatusRefused, err.Error())
+			continue
 		}
 		delete(built, view)
 		m.Materialized[view] = rec
-		record(view, StatusWritten, "")
+		record(view, StatusWritten, b.caveat)
 	}
 	return d.WriteManifest(m)
 }
@@ -337,9 +354,8 @@ func sameFingerprints(a, b map[string]string) bool {
 const tempParquetInfix = ".parquet.tmp-"
 
 // sweepStaleTemps removes the temp files of a run that died before its own
-// cleanup could run, which a hard interrupt does since nothing here installs a
-// signal handler. The materialize guard is held, so a temp file present now
-// belongs to no living run.
+// cleanup could run: a kill, a crash, or a power cut. The materialize guard is
+// held, so a temp file present now belongs to no living run.
 func sweepStaleTemps(d *dataset.Dataset) error {
 	entries, err := os.ReadDir(d.Path(dataset.MaterializedDir))
 	if err != nil {
@@ -487,46 +503,59 @@ func plural(n int, one, many string) string {
 	return many
 }
 
-// warnIncompleteDownloads names the runs whose download is marked incomplete.
-// It is a warning rather than a refusal: only a store fetch can set the flag,
-// and it merges once at the end, so an incomplete store download leaves the
-// Parquet byte-identical to one built if the run had never been requested.
+// viewCaveat is what a written or fresh view's outcome has to say about the
+// copy: how many of its declared inputs it was built from when some are missing,
+// and which of the runs it reads are marked incomplete. A fresh copy built with
+// an input missing records that input as absent, so the same test applies to it.
+func viewCaveat(m *dataset.Manifest, view string, files, missing []string) string {
+	var parts []string
+	if len(missing) > 0 {
+		parts = append(parts, fmt.Sprintf("built from %d of %d declared inputs (missing: %s)",
+			len(files)-len(missing), len(files), strings.Join(missing, ", ")))
+	}
+	if runs := incompleteRuns(m, view, files); len(runs) > 0 {
+		parts = append(parts, fmt.Sprintf("reads %s marked incomplete", runList(runs)))
+	}
+	return strings.Join(parts, "; ")
+}
+
+// incompleteRuns names the runs a view reads whose download is marked
+// incomplete. It is a caveat rather than a refusal: only a store fetch can set
+// the flag, and it merges once at the end, so an incomplete store download
+// leaves the Parquet byte-identical to one built if the run had never been
+// requested.
 //
 // The view-to-download mapping is three rules because no single rule covers it.
 // Report-backed views map by file intersection. The store views map by download
 // type, since a store is one merged file across every run and carries no per-run
 // identity. run_membership maps by type too: its filenames do encode (type, run),
 // but an incomplete run has no membership file at all, so a per-run mapping would
-// never see the run the warning is about.
-func warnIncompleteDownloads(m *dataset.Manifest, views []string, filesByView map[string][]string, warnOut io.Writer) {
-	for _, view := range views {
-		var runs []int
-		seen := map[int]bool{}
-		add := func(run int) {
-			if !seen[run] {
-				seen[run] = true
-				runs = append(runs, run)
-			}
-		}
-		for _, dl := range m.Downloads {
-			if dl.Complete {
-				continue
-			}
-			if isStoreType(dl.Type) {
-				if view == dl.Type || view == "run_membership" {
-					add(dl.RunID)
-				}
-				continue
-			}
-			if intersects(dl.Files, filesByView[view]) {
-				add(dl.RunID)
-			}
-		}
-		if len(runs) > 0 {
-			sort.Ints(runs)
-			fmt.Fprintf(warnOut, "warning: %s reads %s marked incomplete; materializing it anyway\n", view, runList(runs))
+// never see the run the caveat is about.
+func incompleteRuns(m *dataset.Manifest, view string, files []string) []int {
+	var runs []int
+	seen := map[int]bool{}
+	add := func(run int) {
+		if !seen[run] {
+			seen[run] = true
+			runs = append(runs, run)
 		}
 	}
+	for _, dl := range m.Downloads {
+		if dl.Complete {
+			continue
+		}
+		if isStoreType(dl.Type) {
+			if view == dl.Type || view == "run_membership" {
+				add(dl.RunID)
+			}
+			continue
+		}
+		if intersects(dl.Files, files) {
+			add(dl.RunID)
+		}
+	}
+	sort.Ints(runs)
+	return runs
 }
 
 func isStoreType(t string) bool { return t == store.TypeAnswers || t == store.TypeHistory }
@@ -544,14 +573,10 @@ func intersects(a, b []string) bool {
 	return false
 }
 
-// StaleMaterializedViews names the views whose recorded Parquet no longer matches
+// staleMaterializedViews names the views whose recorded Parquet no longer matches
 // the inputs. It lives here, not in dataset, because a view's input list is a
 // property of the view set.
-func StaleMaterializedViews(d *dataset.Dataset) ([]string, error) {
-	m, err := d.ReadManifest()
-	if err != nil {
-		return nil, err
-	}
+func staleMaterializedViews(d *dataset.Dataset, m *dataset.Manifest) ([]string, error) {
 	if len(m.Materialized) == 0 {
 		return nil, nil
 	}
@@ -570,13 +595,20 @@ func StaleMaterializedViews(d *dataset.Dataset) ([]string, error) {
 	return stale, nil
 }
 
-// AnnotateShowJSON appends the warnings only the view set can decide, and
-// re-sorts. Both surfaces call it, so the same documented ShowJSON contract
-// cannot carry different warning sets on the CLI and over MCP.
-func AnnotateShowJSON(d *dataset.Dataset, s *dataset.ShowJSON) error {
-	stale, err := StaleMaterializedViews(d)
+// ShowJSON builds a dataset's summary from one manifest read, with the warnings
+// only the view set can decide appended and the whole list re-sorted. Both
+// surfaces call it, so the same documented ShowJSON contract cannot carry
+// different warning sets on the CLI and over MCP, and the holdings and the
+// warnings cannot describe two different versions of the manifest.
+func ShowJSON(d *dataset.Dataset, full bool) (*dataset.ShowJSON, error) {
+	m, err := d.ReadManifest()
 	if err != nil {
-		return err
+		return nil, err
+	}
+	s := d.BuildShowJSON(m, full)
+	stale, err := staleMaterializedViews(d, m)
+	if err != nil {
+		return nil, err
 	}
 	for _, view := range stale {
 		s.Warnings = append(s.Warnings, fmt.Sprintf(
@@ -584,5 +616,5 @@ func AnnotateShowJSON(d *dataset.Dataset, s *dataset.ShowJSON) error {
 			view, d.Ref.String()))
 	}
 	sort.Strings(s.Warnings)
-	return nil
+	return s, nil
 }

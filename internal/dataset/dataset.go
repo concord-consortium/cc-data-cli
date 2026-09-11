@@ -1,6 +1,7 @@
 package dataset
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -123,6 +124,25 @@ func (d *Dataset) LockMutation() (func(), error) {
 	if !ok {
 		d.actLock.Unlock()
 		return nil, ErrBusy
+	}
+	return func() {
+		d.dsLock.Unlock()
+		d.actLock.Unlock()
+	}, nil
+}
+
+// LockMutationWait is LockMutation for a caller that would rather wait than
+// fail: a materialize run committing minutes of copies while a fetch holds the
+// activity lock. It is the only waiting acquisition, and it must stay the only
+// one: Rename, Delete and Purge take the materialize guard while holding these
+// locks, so if they waited for the guard a run waiting here would deadlock them.
+func (d *Dataset) LockMutationWait(ctx context.Context) (func(), error) {
+	if err := d.actLock.LockContext(ctx); err != nil {
+		return nil, err
+	}
+	if err := d.dsLock.LockContext(ctx); err != nil {
+		d.actLock.Unlock()
+		return nil, err
 	}
 	return func() {
 		d.dsLock.Unlock()
@@ -301,6 +321,13 @@ func (d *Dataset) Purge() error {
 		return err
 	}
 	defer release()
+	// A materialize run's copies take no mutation lock and are written into the
+	// derived folder this removes, so the run has to be over first.
+	releaseMat, err := d.LockMaterialize()
+	if err != nil {
+		return err
+	}
+	defer releaseMat()
 
 	m, err := d.ReadManifest()
 	if err != nil {

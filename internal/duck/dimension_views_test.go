@@ -472,7 +472,7 @@ func TestDimensionViewsAreEmptyAfterAManifestLessReindex(t *testing.T) {
 		t.Fatalf("the CSV itself was lost, not just its provenance: %d rows", n)
 	}
 
-	s, err := d.BuildShowJSON(false)
+	s, err := ShowJSON(d, false)
 	if err != nil {
 		t.Fatal(err)
 	}

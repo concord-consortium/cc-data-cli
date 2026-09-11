@@ -32,8 +32,9 @@
 - `dataset_purge` — a dataset's downloaded data, keeping the dataset itself.
 - `dataset_reindex` — rebuilds a dataset's manifest from what is on disk, for a
   dataset whose summary looks wrong.
-- `dataset_materialize` — writes each of a dataset's views to a Parquet file
-  that queries then read instead of the raw JSONL and CSV. It never changes an
-  answer, so it is a speed decision, not a correctness one.
+- `dataset_materialize` — writes each of a dataset's file-backed views to a
+  Parquet file that queries read instead of the raw JSONL and CSV while the
+  copy is current. It never changes an answer, so it is a speed decision, not a
+  correctness one.
 - `query` — SQL over one or more datasets, which is how every question about the
   data gets answered.

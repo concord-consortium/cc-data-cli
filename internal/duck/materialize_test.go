@@ -114,7 +114,7 @@ func tempFiles(t *testing.T, d *dataset.Dataset) []string {
 // than a hand-written list, so a view added later cannot go uncompared.
 func TestMaterializeReturnsIdenticalResults(t *testing.T) {
 	d := fullFixture(t)
-	views := MaterializableViews(mustManifest(t, d))
+	views := materializableViews(mustManifest(t, d))
 	if len(views) == 0 {
 		t.Fatal("fixture materializes nothing, so the comparison below asserts nothing")
 	}
@@ -243,19 +243,42 @@ func TestMaterializeRefusesAMissingInputPerView(t *testing.T) {
 		t.Fatalf("--force must not override a missing input, refused = %v", forced.Refused())
 	}
 
-	partial, warn := materialize(t, d, MaterializeOptions{AllowPartial: true})
+	partial, _ := materialize(t, d, MaterializeOptions{AllowPartial: true})
 	if len(partial.Refused()) != 0 {
 		t.Fatalf("--allow-partial should clear the refusals, got %v", partial.Refused())
 	}
 	if !containsAll(partial.Written(), "reports", "student_id_mapping") {
 		t.Fatalf("--allow-partial should write the short views, got %v", partial.Written())
 	}
-	if !strings.Contains(warn, "building reports from 2 of 3 declared inputs") {
-		t.Fatalf("--allow-partial must report the shortfall as a count, got %q", warn)
+	// The shortfall rides on the outcome, which is all an MCP caller gets back.
+	if r := outcomeReason(partial, "reports"); !strings.Contains(r, "built from 2 of 3 declared inputs") || !strings.Contains(r, "report_700.csv") {
+		t.Fatalf("a partial copy must report the shortfall as a count and name the file, got %q", r)
+	}
+	if r := outcomeReason(partial, "answers"); r != "" {
+		t.Fatalf("a complete copy carries no caveat, got %q", r)
 	}
 	if f := tempFiles(t, d); len(f) > 0 {
 		t.Fatalf("temp files survived: %v", f)
 	}
+
+	// A second run finds the short copy fresh, since the missing input is still
+	// missing, and the caveat has to survive that.
+	again, _ := materialize(t, d, MaterializeOptions{AllowPartial: true})
+	if !containsString(again.Fresh(), "reports") {
+		t.Fatalf("the short copy should be fresh on the next run, got %+v", again.Views)
+	}
+	if r := outcomeReason(again, "reports"); !strings.Contains(r, "built from 2 of 3 declared inputs") {
+		t.Fatalf("a fresh short copy must still carry its caveat, got %q", r)
+	}
+}
+
+func outcomeReason(res MaterializeResult, view string) string {
+	for _, o := range res.Views {
+		if o.View == view {
+			return o.Reason
+		}
+	}
+	return ""
 }
 
 // TestMaterializeRefusesADegradedViewEvenWithAllowPartial covers total loss: the
@@ -336,7 +359,7 @@ func TestMaterializeRefusesAStoreViewShortOfItsCount(t *testing.T) {
 	}
 }
 
-func TestMaterializeWarnsOnIncompleteDownloadWithoutBlocking(t *testing.T) {
+func TestMaterializeReportsAnIncompleteDownloadWithoutBlocking(t *testing.T) {
 	d := fullFixture(t)
 	m := mustManifest(t, d)
 	// Two incomplete store downloads for one run: run_membership maps by type, so
@@ -348,18 +371,24 @@ func TestMaterializeWarnsOnIncompleteDownloadWithoutBlocking(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, warn := materialize(t, d, MaterializeOptions{})
-	if !strings.Contains(warn, "run 901") {
-		t.Fatalf("an incomplete download must be named: %q", warn)
-	}
-	if strings.Contains(warn, "901, 901") {
-		t.Fatalf("a run reached through two downloads must be named once: %q", warn)
-	}
+	res, _ := materialize(t, d, MaterializeOptions{})
 	if len(res.Refused()) != 0 {
 		t.Fatalf("an incomplete download must block nothing, refused = %v", res.Refused())
 	}
 	if !containsAll(res.Written(), "answers", "run_membership") {
 		t.Fatalf("the store views should still be written, got %v", res.Written())
+	}
+	for _, view := range []string{"answers", "run_membership"} {
+		r := outcomeReason(res, view)
+		if !strings.Contains(r, "run 901") {
+			t.Fatalf("%s reads an incomplete download and its outcome must say so: %q", view, r)
+		}
+		if strings.Contains(r, "901, 901") {
+			t.Fatalf("a run reached through two downloads must be named once: %q", r)
+		}
+	}
+	if r := outcomeReason(res, "logs"); r != "" {
+		t.Fatalf("a view that reads no incomplete download carries no caveat, got %q", r)
 	}
 }
 
@@ -409,7 +438,7 @@ func TestMaterializeReportsEveryViewExactlyOnce(t *testing.T) {
 	}
 	res, _ := materialize(t, d, MaterializeOptions{})
 
-	want := MaterializableViews(mustManifest(t, d))
+	want := materializableViews(mustManifest(t, d))
 	seen := map[string]int{}
 	for _, o := range res.Views {
 		seen[o.View]++
@@ -471,13 +500,100 @@ func TestMaterializeDiscardsACopyWhoseDefinitionMoved(t *testing.T) {
 // before the manifest is repointed, which is when the mutation locks are free.
 func materializeWithRace(t *testing.T, d *dataset.Dataset, between func()) (MaterializeResult, error) {
 	t.Helper()
+	return materializeWithRaceCtx(t, context.Background(), d, between)
+}
+
+func materializeWithRaceCtx(t *testing.T, ctx context.Context, d *dataset.Dataset, between func()) (MaterializeResult, error) {
+	t.Helper()
 	orig := testHookBeforeRepoint
 	testHookBeforeRepoint = func() {
 		testHookBeforeRepoint = orig
 		between()
 	}
 	t.Cleanup(func() { testHookBeforeRepoint = orig })
-	return Materialize(context.Background(), d, MaterializeOptions{}, io.Discard)
+	return Materialize(ctx, d, MaterializeOptions{}, io.Discard)
+}
+
+// TestMaterializeWaitsForAFetchBeforeCommitting holds the activity lock shared,
+// as a fetch does for its whole run, across the repoint. Failing busy there would
+// delete every finished copy because someone started a get.
+func TestMaterializeWaitsForAFetchBeforeCommitting(t *testing.T) {
+	d := fullFixture(t)
+	res, err := materializeWithRace(t, d, func() {
+		ok, err := d.Activity().TryRLock()
+		if err != nil || !ok {
+			t.Fatalf("taking the activity lock shared: ok=%v err=%v", ok, err)
+		}
+		go func() {
+			time.Sleep(300 * time.Millisecond)
+			d.Activity().RUnlock()
+		}()
+	})
+	if err != nil {
+		t.Fatalf("the run must wait for the fetch rather than fail: %v", err)
+	}
+	if !containsAll(res.Written(), "answers", "reports", "logs") {
+		t.Fatalf("the copies made before the fetch must still be committed, got %v", res.Written())
+	}
+}
+
+// TestMaterializeAbandonsTheWaitWhenCancelled is the way out of that wait: a
+// paged fetch can run for a long time, and the caller's context is what ends it.
+func TestMaterializeAbandonsTheWaitWhenCancelled(t *testing.T) {
+	d := fullFixture(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
+	defer cancel()
+	_, err := materializeWithRaceCtx(t, ctx, d, func() {
+		ok, err := d.Activity().TryRLock()
+		if err != nil || !ok {
+			t.Fatalf("taking the activity lock shared: ok=%v err=%v", ok, err)
+		}
+		t.Cleanup(d.Activity().RUnlock)
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("a cancelled wait should surface the context error, got %v", err)
+	}
+	if f := tempFiles(t, d); len(f) > 0 {
+		t.Fatalf("an abandoned run must leave no temp file: %v", f)
+	}
+	if n := len(mustManifest(t, d).Materialized); n != 0 {
+		t.Fatalf("an abandoned run must record nothing, got %d entries", n)
+	}
+}
+
+// TestMaterializeRefusesOnlyTheViewWhoseRenameFails pins the per-view rule at
+// the commit: one rename failing must not lose the views renamed before it, nor
+// leave them on disk under their final names with no manifest entry.
+func TestMaterializeRefusesOnlyTheViewWhoseRenameFails(t *testing.T) {
+	d := fullFixture(t)
+	// A directory squatting on the final name makes that one rename fail.
+	if err := os.MkdirAll(d.Path(filepath.Join(dataset.MaterializedDir, "answers.parquet")), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	res, _ := materialize(t, d, MaterializeOptions{})
+	if _, ok := res.Refused()["answers"]; !ok {
+		t.Fatalf("the view whose rename failed should be refused, got %+v", res.Views)
+	}
+	if !containsAll(res.Written(), "reports", "logs", "run_membership", "student_id_mapping") {
+		t.Fatalf("the other views must still be written, got %v", res.Written())
+	}
+	m := mustManifest(t, d)
+	for _, view := range res.Written() {
+		rec, ok := m.Materialized[view]
+		if !ok {
+			t.Fatalf("%s reported written but not recorded", view)
+		}
+		if _, err := os.Stat(d.Path(rec.File)); err != nil {
+			t.Fatalf("%s recorded but not on disk: %v", view, err)
+		}
+	}
+	if _, ok := m.Materialized["answers"]; ok {
+		t.Fatal("a refused view must not be recorded")
+	}
+	if f := tempFiles(t, d); len(f) > 0 {
+		t.Fatalf("the failed copy must be cleaned up: %v", f)
+	}
 }
 
 func containsString(all []string, want string) bool {
@@ -502,7 +618,7 @@ func TestStaleMaterializedViewsTracksTheInputs(t *testing.T) {
 	d := fullFixture(t)
 	materialize(t, d, MaterializeOptions{})
 
-	stale, err := StaleMaterializedViews(d)
+	stale, err := staleMaterializedViews(d, mustManifest(t, d))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -511,7 +627,7 @@ func TestStaleMaterializedViewsTracksTheInputs(t *testing.T) {
 	}
 
 	buildStore(t, d, 585, [][]byte{answerRec("s", "e9", "q9", "later")})
-	stale, err = StaleMaterializedViews(d)
+	stale, err = staleMaterializedViews(d, mustManifest(t, d))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -520,21 +636,19 @@ func TestStaleMaterializedViewsTracksTheInputs(t *testing.T) {
 	}
 }
 
-func TestAnnotateShowJSONAddsTheStaleWarning(t *testing.T) {
+func TestShowJSONAddsTheStaleWarning(t *testing.T) {
 	d := fullFixture(t)
 	materialize(t, d, MaterializeOptions{})
 	buildStore(t, d, 585, [][]byte{answerRec("s", "e9", "q9", "later")})
 
-	s, err := d.BuildShowJSON(false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, w := range s.Warnings {
+	raw := d.BuildShowJSON(mustManifest(t, d), false)
+	for _, w := range raw.Warnings {
 		if strings.HasPrefix(w, "STALE_MATERIALIZED") {
 			t.Fatal("the raw show contract cannot decide staleness; only the view set can")
 		}
 	}
-	if err := AnnotateShowJSON(d, s); err != nil {
+	s, err := ShowJSON(d, false)
+	if err != nil {
 		t.Fatal(err)
 	}
 	var named []string
@@ -550,7 +664,7 @@ func TestAnnotateShowJSONAddsTheStaleWarning(t *testing.T) {
 		t.Fatalf("the warning must name the refresh command: %s", named[0])
 	}
 	if !sort.StringsAreSorted(s.Warnings) {
-		t.Fatalf("the decorator must re-sort: %v", s.Warnings)
+		t.Fatalf("ShowJSON must re-sort after appending: %v", s.Warnings)
 	}
 }
 
@@ -577,7 +691,7 @@ func TestReindexDropsTheEntriesAndKeepsTheFiles(t *testing.T) {
 		}
 	}
 
-	s, err := d.BuildShowJSON(false)
+	s, err := ShowJSON(d, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -734,7 +848,7 @@ func TestMaterializeRebuildsWhenTheViewDefinitionChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	stale, err := StaleMaterializedViews(d)
+	stale, err := staleMaterializedViews(d, mustManifest(t, d))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -30,11 +30,8 @@ func newDatasetShowCmd() *cobra.Command {
 			if !d.Exists() {
 				return notFound(ref)
 			}
-			summary, err := d.BuildShowJSON(full)
+			summary, err := duck.ShowJSON(d, full)
 			if err != nil {
-				return output.Internalf("%v", err)
-			}
-			if err := duck.AnnotateShowJSON(d, summary); err != nil {
 				return output.Internalf("%v", err)
 			}
 			if asJSON {

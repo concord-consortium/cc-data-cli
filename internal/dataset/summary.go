@@ -63,13 +63,11 @@ type ListRowJSON struct {
 	MaterializedBytes int64 `json:"materialized_bytes"`
 }
 
-// BuildShowJSON computes the dataset summary from the manifest only (no data-file
-// scan beyond size/drift stats, no DuckDB). full adds per-file detail.
-func (d *Dataset) BuildShowJSON(full bool) (*ShowJSON, error) {
-	m, err := d.ReadManifest()
-	if err != nil {
-		return nil, err
-	}
+// BuildShowJSON computes the dataset summary from one manifest read (no data-file
+// scan beyond size/drift stats, no DuckDB). full adds per-file detail. The
+// caller passes the manifest so the warnings only the view set can decide are
+// added from the same read; see duck.ShowJSON.
+func (d *Dataset) BuildShowJSON(m *Manifest, full bool) *ShowJSON {
 	size, derived := dirSizes(d.Dir)
 	out := &ShowJSON{
 		Ref:               d.Ref.String(),
@@ -108,7 +106,7 @@ func (d *Dataset) BuildShowJSON(full bool) (*ShowJSON, error) {
 	if out.Warnings == nil {
 		out.Warnings = []string{}
 	}
-	return out, nil
+	return out
 }
 
 // BuildListJSON enumerates every dataset across all portal folders under a data
@@ -229,11 +227,20 @@ func driftWarnings(d *Dataset, m *Manifest) []string {
 			warnings = append(warnings, "UNKNOWN_TYPE: run "+itoa(dl.RunID)+" report_type "+dl.ReportType+" is unknown to this cc-data version and excluded from the reports view; upgrade suggested")
 		}
 	}
-	// A Parquet in a derived subfolder that no manifest entry names, which is the
-	// state a reindex leaves. Deciding it needs no view knowledge, only the folder
-	// listing against Materialized.
+	// A recorded Parquet that is gone. The folder is documented as safe to
+	// delete, and this is the one place that says which views that affected.
+	for view, mat := range m.Materialized {
+		if !fileOnDisk(d.Path(mat.File)) {
+			warnings = append(warnings, "MISSING_MATERIALIZED: view "+view+" records "+mat.File+" but it is missing on disk; queries are reading the raw artifacts, run cc-data dataset materialize "+d.Ref.String()+" to rebuild it")
+		}
+	}
+	// A Parquet in a derived subfolder that no manifest entry names: the state a
+	// reindex leaves, or a file something else put there. Deciding it needs no
+	// view knowledge, only the folder listing against Materialized. Materialize
+	// overwrites a view's own file and never removes one it does not recognize,
+	// so the file's fate is the researcher's call.
 	for _, name := range unreferencedMaterialized(d, m) {
-		warnings = append(warnings, "UNREFERENCED_MATERIALIZED: "+name+" is on disk but the manifest no longer records it; queries are reading the raw artifacts, run cc-data dataset materialize "+d.Ref.String()+" to restore it (external tools can still read the file)")
+		warnings = append(warnings, "UNREFERENCED_MATERIALIZED: "+name+" is on disk but the manifest does not record it, so cc-data does not read it; if it was a view's copy, run cc-data dataset materialize "+d.Ref.String()+" to record a current one; the file can be kept, moved or deleted")
 	}
 	// Orphan final-named files not referenced by the manifest.
 	referenced := manifestReferencedFiles(m)

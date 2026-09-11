@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -24,6 +25,17 @@ type DatasetSpec struct {
 type Engine struct {
 	db   *sql.DB
 	conn *sql.Conn
+	warn io.Writer
+	// pinned holds the views registered from a Parquet, so a later query can
+	// notice the copy going stale and put the view back on its raw artifacts.
+	pinned []pinnedView
+}
+
+// pinnedView is a view reading its Parquet, with the directory its freshness
+// fingerprints resolve against.
+type pinnedView struct {
+	stmt viewStmt
+	dir  string
 }
 
 // Open registers the datasets' views and locks the sandbox to their folders plus
@@ -79,7 +91,7 @@ func open(ctx context.Context, datasets []DatasetSpec, allowDirs []string, warnO
 		db.Close()
 		return nil, nil, err
 	}
-	e := &Engine{db: db, conn: conn}
+	e := &Engine{db: db, conn: conn, warn: warnOut}
 
 	multi := len(datasets) > 1
 	for i, ds := range datasets {
@@ -103,20 +115,16 @@ func open(ctx context.Context, datasets []DatasetSpec, allowDirs []string, warnO
 			stmts = vs.applyMaterialized(stmts)
 		}
 		for _, stmt := range stmts {
-			if stmt.materialized != "" {
-				_, merr := conn.ExecContext(ctx, stmt.materialized)
-				if merr == nil {
-					continue
-				}
-				fmt.Fprintf(warnOut, "warning: materialized %s is unreadable (%v); reading the raw artifacts instead\n", stmt.name, merr)
+			pinned, deg, err := e.register(ctx, stmt)
+			if err != nil {
+				e.Close()
+				return nil, nil, err
 			}
-			if _, err := conn.ExecContext(ctx, stmt.primary); err != nil {
-				if _, ferr := conn.ExecContext(ctx, stmt.fallback); ferr != nil {
-					e.Close()
-					return nil, nil, fmt.Errorf("registering view %s: %v (fallback also failed: %v)", stmt.name, err, ferr)
-				}
+			if pinned {
+				e.pinned = append(e.pinned, pinnedView{stmt: stmt, dir: canon})
+			}
+			if deg {
 				degraded[bareViewName(stmt.name, prefix)] = true
-				fmt.Fprintf(warnOut, "warning: view %s degraded to empty (%v); affected files: %s\n", stmt.name, err, strings.Join(stmt.files, ", "))
 			}
 		}
 	}
@@ -126,6 +134,60 @@ func open(ctx context.Context, datasets []DatasetSpec, allowDirs []string, warnO
 		return nil, nil, err
 	}
 	return e, degraded, nil
+}
+
+// register creates one view, trying its forms in order: the Parquet when one is
+// set, then the raw artifacts, then the typed-empty fallback. It reports whether
+// the view ended pinned to its Parquet and whether it degraded to empty. A
+// missing Parquet gets one short line; only a present but unreadable one
+// carries the engine's error, since that is the case with something to explain.
+func (e *Engine) register(ctx context.Context, st viewStmt) (pinned, degraded bool, err error) {
+	if st.materialized != "" {
+		if _, serr := os.Stat(st.parquet); serr != nil {
+			fmt.Fprintf(e.warn, "warning: materialized %s is missing; reading the raw artifacts instead\n", st.name)
+		} else if merr := e.exec(ctx, st.materialized); merr == nil {
+			return true, false, nil
+		} else {
+			fmt.Fprintf(e.warn, "warning: materialized %s is unreadable (%v); reading the raw artifacts instead\n", st.name, merr)
+		}
+	}
+	if perr := e.exec(ctx, st.primary); perr != nil {
+		if ferr := e.exec(ctx, st.fallback); ferr != nil {
+			return false, false, fmt.Errorf("registering view %s: %v (fallback also failed: %v)", st.name, perr, ferr)
+		}
+		fmt.Fprintf(e.warn, "warning: view %s degraded to empty (%v); affected files: %s\n", st.name, perr, strings.Join(st.files, ", "))
+		return false, true, nil
+	}
+	return false, false, nil
+}
+
+// refreshPinned re-registers every pinned view whose Parquet has gone stale
+// from its raw artifacts. The raw statements read their files on every query,
+// so without this a session that outlives a fetch would keep answering from a
+// copy of the data as it stood when the session opened.
+func (e *Engine) refreshPinned(ctx context.Context) error {
+	if len(e.pinned) == 0 {
+		return nil
+	}
+	var kept []pinnedView
+	for i, p := range e.pinned {
+		if p.stmt.record.Fresh(p.dir, p.stmt.files, p.stmt.signature) {
+			kept = append(kept, p)
+			continue
+		}
+		raw := p.stmt
+		raw.materialized = ""
+		err := e.exec(ctx, "DROP VIEW "+raw.name)
+		if err == nil {
+			_, _, err = e.register(ctx, raw)
+		}
+		if err != nil {
+			e.pinned = append(kept, e.pinned[i+1:]...)
+			return err
+		}
+	}
+	e.pinned = kept
+	return nil
 }
 
 // Resource caps applied before lock_configuration=true. DuckDB otherwise
@@ -163,7 +225,6 @@ func (e *Engine) lockSandbox(ctx context.Context, allowed []string) error {
 	return nil
 }
 
-// Query runs user SQL on the pinned connection.
 // exec runs a statement that returns no rows. Query cannot serve here: dropping
 // its *sql.Rows leaks the connection and deadlocks Close.
 func (e *Engine) exec(ctx context.Context, stmt string) error {
@@ -171,7 +232,12 @@ func (e *Engine) exec(ctx context.Context, stmt string) error {
 	return err
 }
 
+// Query runs user SQL on the pinned connection, after putting any view whose
+// Parquet has gone stale back on its raw artifacts.
 func (e *Engine) Query(ctx context.Context, query string) (*sql.Rows, error) {
+	if err := e.refreshPinned(ctx); err != nil {
+		return nil, err
+	}
 	return e.conn.QueryContext(ctx, query)
 }
 
