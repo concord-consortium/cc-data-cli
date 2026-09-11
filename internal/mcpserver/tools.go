@@ -272,6 +272,27 @@ func registerTools(s *mcp.Server, opts Options) {
 			return nil, mapOut{"ref": d.Ref.String(), "reindexed": true}, nil
 		})
 
+	// Annotated neither read-only nor destructive: it writes, but only derived
+	// data that is regenerable and documented as safe to delete.
+	addTool(s, &mcp.Tool{Name: "dataset_materialize", Description: "Write each of a dataset's file-backed views to " + dataset.MaterializedDir + "/<view>.parquet, so queries over a large dataset stop re-parsing the raw JSONL and CSV. Queries read a view's Parquet while it is fresh and fall back to the raw artifacts otherwise, so this never changes an answer. Set force=true to rebuild a view whose inputs are unchanged, and allow_partial=true to build a view even though a file it declares is missing. Views are refused rather than published when an input is missing or the view could not be read at all; the refused map says which and why."},
+		func(ctx context.Context, req *mcp.CallToolRequest, in datasetMaterializeIn) (*mcp.CallToolResult, mapOut, error) {
+			d, _, err := openDataset(in.Ref)
+			if err != nil {
+				return nil, nil, err
+			}
+			opts := duck.MaterializeOptions{Force: in.Force, AllowPartial: in.AllowPartial}
+			res, err := duck.Materialize(ctx, d, opts, newProgress(ctx, req))
+			if err != nil {
+				return nil, nil, err
+			}
+			return nil, mapOut{
+				"ref":     d.Ref.String(),
+				"written": res.Written,
+				"skipped": res.Skipped,
+				"refused": res.Refused,
+			}, nil
+		})
+
 	addTool(s, &mcp.Tool{Name: "query", Description: queryDescription(), Annotations: readOnly},
 		queryHandler(opts))
 }

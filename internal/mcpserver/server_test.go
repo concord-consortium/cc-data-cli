@@ -108,7 +108,7 @@ func TestMCPToolSurface(t *testing.T) {
 		"reports_filter_options", "reports_create", "reports_duplicate", "get_report",
 		"get_answers", "get_history", "get_attachments", "dataset_create", "dataset_list",
 		"dataset_show", "dataset_rename", "dataset_edit", "dataset_delete", "dataset_purge",
-		"dataset_reindex", "query"}
+		"dataset_reindex", "dataset_materialize", "query"}
 	for _, n := range want {
 		if _, ok := names[n]; !ok {
 			t.Fatalf("missing tool %q", n)

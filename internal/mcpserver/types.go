@@ -101,6 +101,12 @@ type datasetRefIn struct {
 	Ref string `json:"ref"`
 }
 
+type datasetMaterializeIn struct {
+	Ref          string `json:"ref"`
+	Force        bool   `json:"force,omitempty"`
+	AllowPartial bool   `json:"allow_partial,omitempty"`
+}
+
 type confirmRefIn struct {
 	Ref     string `json:"ref"`
 	Confirm bool   `json:"confirm,omitempty"`
