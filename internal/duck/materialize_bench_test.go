@@ -99,10 +99,9 @@ func timeQuery(t *testing.T, e *Engine, query string) time.Duration {
 // timingFixture writes a history store directly, bypassing the segment merge,
 // because the merge's identity pass is not what is being measured.
 //
-// The payloads have to vary. A first attempt used an identical blob per row: ZSTD
-// dictionary encoding took the Parquet to 0.9% of the JSONL and the measured
-// speedup collapses to single digits, because the cost moves entirely into the
-// aggregation. A generator emitting a constant blob measures compression, not
+// The payloads have to vary per row. Given a constant blob, ZSTD dictionary
+// encoding compresses the column away and the cost moves entirely into the
+// aggregation, so the measurement becomes one of compression rather than of
 // materialization.
 func timingFixture(t *testing.T, rows int) *dataset.Dataset {
 	t.Helper()

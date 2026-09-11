@@ -30,6 +30,9 @@ func fullFixture(t *testing.T) *dataset.Dataset {
 	addReportCSV(t, d, 584, "answers", "student_id,res_1_q1_answer\nPrompt,What?\nCorrect answer,42\n1,hello\n2,world\n")
 	addDimensionCSV(t, d, dimFixture{run: 700, slug: "student-id-mapping", fetchedAt: time.Unix(1, 0).UTC(),
 		csv: mappingCSV(mappingRow(1, 30, endpointAAA))})
+	// A log run puts the logs view in the set, which is the one carrying JSON,
+	// TIMESTAMP and LIST columns derived per query rather than read from the CSV.
+	addLogCSV(t, d, logFixture{run: 900, csv: clueCSV()})
 	return d
 }
 
@@ -141,6 +144,49 @@ func TestMaterializeReturnsIdenticalResults(t *testing.T) {
 	if f := tempFiles(t, d); len(f) > 0 {
 		t.Fatalf("temp files survived a clean run: %v", f)
 	}
+	// The derived columns are the point of materializing views rather than
+	// artifacts, and they are the ones whose types could be lost in the round
+	// trip, so they are named rather than left to the map comparison above.
+	logTypes := columnTypes(t, after, `"logs"`)
+	for col, want := range map[string]string{
+		"parameters_json": "JSON", "extras_json": "JSON",
+		"event_time": "TIMESTAMP", "received_time": "TIMESTAMP",
+	} {
+		if logTypes[col] != want {
+			t.Errorf("materialized logs.%s is %q, want %q", col, logTypes[col], want)
+		}
+	}
+}
+
+// TestMaterializedParquetCarriesItsProvenance covers the footer metadata. Nothing
+// in cc-data reads it back; it is there so a Parquet found in a backup or a
+// copied folder can say what it is.
+func TestMaterializedParquetCarriesItsProvenance(t *testing.T) {
+	d := fullFixture(t)
+	materialize(t, d, MaterializeOptions{})
+
+	e := openEngine(t, []DatasetSpec{{DS: d}}, nil)
+	path := d.Path(filepath.Join(dataset.MaterializedDir, "answers.parquet"))
+	rows, err := e.Query(context.Background(),
+		fmt.Sprintf("SELECT key, value FROM parquet_kv_metadata(%s)", sqlStr(path)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	kv := map[string]string{}
+	for rows.Next() {
+		var k, v []byte
+		if err := rows.Scan(&k, &v); err != nil {
+			t.Fatal(err)
+		}
+		kv[string(k)] = string(v)
+	}
+	if kv["view"] != "answers" {
+		t.Errorf("footer view = %q, want answers", kv["view"])
+	}
+	if _, err := time.Parse(time.RFC3339, kv["built_at"]); err != nil {
+		t.Errorf("footer built_at %q is not a timestamp: %v", kv["built_at"], err)
+	}
 }
 
 func TestMaterializeSkipsFreshViewsUnlessForced(t *testing.T) {
@@ -191,6 +237,12 @@ func TestMaterializeRefusesAMissingInputPerView(t *testing.T) {
 		t.Fatal("a refusal must be reportable, so the command can exit non-zero")
 	}
 
+	// --force is not a second way past the refusal; that is --allow-partial's job.
+	forced, _ := materialize(t, d, MaterializeOptions{Force: true})
+	if _, ok := forced.Refused["reports"]; !ok {
+		t.Fatalf("--force must not override a missing input, refused = %v", forced.Refused)
+	}
+
 	partial, warn := materialize(t, d, MaterializeOptions{AllowPartial: true})
 	if len(partial.Refused) != 0 {
 		t.Fatalf("--allow-partial should clear the refusals, got %v", partial.Refused)
@@ -198,7 +250,7 @@ func TestMaterializeRefusesAMissingInputPerView(t *testing.T) {
 	if !containsAll(partial.Written, "reports", "student_id_mapping") {
 		t.Fatalf("--allow-partial should write the short views, got %v", partial.Written)
 	}
-	if !strings.Contains(warn, "building reports from 1 of 2 declared inputs") {
+	if !strings.Contains(warn, "building reports from 2 of 3 declared inputs") {
 		t.Fatalf("--allow-partial must report the shortfall as a count, got %q", warn)
 	}
 	if f := tempFiles(t, d); len(f) > 0 {

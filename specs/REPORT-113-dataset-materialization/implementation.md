@@ -237,6 +237,8 @@ func bareViewName(name, prefix string) string {
 
 The writer and the tests both consume the exported form rather than either hand-listing views. Verified against a populated fixture: the set comes out as `answers`, `logs`, `report_prompts`, `reports`, `run_membership`, `student_id_mapping`, `student_metadata`, plus `history` once that store exists, and the four VALUES- and `read_text`-backed views are excluded by declaring no files, exactly as the requirements state.
 
+The identical-results test's fixture includes a log run, so `logs` is in the set and its `JSON`, `TIMESTAMP` and `VARCHAR[]` columns are exercised: those are computed per query from the CSV, and they are the reason this story materializes views rather than artifacts, so the comparison names them rather than leaving them to the whole-map check.
+
 Tests, all driven by materializing a Parquet that carries one sentinel row the raw artifacts do not, so "the Parquet is the source" is proved rather than assumed:
 
 - The sentinel is returned when the entry is fresh, and not returned when it is stale, when the Parquet is deleted, or when it is corrupt. Going stale is silent; a deleted, corrupt or truncated Parquet must warn and read the raw artifacts, never degrade to empty. All three unreadable shapes fail at `CREATE VIEW`, verified ahead of implementation, which is what lets one warning cover them.
@@ -368,7 +370,8 @@ That also keeps exactly one implementation of freshness, shared by the reader, t
 **Files affected**:
 - `cmd/dataset_materialize.go` (new), `cmd/dataset.go`
 - `cmd/dataset_materialize_test.go` (new)
-- `internal/mcpserver/tools.go`, `internal/mcpserver/server_test.go`
+- `internal/mcpserver/tools.go`, `internal/mcpserver/types.go`, `internal/mcpserver/server_test.go`
+- `internal/guidance/src/tools.md`: the catalog entry, which the drift guard requires as soon as the tool is registered
 
 **Estimated diff size**: ~250 lines
 

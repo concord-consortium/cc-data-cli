@@ -59,7 +59,7 @@ type ListRowJSON struct {
 	AgeSeconds  int64          `json:"age_seconds"`
 	Totals      map[string]int `json:"totals"`
 	SizeBytes   int64          `json:"size_bytes"`
-
+	// MaterializedBytes carries the same meaning it has in ShowJSON.
 	MaterializedBytes int64 `json:"materialized_bytes"`
 }
 
