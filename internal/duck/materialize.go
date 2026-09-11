@@ -35,7 +35,9 @@ type MaterializeResult struct {
 func (r MaterializeResult) Refusals() bool { return len(r.Refused) > 0 }
 
 // Materialize writes each materializable view to a ZSTD Parquet under the
-// dataset's materialized folder.
+// dataset's materialized folder. A view that cannot be copied is refused like
+// any other, so one failure costs its own view rather than the whole run; only
+// a cancelled context stops the run outright.
 //
 // The copies run outside the mutation locks, which are held only to read the
 // manifest at the start and repoint it at the end, so a concurrent get does not
@@ -111,12 +113,21 @@ func Materialize(ctx context.Context, d *dataset.Dataset, opts MaterializeOption
 		inputs := dataset.FingerprintInputs(d.Dir, files)
 		tmp, err := copyViewToParquet(ctx, e, d, view)
 		if err != nil {
-			return res, err
+			if ctx.Err() != nil {
+				return res, err
+			}
+			res.Refused[view] = err.Error()
+			continue
 		}
 		if st, isStore := m.Stores[view]; isStore {
 			n, err := parquetRowCount(ctx, e, d.Path(tmp))
 			if err != nil {
-				return res, err
+				os.Remove(d.Path(tmp))
+				if ctx.Err() != nil {
+					return res, err
+				}
+				res.Refused[view] = err.Error()
+				continue
 			}
 			if n != st.Count {
 				os.Remove(d.Path(tmp))

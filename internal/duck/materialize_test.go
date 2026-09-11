@@ -144,9 +144,8 @@ func TestMaterializeReturnsIdenticalResults(t *testing.T) {
 	if f := tempFiles(t, d); len(f) > 0 {
 		t.Fatalf("temp files survived a clean run: %v", f)
 	}
-	// The derived columns are the point of materializing views rather than
-	// artifacts, and they are the ones whose types could be lost in the round
-	// trip, so they are named rather than left to the map comparison above.
+	// Named individually because these are computed per query, so their types are
+	// what the round trip could lose.
 	logTypes := columnTypes(t, after, `"logs"`)
 	for col, want := range map[string]string{
 		"parameters_json": "JSON", "extras_json": "JSON",
@@ -279,6 +278,35 @@ func TestMaterializeRefusesADegradedViewEvenWithAllowPartial(t *testing.T) {
 		if w == "answers" {
 			t.Fatal("a degraded view must never be published")
 		}
+	}
+}
+
+// TestMaterializeRefusesAViewItCannotCopy holds the per-view rule for a failing
+// copy: the other views are still written and the run still reports a refusal.
+// An unwritable target is the reachable shape of this, standing in for a disk
+// filling partway through a run.
+func TestMaterializeRefusesAViewItCannotCopy(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root ignores the directory permission this test relies on")
+	}
+	d := fullFixture(t)
+	// A directory where answers.parquet's temp file has to be created, with no
+	// write permission, so exactly one view's copy fails.
+	blocked := d.Path(filepath.Join(dataset.MaterializedDir))
+	if err := os.MkdirAll(blocked, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(blocked, 0o700) })
+
+	res, err := Materialize(context.Background(), d, MaterializeOptions{}, io.Discard)
+	if err != nil {
+		t.Fatalf("one unwritable view must not fail the run: %v", err)
+	}
+	if len(res.Refused) == 0 {
+		t.Fatalf("want the unwritable views refused, got %+v", res)
+	}
+	if len(res.Written) != 0 {
+		t.Fatalf("nothing can be written into an unwritable folder, got %v", res.Written)
 	}
 }
 
@@ -446,9 +474,10 @@ func TestAnnotateShowJSONAddsTheStaleWarning(t *testing.T) {
 	}
 }
 
-// TestReindexDropsTheEntriesAndKeepsTheFiles covers all three halves of the
-// reindex requirement at once: the manifest entries go, the Parquet files stay,
-// and dataset show then names them as unreferenced.
+// TestReindexDropsTheEntriesAndKeepsTheFiles pins three things at once: reindex
+// drops the manifest entries, leaves the Parquet files on disk, and dataset show
+// then names them as unreferenced. The middle one is what would catch a later
+// tidy-up making reindex delete the folder.
 func TestReindexDropsTheEntriesAndKeepsTheFiles(t *testing.T) {
 	d := fullFixture(t)
 	res, _ := materialize(t, d, MaterializeOptions{})
