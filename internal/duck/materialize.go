@@ -146,7 +146,7 @@ func Materialize(ctx context.Context, d *dataset.Dataset, opts MaterializeOption
 	built := map[string]builtView{}
 	defer func() {
 		for _, b := range built {
-			os.Remove(d.Path(b.tmp))
+			removeCopyArtifacts(d, b.tmp)
 		}
 	}()
 
@@ -188,7 +188,7 @@ func Materialize(ctx context.Context, d *dataset.Dataset, opts MaterializeOption
 		if st, isStore := m.Stores[view]; isStore {
 			n, err := parquetRowCount(ctx, e, d.Path(tmp))
 			if err != nil {
-				os.Remove(d.Path(tmp))
+				removeCopyArtifacts(d, tmp)
 				if ctx.Err() != nil {
 					return res, err
 				}
@@ -196,7 +196,7 @@ func Materialize(ctx context.Context, d *dataset.Dataset, opts MaterializeOption
 				continue
 			}
 			if n != st.Count {
-				os.Remove(d.Path(tmp))
+				removeCopyArtifacts(d, tmp)
 				record(view, StatusRefused, fmt.Sprintf("copied %d rows but the manifest records %d in the %s store", n, st.Count, view))
 				continue
 			}
@@ -345,10 +345,30 @@ func copyViewToParquet(ctx context.Context, e *Engine, d *dataset.Dataset, view 
 	stmt := fmt.Sprintf("COPY (SELECT * FROM %s) TO %s (FORMAT parquet, COMPRESSION zstd, KV_METADATA {view: %s, built_at: %s})",
 		sqlIdent(view), sqlStr(d.Path(tmp)), sqlStr(view), sqlStr(time.Now().UTC().Format(time.RFC3339)))
 	if err := e.exec(ctx, stmt); err != nil {
-		os.Remove(d.Path(tmp))
+		removeCopyArtifacts(d, tmp)
 		return "", fmt.Errorf("materializing %s: %w", view, err)
 	}
 	return tmp, nil
+}
+
+// removeCopyArtifacts removes a temp copy and anything left beside it. A COPY
+// that fails partway leaves its own scratch file in the target's directory,
+// named after the target, so removing the target alone leaks it. Matching on the
+// temp name rather than on a fixed prefix keeps this independent of how the
+// engine spells its scratch file.
+func removeCopyArtifacts(d *dataset.Dataset, tmp string) {
+	os.Remove(d.Path(tmp))
+	dir := d.Path(dataset.MaterializedDir)
+	base := filepath.Base(tmp)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() && entry.Name() != base && strings.Contains(entry.Name(), base) {
+			os.Remove(filepath.Join(dir, entry.Name()))
+		}
+	}
 }
 
 func parquetRowCount(ctx context.Context, e *Engine, path string) (int, error) {

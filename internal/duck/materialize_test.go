@@ -283,31 +283,33 @@ func TestMaterializeRefusesADegradedViewEvenWithAllowPartial(t *testing.T) {
 }
 
 // TestMaterializeRefusesAViewItCannotCopy holds the per-view rule for a failing
-// copy: the other views are still written and the run still reports a refusal.
-// An unwritable target is the reachable shape of this, standing in for a disk
-// filling partway through a run.
+// copy: that view is refused, the others are still written, and the run itself
+// succeeds. A store whose bytes will not parse is the shape that reaches the
+// copy, because read_json with an explicit column map validates no content at
+// CREATE VIEW, so the view registers without complaint and fails at query time.
 func TestMaterializeRefusesAViewItCannotCopy(t *testing.T) {
-	if os.Getuid() == 0 {
-		t.Skip("root ignores the directory permission this test relies on")
-	}
 	d := fullFixture(t)
-	// A directory where answers.parquet's temp file has to be created, with no
-	// write permission, so exactly one view's copy fails.
-	blocked := d.Path(filepath.Join(dataset.MaterializedDir))
-	if err := os.MkdirAll(blocked, 0o500); err != nil {
+	storeFile := mustManifest(t, d).Stores["answers"].File
+	if err := os.WriteFile(d.Path(storeFile), []byte("{not json at all\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { os.Chmod(blocked, 0o700) })
 
 	res, err := Materialize(context.Background(), d, MaterializeOptions{}, io.Discard)
 	if err != nil {
-		t.Fatalf("one unwritable view must not fail the run: %v", err)
+		t.Fatalf("one view's failed copy must not fail the run: %v", err)
 	}
-	if len(res.Refused()) == 0 {
-		t.Fatalf("want the unwritable views refused, got %+v", res)
+	reason, ok := res.Refused()["answers"]
+	if !ok {
+		t.Fatalf("the view whose copy failed should be refused, got %+v", res.Views)
 	}
-	if len(res.Written()) != 0 {
-		t.Fatalf("nothing can be written into an unwritable folder, got %v", res.Written())
+	if !strings.Contains(reason, "answers") {
+		t.Fatalf("the reason should carry the failing copy's error: %s", reason)
+	}
+	if len(res.Written()) == 0 {
+		t.Fatalf("the other views should still be written, got %+v", res.Views)
+	}
+	if f := tempFiles(t, d); len(f) > 0 {
+		t.Fatalf("a failed copy must leave no temp file: %v", f)
 	}
 }
 
