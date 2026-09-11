@@ -185,8 +185,8 @@ cross-portal identity is out of scope.
 ## Report slugs
 
 A run is created from a report's slug. These are the ones a data pull starts
-from. The Portal also offers aggregate metrics reports that are not listed here;
-their slugs come from an existing run or from the researcher guide.
+from. The Portal also offers aggregate metrics reports whose slugs cc-data
+cannot enumerate; take one from a run that already exists.
 
 - `student-id-mapping` — the learners' portal ids and the key that joins them to
   stored records, with no names. A run of it is a valid run id for fetching

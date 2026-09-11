@@ -398,9 +398,10 @@ and queryable through the same `reports` view. `cc-data` records each run's type
 Reports come in two flavors. **Athena reports** (`execution` `async`) are
 computed in the background from the log archive, so a run has a query state and
 its result never changes once it succeeds. **Portal reports** (`execution`
-`sync`, `report_type` `portal`) are computed from the Portal database every time
-you ask for them, so `reports list` shows their state as `live` and re-pulling
-one with `get report --refresh` is how you get current data.
+`sync`) are computed from the Portal database every time you ask for them, so
+`reports list` shows their state as `live` and re-pulling one with
+`get report --refresh` is how you get current data. Such a run carries no
+`report_type` of its own; `cc-data` labels the download it records `portal`.
 
 **Athena student data, one row per student:**
 

@@ -199,16 +199,33 @@ func TestGuidanceStatesTheDownloadReportTypes(t *testing.T) {
 		dataset.AllowedReportTypes(), downloadReportTypeExemptions, "download")
 }
 
+// slugShaped matches a backticked lowercase-hyphenated identifier. Every such name in
+// the core is a report slug, so scanning for the shape covers the slugs the prose and
+// the recipe name as well as the ones the catalog lists. slugExemptions is where a
+// hyphenated identifier that is not a slug has to declare itself. Only the core is
+// scanned: `cc-data` takes the same shape, and it appears on the other surfaces.
+var slugShaped = regexp.MustCompile("`([a-z0-9]+(?:-[a-z0-9]+)+)`")
+
+var slugExemptions = map[string]bool{}
+
 // TestGuidanceDocumentsOnlyRealSlugs runs one direction only. The reverse is
 // deliberately not checked, because the portal offers aggregate reports that have
 // no Go constant today. What this cannot prove is recorded beside slugToType.
 func TestGuidanceDocumentsOnlyRealSlugs(t *testing.T) {
-	documented, err := guidance.ParseCatalog(guidance.Core(), "Report slugs")
-	if err != nil {
+	if _, err := guidance.ParseCatalog(guidance.Core(), "Report slugs"); err != nil {
 		t.Fatal(err)
 	}
+	var named []string
+	for _, m := range slugShaped.FindAllStringSubmatch(guidance.Core(), -1) {
+		if !slugExemptions[m[1]] {
+			named = append(named, m[1])
+		}
+	}
+	if len(named) == 0 {
+		t.Fatal("the core names no slug, so this checks nothing")
+	}
 	inCode := append(dataset.AthenaReportSlugs(), duck.DimensionSlugs()...)
-	if m := guidance.Missing(documented, inCode); len(m) > 0 {
+	if m := guidance.Missing(named, inCode); len(m) > 0 {
 		t.Fatalf("guidance names slugs the code does not know: %v", m)
 	}
 }
