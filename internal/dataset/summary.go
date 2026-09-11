@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/concord-consortium/cc-data-cli/internal/store"
@@ -20,8 +21,11 @@ type ShowJSON struct {
 	CreatedAt   time.Time      `json:"created_at"`
 	Totals      map[string]int `json:"totals"`
 	SizeBytes   int64          `json:"size_bytes"`
-	Downloads   []DownloadJSON `json:"downloads"`
-	Warnings    []string       `json:"warnings"`
+	// MaterializedBytes is the subset of SizeBytes under derived subfolders,
+	// which a researcher can reclaim for free. SizeBytes keeps its meaning.
+	MaterializedBytes int64          `json:"materialized_bytes"`
+	Downloads         []DownloadJSON `json:"downloads"`
+	Warnings          []string       `json:"warnings"`
 }
 
 // DownloadJSON is one download in ShowJSON.
@@ -55,6 +59,8 @@ type ListRowJSON struct {
 	AgeSeconds  int64          `json:"age_seconds"`
 	Totals      map[string]int `json:"totals"`
 	SizeBytes   int64          `json:"size_bytes"`
+
+	MaterializedBytes int64 `json:"materialized_bytes"`
 }
 
 // BuildShowJSON computes the dataset summary from the manifest only (no data-file
@@ -64,16 +70,17 @@ func (d *Dataset) BuildShowJSON(full bool) (*ShowJSON, error) {
 	if err != nil {
 		return nil, err
 	}
-	size := dirSize(d.Dir)
+	size, derived := dirSizes(d.Dir)
 	out := &ShowJSON{
-		Ref:         d.Ref.String(),
-		Name:        m.Name,
-		Description: m.Description,
-		Portal:      d.Ref.Portal.Host(),
-		CreatedAt:   m.CreatedAt,
-		Totals:      manifestTotals(m),
-		SizeBytes:   size,
-		Warnings:    driftWarnings(d, m),
+		Ref:               d.Ref.String(),
+		Name:              m.Name,
+		Description:       m.Description,
+		Portal:            d.Ref.Portal.Host(),
+		CreatedAt:         m.CreatedAt,
+		Totals:            manifestTotals(m),
+		SizeBytes:         size,
+		MaterializedBytes: derived,
+		Warnings:          driftWarnings(d, m),
 	}
 	for _, dl := range m.Downloads {
 		dj := DownloadJSON{
@@ -134,14 +141,16 @@ func BuildListJSON(dataRoot string) (*ListJSON, error) {
 			if err != nil {
 				continue
 			}
+			size, derived := dirSizes(dir)
 			out.Datasets = append(out.Datasets, ListRowJSON{
-				Ref:         decodePortalFolder(p.Name()) + "/" + m.Name,
-				Name:        m.Name,
-				Description: m.Description,
-				Portal:      decodePortalFolder(p.Name()),
-				AgeSeconds:  int64(now.Sub(m.CreatedAt).Seconds()),
-				Totals:      manifestTotals(m),
-				SizeBytes:   dirSize(dir),
+				Ref:               decodePortalFolder(p.Name()) + "/" + m.Name,
+				Name:              m.Name,
+				Description:       m.Description,
+				Portal:            decodePortalFolder(p.Name()),
+				AgeSeconds:        int64(now.Sub(m.CreatedAt).Seconds()),
+				Totals:            manifestTotals(m),
+				SizeBytes:         size,
+				MaterializedBytes: derived,
 			})
 		}
 	}
@@ -220,6 +229,13 @@ func driftWarnings(d *Dataset, m *Manifest) []string {
 			warnings = append(warnings, "UNKNOWN_TYPE: run "+itoa(dl.RunID)+" report_type "+dl.ReportType+" is unknown to this cc-data version and excluded from the reports view; upgrade suggested")
 		}
 	}
+	// A Parquet in a derived subfolder that no manifest entry names. This is what
+	// a reindex leaves, and what a materialize run leaves if it discards a view
+	// after copying it. Deciding it needs no view knowledge, only the folder
+	// listing against Materialized.
+	for _, name := range unreferencedMaterialized(d, m) {
+		warnings = append(warnings, "UNREFERENCED_MATERIALIZED: "+name+" is on disk but the manifest no longer records it; queries are reading the raw artifacts, run cc-data dataset materialize "+d.Ref.String()+" to restore it (external tools can still read the file)")
+	}
 	// Orphan final-named files not referenced by the manifest.
 	referenced := manifestReferencedFiles(m)
 	entries, _ := os.ReadDir(d.Dir)
@@ -234,6 +250,26 @@ func driftWarnings(d *Dataset, m *Manifest) []string {
 	}
 	sort.Strings(warnings)
 	return warnings
+}
+
+func unreferencedMaterialized(d *Dataset, m *Manifest) []string {
+	entries, err := os.ReadDir(filepath.Join(d.Dir, MaterializedDir))
+	if err != nil {
+		return nil
+	}
+	recorded := map[string]bool{}
+	for _, mat := range m.Materialized {
+		recorded[filepath.Base(mat.File)] = true
+	}
+	var out []string
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".parquet") || recorded[name] {
+			continue
+		}
+		out = append(out, MaterializedDir+"/"+name)
+	}
+	return out
 }
 
 func manifestReferencedFiles(m *Manifest) map[string]bool {
@@ -259,18 +295,27 @@ func fileOnDisk(path string) bool {
 	return err == nil
 }
 
-func dirSize(dir string) int64 {
-	var total int64
+// dirSizes returns the dataset's total bytes and the subset under registered
+// derived subfolders, in one walk so dataset list does not pay a second per
+// dataset.
+func dirSizes(dir string) (total, derived int64) {
 	filepath.WalkDir(dir, func(path string, de os.DirEntry, err error) error {
 		if err != nil || de.IsDir() {
 			return nil
 		}
-		if info, e := de.Info(); e == nil {
-			total += info.Size()
+		info, e := de.Info()
+		if e != nil {
+			return nil
+		}
+		total += info.Size()
+		if rel, rerr := filepath.Rel(dir, path); rerr == nil {
+			if top := strings.Split(filepath.ToSlash(rel), "/")[0]; IsDerivedSubdir(top) {
+				derived += info.Size()
+			}
 		}
 		return nil
 	})
-	return total
+	return total, derived
 }
 
 func itoa(n int) string { return strconv.Itoa(n) }

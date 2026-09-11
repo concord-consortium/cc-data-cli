@@ -1,7 +1,10 @@
 package dataset
 
 import (
+	"bytes"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -139,5 +142,72 @@ func TestShowDoesNotWarnForARecoveredStoreDownload(t *testing.T) {
 	s, _ := d.BuildShowJSON(false)
 	if got := warningsWithPrefix(s.Warnings, "RECOVERED_PROVENANCE:"); len(got) != 0 {
 		t.Fatalf("a store download raised a provenance warning: %v", got)
+	}
+}
+
+func TestMaterializedBytesIsReportedSeparately(t *testing.T) {
+	d := newDataset(t)
+	os.WriteFile(d.Path("answers.v1.jsonl"), []byte("{}\n"), 0o600)
+	os.MkdirAll(d.Path(MaterializedDir), 0o700)
+	body := bytes.Repeat([]byte("x"), 500)
+	os.WriteFile(d.Path(MaterializedDir+"/answers.parquet"), body, 0o600)
+
+	s, err := d.BuildShowJSON(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.MaterializedBytes != int64(len(body)) {
+		t.Fatalf("materialized_bytes = %d, want %d", s.MaterializedBytes, len(body))
+	}
+	if s.SizeBytes <= s.MaterializedBytes {
+		t.Fatalf("size_bytes (%d) must still count everything, including the %d derived bytes",
+			s.SizeBytes, s.MaterializedBytes)
+	}
+
+	list, err := BuildListJSON(filepath.Dir(filepath.Dir(filepath.Dir(d.Dir))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Datasets) != 1 {
+		t.Fatalf("want one dataset listed, got %d", len(list.Datasets))
+	}
+	if list.Datasets[0].MaterializedBytes != int64(len(body)) {
+		t.Fatalf("list materialized_bytes = %d, want %d", list.Datasets[0].MaterializedBytes, len(body))
+	}
+}
+
+func TestUnreferencedMaterializedWarning(t *testing.T) {
+	d := newDataset(t)
+	os.MkdirAll(d.Path(MaterializedDir), 0o700)
+	os.WriteFile(d.Path(MaterializedDir+"/logs.parquet"), []byte("PAR1"), 0o600)
+	os.WriteFile(d.Path(MaterializedDir+"/answers.parquet"), []byte("PAR1"), 0o600)
+
+	m, err := d.ReadManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.Materialized["answers"] = Materialized{File: MaterializedDir + "/answers.parquet"}
+	if err := writeManifestFile(d.Dir, m); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := d.BuildShowJSON(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var named []string
+	for _, w := range s.Warnings {
+		if strings.HasPrefix(w, "UNREFERENCED_MATERIALIZED") {
+			named = append(named, w)
+		}
+	}
+	if len(named) != 1 || !strings.Contains(named[0], "logs.parquet") {
+		t.Fatalf("want exactly the unrecorded logs.parquet named, got %v", named)
+	}
+	if !strings.Contains(named[0], "dataset materialize") {
+		t.Fatalf("the warning must name the command that restores it: %s", named[0])
+	}
+	if !sort.StringsAreSorted(s.Warnings) {
+		t.Fatalf("warnings must stay sorted: %v", s.Warnings)
 	}
 }

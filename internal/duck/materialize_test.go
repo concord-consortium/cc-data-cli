@@ -330,3 +330,96 @@ func containsAll(all []string, want ...string) bool {
 	}
 	return true
 }
+
+func TestStaleMaterializedViewsTracksTheInputs(t *testing.T) {
+	d := fullFixture(t)
+	materialize(t, d, MaterializeOptions{})
+
+	stale, err := StaleMaterializedViews(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stale) != 0 {
+		t.Fatalf("nothing should be stale right after materializing, got %v", stale)
+	}
+
+	buildStore(t, d, 585, [][]byte{answerRec("s", "e9", "q9", "later")})
+	stale, err = StaleMaterializedViews(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsAll(stale, "answers", "run_membership") {
+		t.Fatalf("a get that moved the store should make its views stale, got %v", stale)
+	}
+}
+
+func TestAnnotateShowJSONAddsTheStaleWarning(t *testing.T) {
+	d := fullFixture(t)
+	materialize(t, d, MaterializeOptions{})
+	buildStore(t, d, 585, [][]byte{answerRec("s", "e9", "q9", "later")})
+
+	s, err := d.BuildShowJSON(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range s.Warnings {
+		if strings.HasPrefix(w, "STALE_MATERIALIZED") {
+			t.Fatal("the raw show contract cannot decide staleness; only the view set can")
+		}
+	}
+	if err := AnnotateShowJSON(d, s); err != nil {
+		t.Fatal(err)
+	}
+	var named []string
+	for _, w := range s.Warnings {
+		if strings.HasPrefix(w, "STALE_MATERIALIZED") {
+			named = append(named, w)
+		}
+	}
+	if len(named) == 0 {
+		t.Fatalf("want a stale warning, got %v", s.Warnings)
+	}
+	if !strings.Contains(named[0], "dataset materialize") {
+		t.Fatalf("the warning must name the refresh command: %s", named[0])
+	}
+	if !sort.StringsAreSorted(s.Warnings) {
+		t.Fatalf("the decorator must re-sort: %v", s.Warnings)
+	}
+}
+
+// TestReindexDropsTheEntriesAndKeepsTheFiles covers all three halves of the
+// reindex requirement at once: the manifest entries go, the Parquet files stay,
+// and dataset show then names them as unreferenced.
+func TestReindexDropsTheEntriesAndKeepsTheFiles(t *testing.T) {
+	d := fullFixture(t)
+	res, _ := materialize(t, d, MaterializeOptions{})
+	if len(res.Written) == 0 {
+		t.Fatal("fixture materialized nothing")
+	}
+
+	if err := d.Reindex(); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustManifest(t, d).Materialized; len(got) != 0 {
+		t.Fatalf("reindex must drop the materialization entries, got %v", got)
+	}
+	for _, view := range res.Written {
+		if _, err := os.Stat(d.Path(filepath.Join(dataset.MaterializedDir, view+".parquet"))); err != nil {
+			t.Fatalf("reindex must leave %s.parquet on disk for external readers: %v", view, err)
+		}
+	}
+
+	s, err := d.BuildShowJSON(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var named int
+	for _, w := range s.Warnings {
+		if strings.HasPrefix(w, "UNREFERENCED_MATERIALIZED") {
+			named++
+		}
+	}
+	if named != len(res.Written) {
+		t.Fatalf("want every leftover Parquet named, got %d of %d: %v", named, len(res.Written), s.Warnings)
+	}
+}

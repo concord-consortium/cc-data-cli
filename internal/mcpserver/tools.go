@@ -194,6 +194,9 @@ func registerTools(s *mcp.Server, opts Options) {
 			if err != nil {
 				return nil, dataset.ShowJSON{}, err
 			}
+			if err := duck.AnnotateShowJSON(d, s); err != nil {
+				return nil, dataset.ShowJSON{}, err
+			}
 			return nil, *s, nil
 		})
 

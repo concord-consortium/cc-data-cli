@@ -376,3 +376,43 @@ func intersects(a, b []string) bool {
 	}
 	return false
 }
+
+// StaleMaterializedViews names the views whose recorded Parquet no longer matches
+// the inputs. It lives here, not in dataset, because a view's input list is a
+// property of the view set.
+func StaleMaterializedViews(d *dataset.Dataset) ([]string, error) {
+	m, err := d.ReadManifest()
+	if err != nil {
+		return nil, err
+	}
+	if len(m.Materialized) == 0 {
+		return nil, nil
+	}
+	current := declaredFiles(m)
+	var stale []string
+	for view, rec := range m.Materialized {
+		files, ok := current[view]
+		if !ok || !rec.Fresh(d.Dir, files) {
+			stale = append(stale, view)
+		}
+	}
+	sort.Strings(stale)
+	return stale, nil
+}
+
+// AnnotateShowJSON appends the warnings only the view set can decide, and
+// re-sorts. Both surfaces call it, so the same documented ShowJSON contract
+// cannot carry different warning sets on the CLI and over MCP.
+func AnnotateShowJSON(d *dataset.Dataset, s *dataset.ShowJSON) error {
+	stale, err := StaleMaterializedViews(d)
+	if err != nil {
+		return err
+	}
+	for _, view := range stale {
+		s.Warnings = append(s.Warnings, fmt.Sprintf(
+			"STALE_MATERIALIZED: view %s was materialized from inputs that have since changed; run cc-data dataset materialize %s to refresh it",
+			view, d.Ref.String()))
+	}
+	sort.Strings(s.Warnings)
+	return nil
+}

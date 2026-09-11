@@ -6,6 +6,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/concord-consortium/cc-data-cli/internal/dataset"
+	"github.com/concord-consortium/cc-data-cli/internal/duck"
 	"github.com/concord-consortium/cc-data-cli/internal/output"
 	"github.com/spf13/cobra"
 )
@@ -33,6 +34,9 @@ func newDatasetShowCmd() *cobra.Command {
 			if err != nil {
 				return output.Internalf("%v", err)
 			}
+			if err := duck.AnnotateShowJSON(d, summary); err != nil {
+				return output.Internalf("%v", err)
+			}
 			if asJSON {
 				return output.JSONLine(summary)
 			}
@@ -51,7 +55,11 @@ func renderShow(s *dataset.ShowJSON, full bool) {
 	if s.Description != "" {
 		fmt.Fprintf(out, "%s\n", s.Description)
 	}
-	fmt.Fprintf(out, "created %s, %s on disk\n\n", s.CreatedAt.Format("2006-01-02"), humanBytes(s.SizeBytes))
+	disk := humanBytes(s.SizeBytes)
+	if s.MaterializedBytes > 0 {
+		disk += fmt.Sprintf(" (%s materialized)", humanBytes(s.MaterializedBytes))
+	}
+	fmt.Fprintf(out, "created %s, %s on disk\n\n", s.CreatedAt.Format("2006-01-02"), disk)
 
 	fmt.Fprintln(out, "Totals:")
 	types := make([]string, 0, len(s.Totals))
