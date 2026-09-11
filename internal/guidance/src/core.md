@@ -203,8 +203,10 @@ writes each view to a Parquet file that queries read instead, while it is fresh.
 - The Parquet lands at a fixed path inside the dataset folder, so analysis code
   outside cc-data can open it directly rather than going through a query.
 - The folder is safe for the researcher to delete at any time, and cc-data itself
-  removes it only when purging or deleting the whole dataset. Nothing else
-  removes it, so an external script may rely on the path.
+  removes a finished Parquet only when purging or deleting the whole dataset, so
+  an external script may rely on the path. The one thing a materialize run does
+  clear is the half-written file a previous run left behind if it was
+  interrupted.
 - A dataset with only some of its views materialized is an ordinary state, not a
   fault: freshness is per view, and a view can also be refused when a file it
   reads is missing from disk.

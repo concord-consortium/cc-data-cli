@@ -3,6 +3,7 @@ package duck
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -510,4 +511,86 @@ func TestReindexDropsTheEntriesAndKeepsTheFiles(t *testing.T) {
 	if named != len(res.Written) {
 		t.Fatalf("want every leftover Parquet named, got %d of %d: %v", named, len(res.Written), s.Warnings)
 	}
+}
+
+// TestMaterializeSweepsATempFromADeadRun covers the state a hard interrupt
+// leaves: nothing installs a signal handler, so a killed run's deferred cleanup
+// never runs and its temp file survives. The next run clears it, which it can do
+// unconditionally because it holds the materialize guard and the kernel drops
+// that guard when its holder dies.
+func TestMaterializeSweepsATempFromADeadRun(t *testing.T) {
+	d := fullFixture(t)
+	if err := os.MkdirAll(d.Path(dataset.MaterializedDir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stale := filepath.Join(dataset.MaterializedDir, "answers"+tempParquetInfix+"99")
+	if err := os.WriteFile(d.Path(stale), []byte("half a parquet"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	materialize(t, d, MaterializeOptions{})
+
+	if _, err := os.Stat(d.Path(stale)); !os.IsNotExist(err) {
+		t.Fatalf("a dead run's temp file should be swept, stat err = %v", err)
+	}
+	if f := tempFiles(t, d); len(f) > 0 {
+		t.Fatalf("no temp file should survive: %v", f)
+	}
+}
+
+// TestMaterializeRefusesASecondRun is what makes the sweep safe: while one run
+// holds the guard, a second cannot be inside the window where its temp files
+// exist, so there is never a live owner for the sweep to rob.
+func TestMaterializeRefusesASecondRun(t *testing.T) {
+	d := fullFixture(t)
+	release, err := d.LockMaterialize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	_, err = Materialize(context.Background(), d, MaterializeOptions{}, io.Discard)
+	if !errors.Is(err, dataset.ErrBusy) {
+		t.Fatalf("a second run should report the dataset busy, got %v", err)
+	}
+}
+
+// TestMaterializeHoldsItsGuardForTheWholeRun pins the property the sweep rests
+// on. The check runs in the window where the temp files exist, so a run that
+// took the guard and released it straight away fails here: at that point a
+// second run could start and sweep away this run's work.
+func TestMaterializeHoldsItsGuardForTheWholeRun(t *testing.T) {
+	d := fullFixture(t)
+	var heldWhileTempsExist bool
+	orig := testHookBeforeRepoint
+	testHookBeforeRepoint = func() {
+		testHookBeforeRepoint = orig
+		if f := tempFiles(t, d); len(f) == 0 {
+			t.Error("the hook must run while temp files exist, or this asserts nothing")
+		}
+		release, err := d.LockMaterialize()
+		heldWhileTempsExist = err != nil
+		if err == nil {
+			release()
+		}
+	}
+	t.Cleanup(func() { testHookBeforeRepoint = orig })
+
+	materialize(t, d, MaterializeOptions{})
+	if !heldWhileTempsExist {
+		t.Fatal("the guard must stay held for the whole run; released early, a second run could sweep this run's temp files")
+	}
+}
+
+// TestMaterializeReleasesItsGuard keeps the guard from leaking across runs, which
+// would make every later run on the dataset fail as busy.
+func TestMaterializeReleasesItsGuard(t *testing.T) {
+	d := fullFixture(t)
+	materialize(t, d, MaterializeOptions{})
+
+	release, err := d.LockMaterialize()
+	if err != nil {
+		t.Fatalf("the guard should be free once a run finishes: %v", err)
+	}
+	release()
 }

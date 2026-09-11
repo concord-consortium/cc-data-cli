@@ -14,8 +14,9 @@ import (
 // because unlinking a held flock file detaches it from its inode and a rename
 // detaches held flocks onto a dead inode.
 const (
-	DatasetLockFile  = ".dataset.lock"
-	ActivityLockFile = ".activity.lock"
+	DatasetLockFile     = ".dataset.lock"
+	ActivityLockFile    = ".activity.lock"
+	MaterializeLockFile = ".materialize.lock"
 )
 
 // Each lock is a process-wide guard per path: a sync primitive for goroutine
@@ -27,6 +28,7 @@ var (
 	dsGuards   = map[string]*DatasetLock{}
 	actGuards  = map[string]*ActivityLock{}
 	dlGuards   = map[string]*DownloadLock{}
+	matGuards  = map[string]*DatasetLock{}
 )
 
 // DatasetLockFor returns the process-wide per-dataset guard for a dataset dir.
@@ -53,6 +55,24 @@ func ActivityLockFor(datasetDir string) *ActivityLock {
 	}
 	g := &ActivityLock{flock: flock.New(filepath.Join(key, ActivityLockFile))}
 	actGuards[key] = g
+	return g
+}
+
+// MaterializeLockFor returns the process-wide guard a materialize run holds for
+// its whole duration. It is separate from the mutation guards because a
+// materialize deliberately copies outside those, so that a fetch is never
+// blocked by one; holding this guard for the whole run is what makes a temp file
+// found at the start provably the work of a run that is no longer alive, since
+// the kernel drops an flock when its holder dies however abruptly.
+func MaterializeLockFor(datasetDir string) *DatasetLock {
+	key := filepath.Clean(datasetDir)
+	registryMu.Lock()
+	defer registryMu.Unlock()
+	if g, ok := matGuards[key]; ok {
+		return g
+	}
+	g := &DatasetLock{flock: flock.New(filepath.Join(key, MaterializeLockFile))}
+	matGuards[key] = g
 	return g
 }
 

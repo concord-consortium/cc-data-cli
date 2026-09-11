@@ -29,6 +29,7 @@ type Dataset struct {
 	Dir     string
 	dsLock  *store.DatasetLock
 	actLock *store.ActivityLock
+	matLock *store.DatasetLock
 }
 
 // Open returns a handle for a ref under a data root; it does not create anything.
@@ -39,6 +40,7 @@ func Open(dataRoot string, ref Ref) *Dataset {
 		Dir:     dir,
 		dsLock:  store.DatasetLockFor(dir),
 		actLock: store.ActivityLockFor(dir),
+		matLock: store.MaterializeLockFor(dir),
 	}
 }
 
@@ -126,6 +128,21 @@ func (d *Dataset) LockMutation() (func(), error) {
 		d.dsLock.Unlock()
 		d.actLock.Unlock()
 	}, nil
+}
+
+// LockMaterialize takes the materialize guard without blocking, returning a
+// release func or ErrBusy. A materialize run holds it from start to finish,
+// which both keeps two runs off the same dataset and makes any temp file left in
+// the derived folder provably the work of a run that has died.
+func (d *Dataset) LockMaterialize() (func(), error) {
+	ok, err := d.matLock.TryLock()
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, ErrBusy
+	}
+	return d.matLock.Unlock, nil
 }
 
 // Edit updates the dataset description under the mutation locks.

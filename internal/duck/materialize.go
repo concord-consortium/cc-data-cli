@@ -39,16 +39,23 @@ func (r MaterializeResult) Refusals() bool { return len(r.Refused) > 0 }
 // any other, so one failure costs its own view rather than the whole run; only
 // a cancelled context stops the run outright.
 //
-// The copies run outside the mutation locks, which are held only to read the
-// manifest at the start and repoint it at the end, so a concurrent get does not
-// fail as busy for the whole run. A view whose inputs moved in between is
-// discarded rather than recorded, because its Parquet describes a state that is
-// already gone.
+// The run holds the dataset's materialize guard from start to finish, so two
+// runs never work the same dataset at once. The mutation locks are a different
+// matter: they are held only to read the manifest at the start and repoint it at
+// the end, so a concurrent get does not fail as busy for the whole run. A view
+// whose inputs moved in between is discarded rather than recorded, because its
+// Parquet describes a state that is already gone.
 func Materialize(ctx context.Context, d *dataset.Dataset, opts MaterializeOptions, warnOut io.Writer) (MaterializeResult, error) {
 	if warnOut == nil {
 		warnOut = io.Discard
 	}
 	res := MaterializeResult{Refused: map[string]string{}}
+
+	releaseRun, err := d.LockMaterialize()
+	if err != nil {
+		return res, err
+	}
+	defer releaseRun()
 
 	m, err := readManifestLocked(d)
 	if err != nil {
@@ -69,6 +76,9 @@ func Materialize(ctx context.Context, d *dataset.Dataset, opts MaterializeOption
 	warnIncompleteDownloads(m, views, filesByView, warnOut)
 
 	if err := os.MkdirAll(d.Path(dataset.MaterializedDir), 0o700); err != nil {
+		return res, err
+	}
+	if err := sweepStaleTemps(d); err != nil {
 		return res, err
 	}
 	e, degraded, err := OpenRaw(ctx, d, warnOut)
@@ -237,11 +247,34 @@ func sameFingerprints(a, b map[string]string) bool {
 	return true
 }
 
-// copyViewToParquet writes the view to a temp name in the derived folder. The
-// name is unique per call, because the copies run outside the mutation locks and
-// one process can have two runs in flight over the same dataset.
+// tempParquetInfix marks an in-flight copy. The writer and the sweep share it so
+// they cannot disagree about which files are unfinished work.
+const tempParquetInfix = ".parquet.tmp-"
+
+// sweepStaleTemps removes the temp files of a run that died before its own
+// cleanup could run, which a hard interrupt does since nothing here installs a
+// signal handler. The materialize guard is held, so a temp file present now
+// belongs to no living run.
+func sweepStaleTemps(d *dataset.Dataset) error {
+	entries, err := os.ReadDir(d.Path(dataset.MaterializedDir))
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.Contains(entry.Name(), tempParquetInfix) {
+			continue
+		}
+		if err := os.Remove(d.Path(filepath.Join(dataset.MaterializedDir, entry.Name()))); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// copyViewToParquet writes the view to a temp name in the derived folder, unique
+// per call so the name cannot collide with a concurrent copy of another view.
 func copyViewToParquet(ctx context.Context, e *Engine, d *dataset.Dataset, view string) (string, error) {
-	f, err := os.CreateTemp(d.Path(dataset.MaterializedDir), view+".parquet.tmp-*")
+	f, err := os.CreateTemp(d.Path(dataset.MaterializedDir), view+tempParquetInfix+"*")
 	if err != nil {
 		return "", err
 	}

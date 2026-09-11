@@ -255,7 +255,8 @@ Tests, all driven by materializing a Parquet that carries one sentinel row the r
 **Files affected**:
 - `internal/duck/materialize.go` (new)
 - `internal/duck/engine.go`: `OpenRaw`, the unexported `exec`, and the degraded-view set `OpenRaw` reports
-- `internal/dataset/dataset.go`: `lockMutation` exported as `LockMutation`
+- `internal/store/lock.go`: `MaterializeLockFile` and `MaterializeLockFor`
+- `internal/dataset/dataset.go`: `lockMutation` exported as `LockMutation`, plus `LockMaterialize`
 - `internal/duck/materialize_test.go` (new)
 
 **Estimated diff size**: ~380 lines
@@ -277,6 +278,8 @@ func Materialize(ctx context.Context, d *dataset.Dataset, opts MaterializeOption
 ```
 
 The order is load-bearing and mirrors `mergeUnderLock`'s discipline, for the reason the requirements give: the copy must not hold the mutation locks, or a concurrent `get` fails as busy for its whole duration.
+
+0. Take the dataset's materialize guard (`.materialize.lock`, a third `flock` beside the two existing ones, reusing `store.DatasetLock`), non-blocking, and hold it until the run returns. Then sweep every `*.parquet.tmp-*` in `materialized/`. The two halves are one mechanism: the guard is what makes the sweep provable rather than a heuristic, since a live run would still hold it. `get` does not take this guard, so nothing about the mutation-lock rule changes. The temp-name infix has a single definition that the writer and the sweep share.
 
 1. Read the manifest under the per-dataset lock, then release. Warn here, without refusing, for every `!Complete` download feeding a materializable view, naming the runs: only the store fetch can set that flag and it leaves the materialized bytes unchanged, so there is nothing to gate. The view-to-download mapping is three rules, per the requirements: file intersection for report-backed views, download `Type` for `answers` and `history`, and `Type` again for `run_membership`, since an incomplete run has no membership file for a per-run mapping to find.
 2. Open an engine over the dataset with materialization suppressed, so a view is always copied from its raw artifacts and a stale Parquet can never be copied forward into a fresh-looking one. `Open` has three non-test callers (`cmd/query.go:60`, `cmd/repl.go:34`, `internal/mcpserver/tools.go:375`), so rather than changing its signature at all four sites this is a sibling `OpenRaw` sharing one unexported constructor with `Open`.
@@ -305,7 +308,7 @@ Both go through `output.Progressf` to stderr, like every other `dataset` subcomm
 
 The suppression flag in step 2 is the subtle part. Without it, `Materialize` would open the dataset, the engine would helpfully point `logs` at yesterday's Parquet, and the copy would write that Parquet back out with today's fingerprints attached, laundering stale data into a fresh-looking entry.
 
-Tests: materializing then querying returns identical rows and column types for every view in `MaterializableViews()`; a second run skips everything; `--force` rewrites; a view whose declared input is missing is refused while every other view is still written, and proceeds under `--allow-partial`; a view that fell back to typed-empty is refused with `--allow-partial` given; a store-backed Parquet short of `Stores[typ].Count` is refused; an incomplete download warns and blocks nothing; a `get` between the copy and the repoint leaves the view unmaterialized rather than wrongly fresh (driven through a `testHookBeforeRepoint` seam in `duck`, the same shape as `merge.go`'s hook, which also proves the mutation locks are free in that window, since the `get` would otherwise fail as busy); and no `.tmp-` file survives any of those paths.
+Tests: materializing then querying returns identical rows and column types for every view in `MaterializableViews()`; a second run skips everything; `--force` rewrites; a view whose declared input is missing is refused while every other view is still written, and proceeds under `--allow-partial`; a view that fell back to typed-empty is refused with `--allow-partial` given; a store-backed Parquet short of `Stores[typ].Count` is refused; an incomplete download warns and blocks nothing; a `get` between the copy and the repoint leaves the view unmaterialized rather than wrongly fresh (driven through a `testHookBeforeRepoint` seam in `duck`, the same shape as `merge.go`'s hook, which also proves the mutation locks are free in that window, since the `get` would otherwise fail as busy); and no `.tmp-` file survives any of those paths. For the guard: a second run fails as busy while the first holds it; the guard is free again once a run returns; a temp file planted before a run is swept by it; and the guard is still held at the point the temp files exist, checked through the same `testHookBeforeRepoint` seam. That last one is the only test that can fail if the guard is taken and released immediately, which is otherwise indistinguishable from holding it and is the shape that would make the sweep unsafe.
 
 ---
 
