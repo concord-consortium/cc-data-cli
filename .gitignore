@@ -7,3 +7,14 @@
 
 # goreleaser build output
 /dist/
+
+# Python bytecode caches. The behaviour recipes are run as scripts and their
+# tests import them, so these appear as soon as anything is run.
+__pycache__/
+*.py[cod]
+
+# Working data pulled from the portal, CLUE, and the report server while
+# researching (see docs/clue-data-inventory.md). This is real student-adjacent
+# data — class, school, and teacher names — and must never be committed. Kept
+# in-repo only so it is convenient to refer to alongside the recipes.
+/local-data/
