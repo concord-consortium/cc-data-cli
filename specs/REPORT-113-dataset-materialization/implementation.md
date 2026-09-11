@@ -151,6 +151,9 @@ type viewStmt struct {
 // shape a bad file takes, and a stat per view per Open would buy only a differently worded
 // message. A stale entry is silent by contract; an unreadable one is not.
 func (vs viewSet) applyMaterialized(stmts []viewStmt) []viewStmt {
+	if len(vs.m.Materialized) == 0 {
+		return stmts // the common case, and it skips building the eligible set
+	}
 	eligible := map[string]bool{}
 	for _, n := range materializableFrom(stmts, vs.prefix) {
 		eligible[n] = true

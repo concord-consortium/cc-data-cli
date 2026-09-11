@@ -84,7 +84,14 @@ func Open(ctx context.Context, datasets []DatasetSpec, allowDirs []string, warnO
 		}
 		canon, _ := canonicalize(ds.DS.Dir)
 		vs := viewSet{prefix: prefix, canonDir: canon, m: m, warn: warnOut}
-		for _, stmt := range vs.statements() {
+		for _, stmt := range vs.applyMaterialized(vs.statements()) {
+			if stmt.materialized != "" {
+				_, merr := conn.ExecContext(ctx, stmt.materialized)
+				if merr == nil {
+					continue
+				}
+				fmt.Fprintf(warnOut, "warning: materialized %s is unreadable (%v); reading the raw artifacts instead\n", stmt.name, merr)
+			}
 			if _, err := conn.ExecContext(ctx, stmt.primary); err != nil {
 				if _, ferr := conn.ExecContext(ctx, stmt.fallback); ferr != nil {
 					e.Close()

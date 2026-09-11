@@ -33,10 +33,11 @@ var membershipColumns = map[string]string{
 
 // viewStmt is one view with its primary SQL and a typed-empty fallback.
 type viewStmt struct {
-	name     string
-	primary  string
-	fallback string
-	files    []string // files the primary reads (for the degradation warning)
+	name         string
+	materialized string // optional read_parquet form, tried before primary
+	primary      string
+	fallback     string
+	files        []string // files the primary reads (for the degradation warning)
 }
 
 // viewSet builds the view statements for one dataset under a schema prefix.
@@ -589,6 +590,77 @@ func StaticViewNames() []string {
 		names = append(names, strings.Trim(st.name, `"`))
 	}
 	return names
+}
+
+// applyMaterialized points a view at its Parquet when the manifest records one
+// that is fresh.
+//
+// There is deliberately no presence check. A Parquet that is absent, corrupt or
+// truncated all fail at CREATE VIEW rather than at query time, so the
+// registration loop's warning covers every shape a bad file takes, and a stat
+// per view per Open would buy only a differently worded message. A stale entry
+// is silent by contract; an unreadable one is not.
+func (vs viewSet) applyMaterialized(stmts []viewStmt) []viewStmt {
+	if len(vs.m.Materialized) == 0 {
+		return stmts
+	}
+	eligible := map[string]bool{}
+	for _, n := range materializableFrom(stmts, vs.prefix) {
+		eligible[n] = true
+	}
+	for i, st := range stmts {
+		bare := bareViewName(st.name, vs.prefix)
+		if !eligible[bare] {
+			continue
+		}
+		mat, ok := vs.m.Materialized[bare]
+		if !ok || !mat.Fresh(vs.canonDir, st.files) {
+			continue
+		}
+		stmts[i].materialized = fmt.Sprintf("CREATE VIEW %s AS SELECT * FROM read_parquet(%s)",
+			st.name, vs.file(mat.File))
+	}
+	return stmts
+}
+
+// MaterializableViews returns the views of this dataset that can be
+// materialized: those that scan files, minus the per-run views. Both halves are
+// code-derived, so a view added later joins or stays out of the set by its own
+// construction rather than by a list someone updates.
+//
+// It takes the manifest because "declares files" is a property of a populated
+// dataset: over an empty manifest every builder returns its stand-in and no view
+// declares anything.
+func MaterializableViews(m *dataset.Manifest) []string {
+	vs := viewSet{m: m}
+	return materializableFrom(vs.statements(), vs.prefix)
+}
+
+// materializableFrom takes statements the caller has already built, so Open does
+// not build the full view set twice: applyMaterialized has the slice in hand and
+// passes it straight through. Those statements carry the schema prefix of
+// whichever dataset they were built for, so the caller passes it too and the set
+// stays keyed on bare names.
+func materializableFrom(stmts []viewStmt, prefix string) []string {
+	static := map[string]bool{}
+	for _, n := range StaticViewNames() {
+		static[n] = true
+	}
+	var out []string
+	for _, st := range stmts {
+		bare := bareViewName(st.name, prefix)
+		if len(st.files) > 0 && static[bare] {
+			out = append(out, bare)
+		}
+	}
+	return out
+}
+
+// bareViewName is a statement's view name with its schema prefix and quoting
+// removed. That is the form StaticViewNames produces and the form the manifest's
+// Materialized map is keyed on, so every lookup against either goes through it.
+func bareViewName(name, prefix string) string {
+	return strings.Trim(strings.TrimPrefix(name, prefix), `"`)
 }
 
 // IdentityColumnNames returns the columns that identify a record across the stores, derived
