@@ -87,6 +87,13 @@ exemption in the test. Both exemption sets ship empty, since this story states b
 full. They exist so the next value added has to make a decision rather than be forgotten, and so
 the decision is recorded beside the guard rather than in a commit message.
 
+Only the run guard lands in this step. The download guard was written here and confirmed to fail
+for the right reason, that the core states no such sentence yet, and then moved to the step that
+adds the sentence: writing a guard before its prose is the point, but a commit that lands red is
+not. Both accessors the guards read are exported for the same reason `StaticViewNames` and
+`IdentityColumnNames` already are, since the guards live in a test package that cannot reach
+package internals.
+
 ---
 
 ## Teach the core the Portal report family, the slugs and the recipe
@@ -96,9 +103,11 @@ the decision is recorded beside the guard rather than in a commit message.
 **Files affected**:
 - `internal/guidance/src/core.md`
 - `internal/guidance/guard_test.go` — the slug guard
-- `internal/duck/views.go` and `internal/dataset/reporttype.go` — accessors for the two slug
-  inventories, both of which are unexported today (`dimensionViews[].slug` and `slugToType`'s keys),
-  so the guard can read either
+- `internal/duck/views.go` and `internal/dataset/reporttype.go` — `DimensionSlugs` and
+  `AthenaReportSlugs`, accessors for the two slug inventories, both of which are unexported today
+  (`dimensionViews[].slug` and `slugToType`'s keys), so the guard can read either. The second is
+  named for what it returns rather than `ReportSlugs`, which would overpromise: it is the Athena
+  half, and the call site unions it with the dimension half.
 
 **Estimated diff size**: ~180 lines
 

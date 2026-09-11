@@ -73,8 +73,9 @@ func IsAllowedReportType(t string) bool {
 	return false
 }
 
-// ReportSlugs returns the Athena slugs cc-data knows.
-func ReportSlugs() []string {
+// AthenaReportSlugs returns the Athena slugs cc-data knows. It is not every slug a
+// report can be created from: the dimension views carry the two Portal ones.
+func AthenaReportSlugs() []string {
 	var out []string
 	for slug := range slugToType {
 		out = append(out, slug)

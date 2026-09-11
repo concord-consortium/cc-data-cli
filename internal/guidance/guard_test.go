@@ -207,7 +207,7 @@ func TestGuidanceDocumentsOnlyRealSlugs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	inCode := append(dataset.ReportSlugs(), duck.DimensionSlugs()...)
+	inCode := append(dataset.AthenaReportSlugs(), duck.DimensionSlugs()...)
 	if m := guidance.Missing(documented, inCode); len(m) > 0 {
 		t.Fatalf("guidance names slugs the code does not know: %v", m)
 	}
