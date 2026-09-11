@@ -212,3 +212,17 @@ func TestGuidanceDocumentsOnlyRealSlugs(t *testing.T) {
 		t.Fatalf("guidance names slugs the code does not know: %v", m)
 	}
 }
+
+// The re-pull mechanism is the second piece of guidance that exists on both surfaces
+// worded differently, the CLI spelling it --refresh and the MCP surface refresh, so no
+// inventory comparison can notice one of them losing it. Only the per-surface halves are
+// asserted: the rule itself is in the core, which both render by construction, so
+// checking it here would be true by construction and would test nothing.
+func TestBothSurfacesCarryTheRePullMechanism(t *testing.T) {
+	if !strings.Contains(guidance.Skill(), "--refresh") {
+		t.Error("skill: the --refresh spelling is missing")
+	}
+	if !strings.Contains(guidance.Instructions(), "passing `refresh`") {
+		t.Error("instructions: the refresh parameter is missing")
+	}
+}

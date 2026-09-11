@@ -16,7 +16,9 @@
   once they finish, so duplicating is how they are re-run; a Portal report is
   computed live, so re-read it with `get_report` instead and pass `force` only if
   a second run id is genuinely wanted.
-- `get_report` — the report CSV for a run, into a dataset.
+- `get_report` — the report CSV for a run, into a dataset. A Portal report is
+  computed per request, so re-read it by passing `refresh` rather than
+  duplicating the run.
 - `get_answers`, `get_history` — a run's student answers, and the full series of
   how each answer's interactive state evolved, into a dataset.
 - `get_attachments` — a run's file attachments, into a dataset. Fetch that run's

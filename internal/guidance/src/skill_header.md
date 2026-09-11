@@ -40,7 +40,9 @@ guessing flags.
 
 ## Fetching data
 
-- `cc-data get report <run-id> --dataset <ref>` — the report CSV.
+- `cc-data get report <run-id> --dataset <ref>` — the report CSV. A Portal report
+  is computed per request, so re-read it with `--refresh` rather than duplicating
+  the run.
 - `cc-data get answers <run-id> --dataset <ref>` — student answers.
 - `cc-data get history <run-id> --dataset <ref>` — full interactive state history.
 - `cc-data get attachments <run-id> --dataset <ref>` — file attachments (requires

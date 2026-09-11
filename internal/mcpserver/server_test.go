@@ -714,3 +714,34 @@ func TestMCPReportsCreateOmitsAnAbsentFilter(t *testing.T) {
 		t.Errorf("an absent report_filter must be omitted; body = %s", raw)
 	}
 }
+
+// Each description carries one named fact that the drift guard cannot see, because it
+// compares tool names and never reads description text. Substring assertions on shipped
+// strings, so deleting a sentence turns one red.
+func TestToolDescriptionsCarryTheirPortalFacts(t *testing.T) {
+	cs := connect(t)
+	res, err := cs.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	desc := map[string]string{}
+	for _, tl := range res.Tools {
+		desc[tl.Name] = tl.Description
+	}
+	for tool, fact := range map[string]string{
+		"reports_list":           "execution tells an Athena run from a Portal one",
+		"reports_filter_options": "Student ID Mapping run's filter is assembled",
+		"get_report":             "re-read it by passing refresh",
+		"get_answers":            "Student ID Mapping run id is a valid source",
+		"get_history":            "Student ID Mapping run id is a valid source",
+		"get_attachments":        "Student ID Mapping run id is a valid source",
+	} {
+		if _, ok := desc[tool]; !ok {
+			t.Errorf("%s is not registered", tool)
+			continue
+		}
+		if !strings.Contains(desc[tool], fact) {
+			t.Errorf("%s description lost %q", tool, fact)
+		}
+	}
+}
