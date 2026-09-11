@@ -58,21 +58,27 @@ func newDatasetMaterializeCmd() *cobra.Command {
 // any view was refused, so a set -euo pipefail recipe stops rather than consuming
 // a surface that is missing a view.
 func reportMaterialize(res duck.MaterializeResult) error {
-	output.Progressf("materialized %d, already fresh %d, refused %d",
-		len(res.Written), len(res.Skipped), len(res.Refused))
-	if len(res.Written) > 0 {
-		output.Progressf("  written: %s", strings.Join(res.Written, ", "))
+	written, fresh := res.Written(), res.Fresh()
+	discarded, refused := res.Discarded(), res.Refused()
+	output.Progressf("written %d, already fresh %d, discarded %d, refused %d",
+		len(written), len(fresh), len(discarded), len(refused))
+	if len(written) > 0 {
+		output.Progressf("  written: %s", strings.Join(written, ", "))
+	}
+	if len(discarded) > 0 {
+		output.Progressf("  discarded, because a concurrent change moved their inputs; run again to pick them up: %s",
+			strings.Join(discarded, ", "))
 	}
 	if !res.Refusals() {
 		return nil
 	}
-	views := make([]string, 0, len(res.Refused))
-	for view := range res.Refused {
+	views := make([]string, 0, len(refused))
+	for view := range refused {
 		views = append(views, view)
 	}
 	sort.Strings(views)
 	for _, view := range views {
-		output.Progressf("view %s %s", view, res.Refused[view])
+		output.Progressf("view %s %s", view, refused[view])
 	}
 	// Exit 1, the table's "internal/other" class: a refusal is a local condition,
 	// so the server-contract class would be a lie to anyone scripting on the code.

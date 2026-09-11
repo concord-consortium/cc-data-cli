@@ -268,10 +268,18 @@ type MaterializeOptions struct {
 	Progress     func(view string, i, n int)
 }
 
+// One outcome per view, in view order, rather than a list per status. A view
+// cannot then land in two of them or in none, and the MCP tool returns this
+// slice as it stands instead of a per-status projection that someone has to
+// remember to extend when a status is added.
 type MaterializeResult struct {
-	Written []string          // views materialized
-	Skipped []string          // views already fresh (no --force)
-	Refused map[string]string // view -> why it was not materialized
+	Views []ViewOutcome `json:"views"`
+}
+
+type ViewOutcome struct {
+	View   string            `json:"view"`
+	Status MaterializeStatus `json:"status"` // written | fresh | discarded | refused
+	Reason string            `json:"reason,omitempty"`
 }
 
 func Materialize(ctx context.Context, d *dataset.Dataset, opts MaterializeOptions, warnOut io.Writer) (MaterializeResult, error)
@@ -284,9 +292,9 @@ The order is load-bearing and mirrors `mergeUnderLock`'s discipline, for the rea
 1. Read the manifest under the per-dataset lock, then release. Warn here, without refusing, for every `!Complete` download feeding a materializable view, naming the runs: only the store fetch can set that flag and it leaves the materialized bytes unchanged, so there is nothing to gate. The view-to-download mapping is three rules, per the requirements: file intersection for report-backed views, download `Type` for `answers` and `history`, and `Type` again for `run_membership`, since an incomplete run has no membership file for a per-run mapping to find.
 2. Open an engine over the dataset with materialization suppressed, so a view is always copied from its raw artifacts and a stale Parquet can never be copied forward into a fresh-looking one. `Open` has three non-test callers (`cmd/query.go:60`, `cmd/repl.go:34`, `internal/mcpserver/tools.go:375`), so rather than changing its signature at all four sites this is a sibling `OpenRaw` sharing one unexported constructor with `Open`.
 3. Per view, in order: refuse it when `OpenRaw` registered it from its `fallback` statement, which is total loss and has no override; refuse it when it declares an input that is not on disk and `--allow-partial` was not passed, naming the files; skip it when the manifest's entry is fresh and `--force` was not passed. Otherwise `COPY (SELECT * FROM "<view>") TO '<tmp>' (FORMAT parquet, COMPRESSION zstd, KV_METADATA {...})` into a temp name in `materialized/`, and stop there. The temp name comes from `os.CreateTemp` with a `<view>.parquet.tmp-*` pattern rather than from the pid: the copies deliberately run outside the mutation locks, so one process can have two runs in flight over the same dataset, and a pid-derived name would have them writing the same file. For a store-backed view, assert the Parquet's row count against `m.Stores[typ].Count` and refuse the view on a mismatch. The KV metadata carries the view name and build time as human-readable provenance; nothing reads it back.
-4. Re-take the lock (`dataset.LockMutation`, exported for this, so the lock ordering has one implementation), re-read the manifest, repoint only the views whose inputs still fingerprint as they did when copied and that the view still declares, `fsutil.RenameAtomic` those temp files into place, delete the rest, and write the manifest last. The fingerprints to compare against are taken just before each copy starts, not rebuilt at the repoint, or the comparison is against itself. Renaming after the re-check rather than before is what keeps the manifest write the commit point, as it is in `mergeUnderLock` and `Purge`; renaming in step 3 would leave a complete, unreferenced Parquet inside a folder that reindex and the orphan check are contractually blind to. A view whose inputs moved is discarded and reported as skipped: the Parquet describes a state that is already gone.
+4. Re-take the lock (`dataset.LockMutation`, exported for this, so the lock ordering has one implementation), re-read the manifest, repoint only the views whose inputs still fingerprint as they did when copied and that the view still declares, `fsutil.RenameAtomic` those temp files into place, delete the rest, and write the manifest last. The fingerprints to compare against are taken just before each copy starts, not rebuilt at the repoint, or the comparison is against itself. Renaming after the re-check rather than before is what keeps the manifest write the commit point, as it is in `mergeUnderLock` and `Purge`; renaming in step 3 would leave a complete, unreferenced Parquet inside a folder that reindex and the orphan check are contractually blind to. A view whose inputs moved is discarded, with its own status rather than being folded in with the views that needed no work: the Parquet describes a state that is already gone, so the view is not materialized and running again picks it up, which is the opposite of what "already fresh" would tell the reader.
 
-The refusals in step 3 are per view rather than per command, because the evidence is per view. Clean views are still materialized, `Refused` carries a reason per view for the caller to render, and the command exits non-zero if the map is non-empty.
+The refusals in step 3 are per view rather than per command, because the evidence is per view. Clean views are still materialized, the refused view's outcome carries the reason for the caller to render, and the command exits non-zero if any view was refused.
 
 Two message-content requirements ride on `Refused` and on the progress writer, and neither is decoration:
 

@@ -46,7 +46,7 @@ func TestMaterializeTiming(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !containsString(res.Written, "history") {
+	if !containsString(res.Written(), "history") {
 		t.Fatalf("the history view was not materialized: %+v", res)
 	}
 	t.Logf("materialized %d rows in %s", timingRows, time.Since(start).Round(time.Millisecond))

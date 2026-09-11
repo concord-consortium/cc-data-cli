@@ -129,8 +129,8 @@ func TestMaterializeReturnsIdenticalResults(t *testing.T) {
 
 	res, _ := materialize(t, d, MaterializeOptions{})
 	sort.Strings(views)
-	if !reflect.DeepEqual(res.Written, views) {
-		t.Fatalf("written = %v, want every materializable view %v", res.Written, views)
+	if !reflect.DeepEqual(res.Written(), views) {
+		t.Fatalf("written = %v, want every materializable view %v", res.Written(), views)
 	}
 
 	after := openEngine(t, []DatasetSpec{{DS: d}}, nil)
@@ -194,16 +194,16 @@ func TestMaterializeSkipsFreshViewsUnlessForced(t *testing.T) {
 	first, _ := materialize(t, d, MaterializeOptions{})
 
 	second, _ := materialize(t, d, MaterializeOptions{})
-	if len(second.Written) != 0 {
-		t.Fatalf("second run wrote %v, want nothing: every view is fresh", second.Written)
+	if len(second.Written()) != 0 {
+		t.Fatalf("second run wrote %v, want nothing: every view is fresh", second.Written())
 	}
-	if !reflect.DeepEqual(second.Skipped, first.Written) {
-		t.Fatalf("skipped = %v, want the views the first run wrote %v", second.Skipped, first.Written)
+	if !reflect.DeepEqual(second.Fresh(), first.Written()) {
+		t.Fatalf("skipped = %v, want the views the first run wrote %v", second.Fresh(), first.Written())
 	}
 
 	forced, _ := materialize(t, d, MaterializeOptions{Force: true})
-	if !reflect.DeepEqual(forced.Written, first.Written) {
-		t.Fatalf("--force wrote %v, want %v", forced.Written, first.Written)
+	if !reflect.DeepEqual(forced.Written(), first.Written()) {
+		t.Fatalf("--force wrote %v, want %v", forced.Written(), first.Written())
 	}
 }
 
@@ -216,9 +216,9 @@ func TestMaterializeRefusesAMissingInputPerView(t *testing.T) {
 	res, _ := materialize(t, d, MaterializeOptions{})
 	// reports and student_id_mapping both read the deleted CSV.
 	for _, view := range []string{"reports", "student_id_mapping"} {
-		reason, ok := res.Refused[view]
+		reason, ok := res.Refused()[view]
 		if !ok {
-			t.Fatalf("%s should be refused; refused = %v", view, res.Refused)
+			t.Fatalf("%s should be refused; refused = %v", view, res.Refused())
 		}
 		if !strings.Contains(reason, "report_700.csv") {
 			t.Fatalf("%s reason does not name the missing file: %s", view, reason)
@@ -230,8 +230,8 @@ func TestMaterializeRefusesAMissingInputPerView(t *testing.T) {
 			t.Fatalf("%s reason must name the override: %s", view, reason)
 		}
 	}
-	if !containsAll(res.Written, "answers", "run_membership") {
-		t.Fatalf("clean views should still be written, got %v", res.Written)
+	if !containsAll(res.Written(), "answers", "run_membership") {
+		t.Fatalf("clean views should still be written, got %v", res.Written())
 	}
 	if !res.Refusals() {
 		t.Fatal("a refusal must be reportable, so the command can exit non-zero")
@@ -239,16 +239,16 @@ func TestMaterializeRefusesAMissingInputPerView(t *testing.T) {
 
 	// --force is not a second way past the refusal; that is --allow-partial's job.
 	forced, _ := materialize(t, d, MaterializeOptions{Force: true})
-	if _, ok := forced.Refused["reports"]; !ok {
-		t.Fatalf("--force must not override a missing input, refused = %v", forced.Refused)
+	if _, ok := forced.Refused()["reports"]; !ok {
+		t.Fatalf("--force must not override a missing input, refused = %v", forced.Refused())
 	}
 
 	partial, warn := materialize(t, d, MaterializeOptions{AllowPartial: true})
-	if len(partial.Refused) != 0 {
-		t.Fatalf("--allow-partial should clear the refusals, got %v", partial.Refused)
+	if len(partial.Refused()) != 0 {
+		t.Fatalf("--allow-partial should clear the refusals, got %v", partial.Refused())
 	}
-	if !containsAll(partial.Written, "reports", "student_id_mapping") {
-		t.Fatalf("--allow-partial should write the short views, got %v", partial.Written)
+	if !containsAll(partial.Written(), "reports", "student_id_mapping") {
+		t.Fatalf("--allow-partial should write the short views, got %v", partial.Written())
 	}
 	if !strings.Contains(warn, "building reports from 2 of 3 declared inputs") {
 		t.Fatalf("--allow-partial must report the shortfall as a count, got %q", warn)
@@ -268,14 +268,14 @@ func TestMaterializeRefusesADegradedViewEvenWithAllowPartial(t *testing.T) {
 	}
 
 	res, _ := materialize(t, d, MaterializeOptions{AllowPartial: true})
-	reason, ok := res.Refused["answers"]
+	reason, ok := res.Refused()["answers"]
 	if !ok {
-		t.Fatalf("a degraded view must be refused with --allow-partial given; refused = %v", res.Refused)
+		t.Fatalf("a degraded view must be refused with --allow-partial given; refused = %v", res.Refused())
 	}
 	if !strings.Contains(reason, "typed-empty") {
 		t.Fatalf("reason should say the view degraded: %s", reason)
 	}
-	for _, w := range res.Written {
+	for _, w := range res.Written() {
 		if w == "answers" {
 			t.Fatal("a degraded view must never be published")
 		}
@@ -303,11 +303,11 @@ func TestMaterializeRefusesAViewItCannotCopy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("one unwritable view must not fail the run: %v", err)
 	}
-	if len(res.Refused) == 0 {
+	if len(res.Refused()) == 0 {
 		t.Fatalf("want the unwritable views refused, got %+v", res)
 	}
-	if len(res.Written) != 0 {
-		t.Fatalf("nothing can be written into an unwritable folder, got %v", res.Written)
+	if len(res.Written()) != 0 {
+		t.Fatalf("nothing can be written into an unwritable folder, got %v", res.Written())
 	}
 }
 
@@ -322,9 +322,9 @@ func TestMaterializeRefusesAStoreViewShortOfItsCount(t *testing.T) {
 	}
 
 	res, _ := materialize(t, d, MaterializeOptions{})
-	reason, ok := res.Refused["answers"]
+	reason, ok := res.Refused()["answers"]
 	if !ok {
-		t.Fatalf("a short store copy must be refused; refused = %v", res.Refused)
+		t.Fatalf("a short store copy must be refused; refused = %v", res.Refused())
 	}
 	if !strings.Contains(reason, "99") {
 		t.Fatalf("reason should name the manifest's count: %s", reason)
@@ -353,11 +353,11 @@ func TestMaterializeWarnsOnIncompleteDownloadWithoutBlocking(t *testing.T) {
 	if strings.Contains(warn, "901, 901") {
 		t.Fatalf("a run reached through two downloads must be named once: %q", warn)
 	}
-	if len(res.Refused) != 0 {
-		t.Fatalf("an incomplete download must block nothing, refused = %v", res.Refused)
+	if len(res.Refused()) != 0 {
+		t.Fatalf("an incomplete download must block nothing, refused = %v", res.Refused())
 	}
-	if !containsAll(res.Written, "answers", "run_membership") {
-		t.Fatalf("the store views should still be written, got %v", res.Written)
+	if !containsAll(res.Written(), "answers", "run_membership") {
+		t.Fatalf("the store views should still be written, got %v", res.Written())
 	}
 }
 
@@ -372,19 +372,65 @@ func TestMaterializeDiscardsACopyWhoseInputsMoved(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, w := range res.Written {
-		if w == "answers" {
-			t.Fatal("a copy whose store moved under it must not be recorded as fresh")
-		}
+	if containsString(res.Written(), "answers") {
+		t.Fatal("a copy whose store moved under it must not be recorded as written")
 	}
-	if !containsString(res.Skipped, "answers") {
-		t.Fatalf("the discarded view should be reported as skipped, got %v", res.Skipped)
+	// The distinction the status exists for: a discarded view is not materialized
+	// and running again picks it up, where a fresh one needs nothing.
+	if containsString(res.Fresh(), "answers") {
+		t.Fatal("a discarded copy must not be reported as already fresh; nothing about it is current")
+	}
+	if !containsString(res.Discarded(), "answers") {
+		t.Fatalf("the discarded view should carry the discarded status, got %+v", res.Views)
+	}
+	for _, o := range res.Views {
+		if o.View == "answers" && o.Reason == "" {
+			t.Fatal("a discarded view must say why, or the caller has nothing to render")
+		}
 	}
 	if _, ok := mustManifest(t, d).Materialized["answers"]; ok {
 		t.Fatal("a discarded copy must leave no manifest entry")
 	}
 	if f := tempFiles(t, d); len(f) > 0 {
 		t.Fatalf("a discarded copy must leave no temp file: %v", f)
+	}
+}
+
+// TestMaterializeReportsEveryViewExactlyOnce is the invariant the outcome list
+// exists to make structural: a view cannot land in two statuses or in none.
+func TestMaterializeReportsEveryViewExactlyOnce(t *testing.T) {
+	d := fullFixture(t)
+	// One view refused and one already fresh, so the run spans several statuses.
+	materialize(t, d, MaterializeOptions{})
+	if err := os.Remove(d.Path("report_700.csv")); err != nil {
+		t.Fatal(err)
+	}
+	res, _ := materialize(t, d, MaterializeOptions{})
+
+	want := MaterializableViews(mustManifest(t, d))
+	seen := map[string]int{}
+	for _, o := range res.Views {
+		seen[o.View]++
+		if o.Status == "" {
+			t.Fatalf("view %s has no status", o.View)
+		}
+	}
+	if len(seen) != len(want) {
+		t.Fatalf("outcomes cover %d views, want the %d materializable ones: %+v", len(seen), len(want), res.Views)
+	}
+	for _, view := range want {
+		if seen[view] != 1 {
+			t.Fatalf("view %s appears %d times, want exactly once: %+v", view, seen[view], res.Views)
+		}
+	}
+	// And the order is the view order, so output is stable between runs.
+	var got []string
+	for _, o := range res.Views {
+		got = append(got, o.View)
+	}
+	sort.Strings(want)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("outcome order = %v, want view order %v", got, want)
 	}
 }
 
@@ -482,7 +528,7 @@ func TestAnnotateShowJSONAddsTheStaleWarning(t *testing.T) {
 func TestReindexDropsTheEntriesAndKeepsTheFiles(t *testing.T) {
 	d := fullFixture(t)
 	res, _ := materialize(t, d, MaterializeOptions{})
-	if len(res.Written) == 0 {
+	if len(res.Written()) == 0 {
 		t.Fatal("fixture materialized nothing")
 	}
 
@@ -492,7 +538,7 @@ func TestReindexDropsTheEntriesAndKeepsTheFiles(t *testing.T) {
 	if got := mustManifest(t, d).Materialized; len(got) != 0 {
 		t.Fatalf("reindex must drop the materialization entries, got %v", got)
 	}
-	for _, view := range res.Written {
+	for _, view := range res.Written() {
 		if _, err := os.Stat(d.Path(filepath.Join(dataset.MaterializedDir, view+".parquet"))); err != nil {
 			t.Fatalf("reindex must leave %s.parquet on disk for external readers: %v", view, err)
 		}
@@ -508,8 +554,8 @@ func TestReindexDropsTheEntriesAndKeepsTheFiles(t *testing.T) {
 			named++
 		}
 	}
-	if named != len(res.Written) {
-		t.Fatalf("want every leftover Parquet named, got %d of %d: %v", named, len(res.Written), s.Warnings)
+	if named != len(res.Written()) {
+		t.Fatalf("want every leftover Parquet named, got %d of %d: %v", named, len(res.Written()), s.Warnings)
 	}
 }
 

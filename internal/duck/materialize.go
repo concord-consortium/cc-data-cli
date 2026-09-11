@@ -22,17 +22,69 @@ type MaterializeOptions struct {
 	Progress     func(view string, i, n int)
 }
 
-// MaterializeResult reports what happened per view. Refused is keyed by view
-// name and carries the reason for the caller to render.
+// MaterializeStatus is what became of one view in a run. A view has exactly one.
+type MaterializeStatus string
+
+const (
+	// StatusWritten: copied and now recorded in the manifest.
+	StatusWritten MaterializeStatus = "written"
+	// StatusFresh: the recorded Parquet still matches its inputs, so nothing was done.
+	StatusFresh MaterializeStatus = "fresh"
+	// StatusDiscarded: copied, then dropped because its inputs moved while the
+	// copy ran. Nothing is wrong with the dataset and running again picks it up.
+	StatusDiscarded MaterializeStatus = "discarded"
+	// StatusRefused: deliberately not materialized, for the reason it carries.
+	StatusRefused MaterializeStatus = "refused"
+)
+
+// ViewOutcome is one view's result. Reason is set for the statuses that need
+// explaining and empty for the rest.
+type ViewOutcome struct {
+	View   string            `json:"view"`
+	Status MaterializeStatus `json:"status"`
+	Reason string            `json:"reason,omitempty"`
+}
+
+// MaterializeResult carries one outcome per materializable view, in view order.
+//
+// One list rather than a list per status, so a view cannot land in two of them
+// or none, and so a caller rendering the result cannot quietly stop reporting a
+// status that is added later: the MCP tool returns this slice rather than a
+// projection of it that someone has to remember to extend.
 type MaterializeResult struct {
-	Written []string
-	Skipped []string
-	Refused map[string]string
+	Views []ViewOutcome `json:"views"`
+}
+
+// Names returns the views with one status, in view order.
+func (r MaterializeResult) Names(status MaterializeStatus) []string {
+	var out []string
+	for _, o := range r.Views {
+		if o.Status == status {
+			out = append(out, o.View)
+		}
+	}
+	return out
+}
+
+// Written, Fresh and Discarded name the views that ended with each status.
+func (r MaterializeResult) Written() []string   { return r.Names(StatusWritten) }
+func (r MaterializeResult) Fresh() []string     { return r.Names(StatusFresh) }
+func (r MaterializeResult) Discarded() []string { return r.Names(StatusDiscarded) }
+
+// Refused maps each refused view to its reason.
+func (r MaterializeResult) Refused() map[string]string {
+	out := map[string]string{}
+	for _, o := range r.Views {
+		if o.Status == StatusRefused {
+			out[o.View] = o.Reason
+		}
+	}
+	return out
 }
 
 // Refusals reports whether any view was refused, which is what makes the command
 // exit non-zero.
-func (r MaterializeResult) Refusals() bool { return len(r.Refused) > 0 }
+func (r MaterializeResult) Refusals() bool { return len(r.Names(StatusRefused)) > 0 }
 
 // Materialize writes each materializable view to a ZSTD Parquet under the
 // dataset's materialized folder. A view that cannot be copied is refused like
@@ -49,7 +101,11 @@ func Materialize(ctx context.Context, d *dataset.Dataset, opts MaterializeOption
 	if warnOut == nil {
 		warnOut = io.Discard
 	}
-	res := MaterializeResult{Refused: map[string]string{}}
+	var res MaterializeResult
+	outcomes := map[string]ViewOutcome{}
+	record := func(view string, status MaterializeStatus, reason string) {
+		outcomes[view] = ViewOutcome{View: view, Status: status, Reason: reason}
+	}
 
 	releaseRun, err := d.LockMaterialize()
 	if err != nil {
@@ -100,13 +156,13 @@ func Materialize(ctx context.Context, d *dataset.Dataset, opts MaterializeOption
 		}
 		files := filesByView[view]
 		if degraded[view] {
-			res.Refused[view] = "registered from its typed-empty fallback, so every declared input is unreadable: " +
-				strings.Join(files, ", ")
+			record(view, StatusRefused, "registered from its typed-empty fallback, so every declared input is unreadable: "+
+				strings.Join(files, ", "))
 			continue
 		}
 		if missing := missingInputs(d.Dir, files); len(missing) > 0 {
 			if !opts.AllowPartial {
-				res.Refused[view] = missingInputReason(d, m, files, missing)
+				record(view, StatusRefused, missingInputReason(d, m, files, missing))
 				continue
 			}
 			fmt.Fprintf(warnOut, "--allow-partial given; building %s from %d of %d declared inputs\n",
@@ -114,7 +170,7 @@ func Materialize(ctx context.Context, d *dataset.Dataset, opts MaterializeOption
 		}
 		if !opts.Force {
 			if rec, ok := m.Materialized[view]; ok && rec.Fresh(d.Dir, files) {
-				res.Skipped = append(res.Skipped, view)
+				record(view, StatusFresh, "")
 				continue
 			}
 		}
@@ -126,7 +182,7 @@ func Materialize(ctx context.Context, d *dataset.Dataset, opts MaterializeOption
 			if ctx.Err() != nil {
 				return res, err
 			}
-			res.Refused[view] = err.Error()
+			record(view, StatusRefused, err.Error())
 			continue
 		}
 		if st, isStore := m.Stores[view]; isStore {
@@ -136,12 +192,12 @@ func Materialize(ctx context.Context, d *dataset.Dataset, opts MaterializeOption
 				if ctx.Err() != nil {
 					return res, err
 				}
-				res.Refused[view] = err.Error()
+				record(view, StatusRefused, err.Error())
 				continue
 			}
 			if n != st.Count {
 				os.Remove(d.Path(tmp))
-				res.Refused[view] = fmt.Sprintf("copied %d rows but the manifest records %d in the %s store", n, st.Count, view)
+				record(view, StatusRefused, fmt.Sprintf("copied %d rows but the manifest records %d in the %s store", n, st.Count, view))
 				continue
 			}
 		}
@@ -149,11 +205,17 @@ func Materialize(ctx context.Context, d *dataset.Dataset, opts MaterializeOption
 	}
 
 	testHookBeforeRepoint()
-	if err := repointManifest(d, built, &res); err != nil {
+	if err := repointManifest(d, built, record); err != nil {
 		return res, err
 	}
-	sort.Strings(res.Written)
-	sort.Strings(res.Skipped)
+	// Assembled from the view list rather than appended as we go, so the order is
+	// the view order and a view that somehow got no outcome is visible as absent
+	// rather than as an arbitrary default.
+	for _, view := range views {
+		if o, ok := outcomes[view]; ok {
+			res.Views = append(res.Views, o)
+		}
+	}
 	return res, nil
 }
 
@@ -181,7 +243,7 @@ func readManifestLocked(d *dataset.Dataset) (*dataset.Manifest, error) {
 // fingerprint as they did when the copy started, and renames those into place.
 // The manifest write is the commit point, so a discarded copy leaves nothing
 // behind and a committed one is already on disk under its final name.
-func repointManifest(d *dataset.Dataset, built map[string]builtView, res *MaterializeResult) error {
+func repointManifest(d *dataset.Dataset, built map[string]builtView, record func(view string, status MaterializeStatus, reason string)) error {
 	if len(built) == 0 {
 		return nil
 	}
@@ -200,7 +262,7 @@ func repointManifest(d *dataset.Dataset, built map[string]builtView, res *Materi
 	for view, b := range built {
 		files, stillAView := current[view]
 		if !stillAView || !sameFingerprints(b.inputs, dataset.FingerprintInputs(d.Dir, files)) {
-			res.Skipped = append(res.Skipped, view)
+			record(view, StatusDiscarded, "its inputs changed while the copy was running")
 			continue
 		}
 		rec := dataset.Materialized{
@@ -213,7 +275,7 @@ func repointManifest(d *dataset.Dataset, built map[string]builtView, res *Materi
 		}
 		delete(built, view)
 		m.Materialized[view] = rec
-		res.Written = append(res.Written, view)
+		record(view, StatusWritten, "")
 	}
 	return d.WriteManifest(m)
 }
