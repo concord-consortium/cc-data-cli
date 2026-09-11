@@ -419,12 +419,12 @@ with three notes. These are ordinary Parquet files carrying each view's own colu
 
 **Estimated diff size**: ~150 lines
 
-Skipped unless an environment variable is set, because CI runs plain `go test ./...` with no `-short` convention and the fixture is roughly 455MB of generated JSONL.
+Skipped unless an environment variable is set, because CI runs plain `go test ./...` with no `-short` convention and the fixture is roughly 540MB of generated JSONL.
 
 Two assertions, and the fixture generator carries a comment saying why its payloads vary: a first attempt used an identical blob per row, ZSTD dictionary encoding took the Parquet to 0.9% of the JSONL, and the measured speedup collapsed from 54x to 2.6x because the cost had moved entirely into the aggregation. A generator emitting a constant blob measures compression, not materialization.
 
-- A column-pruned aggregate (`GROUP BY question_id`) is at least 10x faster materialized. Measured 54x at 1M rows, so the threshold carries five times the headroom rather than being tuned until it passed. The test names the shape and says column pruning is the mechanism under test, so nobody later "fixes" a regression by swapping the query.
-- A high-cardinality aggregate (`count(DISTINCT remote_endpoint)`, measured 3.7x) is **not slower**. That is a not-worse check rather than a speedup check, and it is what would catch a change that made materialization a pessimization for the shapes it does not help.
+- A column-pruned aggregate (`GROUP BY question_id`) is at least 10x faster materialized. Measured 60x at 1M rows, so the threshold carries six times the headroom rather than being tuned until it passed. The test names the shape and says column pruning is the mechanism under test, so nobody later "fixes" a regression by swapping the query.
+- A high-cardinality aggregate (`count(DISTINCT remote_endpoint)`, measured 4.9x) is **not slower**. That is a not-worse check rather than a speedup check, and it is what would catch a change that made materialization a pessimization for the shapes it does not help.
 
 ---
 
