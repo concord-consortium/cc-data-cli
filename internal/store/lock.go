@@ -3,12 +3,35 @@
 package store
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/gofrs/flock"
 )
+
+// lockRetry is how often a waiting acquisition re-tries its guard.
+const lockRetry = 100 * time.Millisecond
+
+// waitFor re-tries a non-blocking acquisition until it succeeds or the context
+// ends. Both guards wait this way rather than through the flock's own blocking
+// call so that a wait can be abandoned, and so the in-process bookkeeping each
+// TryLock does is the only bookkeeping there is.
+func waitFor(ctx context.Context, try func() (bool, error)) error {
+	for {
+		ok, err := try()
+		if err != nil || ok {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(lockRetry):
+		}
+	}
+}
 
 // Lock file names within a dataset directory. None is ever renamed or unlinked,
 // because unlinking a held flock file detaches it from its inode and a rename
@@ -168,6 +191,9 @@ func (l *DatasetLock) Lock() error {
 	return nil
 }
 
+// LockContext waits for the guard until the context ends.
+func (l *DatasetLock) LockContext(ctx context.Context) error { return waitFor(ctx, l.TryLock) }
+
 // TryLock acquires the guard without blocking; the bool reports success.
 func (l *DatasetLock) TryLock() (bool, error) {
 	if !l.mu.TryLock() {
@@ -234,6 +260,9 @@ func (l *ActivityLock) RUnlock() {
 		l.flock.Unlock()
 	}
 }
+
+// LockContext waits for the exclusive lock until the context ends.
+func (l *ActivityLock) LockContext(ctx context.Context) error { return waitFor(ctx, l.TryLock) }
 
 // TryLock acquires the exclusive lock without blocking.
 func (l *ActivityLock) TryLock() (bool, error) {

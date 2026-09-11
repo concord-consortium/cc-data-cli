@@ -488,9 +488,9 @@ func TestMCPDatasetShowParity(t *testing.T) {
 
 	_, out := callJSON(t, cs, "dataset_show", map[string]any{"ref": "learn.concord.org/ds"})
 
-	// The tool payload must equal the CLI's BuildShowJSON for the same dataset.
+	// The tool payload must equal the CLI's ShowJSON for the same dataset.
 	d := dataset.Open(root, dataset.Ref{Portal: config.MustPortal("learn.concord.org"), Name: "ds"})
-	cliJSON, _ := d.BuildShowJSON(false)
+	cliJSON, _ := duck.ShowJSON(d, false)
 	cliBytes, _ := json.Marshal(cliJSON)
 	toolBytes, _ := json.Marshal(out)
 	// Re-normalize both through generic maps for a stable compare.

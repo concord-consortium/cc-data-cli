@@ -140,22 +140,61 @@ func TestMaterializedViewIsIgnoredWhenStale(t *testing.T) {
 	}
 }
 
+// TestOpenSessionStopsReadingAParquetThatWentStale is the repl's case: one
+// engine outlives a fetch. Freshness decided once at open would leave the
+// session answering from the copy while a fresh session reads the raw files.
+func TestOpenSessionStopsReadingAParquetThatWentStale(t *testing.T) {
+	d, _, storeFile := answersFixture(t, "ds")
+	plantAnswersSentinel(t, d, storeFile)
+
+	var warn bytes.Buffer
+	e, err := Open(context.Background(), []DatasetSpec{{DS: d}}, nil, &warn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Close()
+	if n := sentinelCount(t, e, "answers"); n != 1 {
+		t.Fatalf("sentinel rows before the change = %d, want 1", n)
+	}
+
+	// Changed in place, as a re-fetched report CSV is, so a session that never
+	// used the Parquet would see the new row on its next query.
+	f, err := os.OpenFile(d.Path(storeFile), os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Write(append(answerRec("s", "e3", "q3", "new"), '\n')); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	if n := sentinelCount(t, e, "answers"); n != 0 {
+		t.Fatalf("sentinel rows after the store changed = %d, want 0: the open session kept reading the stale Parquet", n)
+	}
+	if n := queryInt(t, e, "SELECT count(*) FROM answers"); n != 3 {
+		t.Fatalf("answers count = %d, want the 3 raw rows", n)
+	}
+	if warn.Len() != 0 {
+		t.Fatalf("going stale must be silent in a session too, got %q", warn.String())
+	}
+}
+
 func TestMaterializedViewFallsBackWhenUnreadable(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
+		want   string
 		damage func(t *testing.T, path string)
 	}{
-		{"deleted", func(t *testing.T, path string) {
+		{"deleted", "is missing", func(t *testing.T, path string) {
 			if err := os.Remove(path); err != nil {
 				t.Fatal(err)
 			}
 		}},
-		{"corrupt", func(t *testing.T, path string) {
+		{"corrupt", "is unreadable", func(t *testing.T, path string) {
 			if err := os.WriteFile(path, []byte("not a parquet file"), 0o600); err != nil {
 				t.Fatal(err)
 			}
 		}},
-		{"truncated", func(t *testing.T, path string) {
+		{"truncated", "is unreadable", func(t *testing.T, path string) {
 			body, err := os.ReadFile(path)
 			if err != nil {
 				t.Fatal(err)
@@ -182,8 +221,13 @@ func TestMaterializedViewFallsBackWhenUnreadable(t *testing.T) {
 			if n := queryInt(t, e, "SELECT count(*) FROM answers"); n != 2 {
 				t.Fatalf("answers count = %d, want the 2 raw rows", n)
 			}
-			if !bytes.Contains(warn.Bytes(), []byte("is unreadable")) {
-				t.Fatalf("want an unreadable-materialized warning, got %q", warn.String())
+			if !bytes.Contains(warn.Bytes(), []byte(tc.want)) {
+				t.Fatalf("want a warning saying %q, got %q", tc.want, warn.String())
+			}
+			// A deleted folder is the documented action, so its warning is one
+			// line per view rather than the engine's error with a path and SQL.
+			if tc.name == "deleted" && bytes.Count(warn.Bytes(), []byte("\n")) != 1 {
+				t.Fatalf("a missing Parquet should warn in one line, got %q", warn.String())
 			}
 		})
 	}
@@ -227,11 +271,42 @@ func TestMaterializableViews(t *testing.T) {
 	addDimensionCSV(t, d, dimFixture{run: 700, slug: "student-id-mapping", fetchedAt: time.Unix(1, 0).UTC(),
 		csv: mappingCSV(mappingRow(1, 30, endpointAAA))})
 
-	got := MaterializableViews(mustManifest(t, d))
+	got := materializableViews(mustManifest(t, d))
 	sort.Strings(got)
 	want := []string{"answers", "report_prompts", "reports", "run_membership", "student_id_mapping"}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("MaterializableViews = %v, want %v", got, want)
+		t.Fatalf("materializableViews = %v, want %v", got, want)
+	}
+}
+
+// TestMaterializableViewsExcludeTheAttachmentViews pins the exclusion to the
+// names. The attachment views declare the files they read like any other view,
+// so nothing about their construction keeps them out of the set.
+func TestMaterializableViewsExcludeTheAttachmentViews(t *testing.T) {
+	d := newDS(t, "att")
+	addAttachment(t, d, dataset.AttachmentFile{
+		ID12: "aaa", Name: "file.json", Source: "activity-player.concord.org",
+		PublicPath: "ia/f1/s1/file.json", ContentType: "application/json", Size: 7,
+		File: "attachments/aaa_file.json", State: true,
+	}, []byte(`{"v":1}`))
+
+	vs := viewSet{m: mustManifest(t, d)}
+	declared := map[string]bool{}
+	for _, st := range vs.statements() {
+		if len(st.files) > 0 {
+			declared[bareViewName(st.name, vs.prefix)] = true
+		}
+	}
+	for _, view := range []string{"attachment_states", "attachment_content"} {
+		if !declared[view] {
+			t.Fatalf("%s declares no files, so this test cannot tell the name exclusion from an accident", view)
+		}
+	}
+	got := materializableViews(mustManifest(t, d))
+	for _, view := range got {
+		if neverMaterialized[view] {
+			t.Fatalf("%s must never be materializable, got %v", view, got)
+		}
 	}
 }
 
@@ -239,7 +314,7 @@ func TestMaterializableViews(t *testing.T) {
 // predicate: over an empty manifest every builder returns its stand-in, which
 // scans nothing, so nothing is materializable.
 func TestMaterializableViewsExcludesEmptyDeclarations(t *testing.T) {
-	if got := MaterializableViews(&dataset.Manifest{}); len(got) != 0 {
-		t.Fatalf("MaterializableViews over an empty manifest = %v, want none", got)
+	if got := materializableViews(&dataset.Manifest{}); len(got) != 0 {
+		t.Fatalf("materializableViews over an empty manifest = %v, want none", got)
 	}
 }

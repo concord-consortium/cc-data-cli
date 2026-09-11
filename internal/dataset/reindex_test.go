@@ -439,10 +439,7 @@ func TestDerivedSubdirIsInvisible(t *testing.T) {
 	// reported, which proves the check fires at all and that the copy inside the
 	// derived subfolder is not what fired it.
 	os.WriteFile(d.Path("report_4242.csv"), []byte("a\n"), 0o600)
-	s, err := d.BuildShowJSON(false)
-	if err != nil {
-		t.Fatal(err)
-	}
+	s := showJSON(t, d)
 	var orphans []string
 	for _, w := range s.Warnings {
 		if strings.HasPrefix(w, "ORPHAN_FILE") {

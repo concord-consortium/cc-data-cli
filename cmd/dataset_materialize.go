@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"context"
+	"os"
+	"os/signal"
 	"sort"
 	"strings"
 
@@ -42,7 +44,9 @@ func newDatasetMaterializeCmd() *cobra.Command {
 					output.Progressf("[%d/%d] %s", i, n, view)
 				},
 			}
-			res, err := duck.Materialize(context.Background(), d, opts, output.Stderr())
+			ctx, stop := interruptible()
+			defer stop()
+			res, err := duck.Materialize(ctx, d, opts, output.Stderr())
 			if err != nil {
 				return mutationErr(err)
 			}
@@ -52,6 +56,20 @@ func newDatasetMaterializeCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&force, "force", false, "re-materialize a view whose inputs are unchanged")
 	cmd.Flags().BoolVar(&allowPartial, "allow-partial", false, "build a view even though a file it declares is missing")
 	return cmd
+}
+
+// interruptible returns a context the first interrupt cancels, so a run that is
+// waiting to commit, or mid-copy, cleans up its temp files instead of leaving
+// them for the next run's sweep. The handler is removed once it has fired, so a
+// second interrupt kills the process as usual; the caller's stop removes it
+// when the run ends without one.
+func interruptible() (context.Context, context.CancelFunc) {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
+	return ctx, stop
 }
 
 // reportMaterialize renders the per-view outcome and returns a non-zero exit when
@@ -64,6 +82,11 @@ func reportMaterialize(res duck.MaterializeResult) error {
 		len(written), len(fresh), len(discarded), len(refused))
 	if len(written) > 0 {
 		output.Progressf("  written: %s", strings.Join(written, ", "))
+	}
+	for _, o := range res.Views {
+		if (o.Status == duck.StatusWritten || o.Status == duck.StatusFresh) && o.Reason != "" {
+			output.Progressf("  %s: %s", o.View, o.Reason)
+		}
 	}
 	if len(discarded) > 0 {
 		output.Progressf("  discarded, because a concurrent change moved their inputs; run again to pick them up: %s",

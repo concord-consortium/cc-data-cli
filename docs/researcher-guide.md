@@ -364,11 +364,13 @@ A few things worth knowing about that folder.
 - **The path is stable, and the files are ordinary Parquet.** Any tool that reads
   Parquet, DuckDB, pandas or Polars, can open one directly without going through
   cc-data, which is the point of the fixed path: analysis scripts can hardcode it.
-- **You can delete the folder whenever you like**, and cc-data itself removes a
-  finished `.parquet` only when you purge or delete the whole dataset, so a
-  script of yours can rely on one being there until you say otherwise. The one
-  exception is housekeeping: if a run is interrupted partway through, the next
-  run clears the half-written file it left behind.
+- **You can delete the folder whenever you like**; queries go back to the raw
+  files, `cc-data dataset show <ref>` names the views that did, and materializing
+  again rebuilds them. cc-data itself removes a finished `.parquet` only when you
+  purge or delete the whole dataset, so a script of yours can rely on one being
+  there until you say otherwise. The one exception is housekeeping: if a run is
+  interrupted partway through, the next run clears the half-written file it left
+  behind.
 - **It is bigger than the one view you care about**, for two reasons. `reports`
   unions the same log CSVs `logs` reads, so both carry those rows (on a
   200,000-row log fixture, a 5.4 MB `reports.parquet` beside a 9.5 MB

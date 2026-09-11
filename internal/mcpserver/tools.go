@@ -190,11 +190,8 @@ func registerTools(s *mcp.Server, opts Options) {
 			if err != nil {
 				return nil, dataset.ShowJSON{}, err
 			}
-			s, err := d.BuildShowJSON(in.Full)
+			s, err := duck.ShowJSON(d, in.Full)
 			if err != nil {
-				return nil, dataset.ShowJSON{}, err
-			}
-			if err := duck.AnnotateShowJSON(d, s); err != nil {
 				return nil, dataset.ShowJSON{}, err
 			}
 			return nil, *s, nil
@@ -272,9 +269,10 @@ func registerTools(s *mcp.Server, opts Options) {
 			return nil, mapOut{"ref": d.Ref.String(), "reindexed": true}, nil
 		})
 
-	// Annotated neither read-only nor destructive: it writes, but only derived
-	// data that is regenerable and documented as safe to delete.
-	addTool(s, &mcp.Tool{Name: "dataset_materialize", Description: "Write each of a dataset's file-backed views to " + dataset.MaterializedDir + "/<view>.parquet, so queries over a large dataset stop re-parsing the raw JSONL and CSV. Queries read a view's Parquet while it is fresh and fall back to the raw artifacts otherwise, so this never changes an answer. Set force=true to rebuild a view whose inputs are unchanged, and allow_partial=true to build a view even though a file it declares is missing. Returns one outcome per view: written, fresh (its copy was already current), discarded (a concurrent change moved its inputs, so running again picks it up), or refused, which carries the reason. Views are refused rather than published when an input is missing or the view could not be read at all."},
+	// No hints, so a client applies the MCP default and treats it as
+	// destructive, which is right: an allow_partial run replaces a complete
+	// Parquet with a shorter one at a path scripts outside cc-data read.
+	addTool(s, &mcp.Tool{Name: "dataset_materialize", Description: "Write each of a dataset's file-backed views to " + dataset.MaterializedDir + "/<view>.parquet, so queries over a large dataset stop re-parsing the raw JSONL and CSV. Queries read a view's Parquet while it is fresh and fall back to the raw artifacts otherwise, so this never changes an answer. Set force=true to rebuild a view whose inputs are unchanged, and allow_partial=true to build a view even though a file it declares is missing. Returns one outcome per view: written, fresh (its copy was already current), discarded (a concurrent change moved its inputs, so running again picks it up), or refused, which carries the reason. A written or fresh view also carries a reason when its copy was built from fewer inputs than it declares or reads a download marked incomplete. Views are refused rather than published when an input is missing or the view could not be read at all."},
 		func(ctx context.Context, req *mcp.CallToolRequest, in datasetMaterializeIn) (*mcp.CallToolResult, mapOut, error) {
 			d, _, err := openDataset(in.Ref)
 			if err != nil {

@@ -40,6 +40,13 @@ type viewStmt struct {
 	primary      string
 	fallback     string
 	files        []string // files the primary reads (for the degradation warning)
+
+	// Set alongside materialized: the file it reads, the manifest entry that
+	// names it, and the signature of the definition the entry was checked
+	// against, so a session can re-check the copy's freshness after it opens.
+	parquet   string
+	record    dataset.Materialized
+	signature string
 }
 
 // viewSet builds the view statements for one dataset under a schema prefix.
@@ -395,7 +402,7 @@ func (vs viewSet) attachmentFilesView() viewStmt {
 // attachmentStatesView exposes offloaded state files as raw text plus TRY_CAST JSON.
 func (vs viewSet) attachmentStatesView() viewStmt {
 	name := vs.prefix + `"attachment_states"`
-	var members []string
+	var members, files []string
 	for _, af := range vs.m.Attachments {
 		if !af.State {
 			continue
@@ -403,6 +410,7 @@ func (vs viewSet) attachmentStatesView() viewStmt {
 		members = append(members, fmt.Sprintf(
 			"SELECT %s AS id12, %s AS name, filename, content FROM read_text(%s)",
 			sqlStr(af.ID12), sqlStr(af.Name), vs.file(af.File)))
+		files = append(files, af.File)
 	}
 	fallback := fmt.Sprintf("CREATE VIEW %s AS SELECT CAST(NULL AS VARCHAR) AS filename, CAST(NULL AS VARCHAR) AS id12, CAST(NULL AS VARCHAR) AS name, CAST(NULL AS VARCHAR) AS content, CAST(NULL AS JSON) AS state WHERE false", name)
 	if len(members) == 0 {
@@ -410,7 +418,7 @@ func (vs viewSet) attachmentStatesView() viewStmt {
 	}
 	inner := strings.Join(members, "\nUNION ALL BY NAME\n")
 	primary := fmt.Sprintf("CREATE VIEW %s AS SELECT filename, id12, name, content, TRY_CAST(content AS JSON) AS state FROM (%s)", name, inner)
-	return viewStmt{name: name, primary: primary, fallback: fallback}
+	return viewStmt{name: name, primary: primary, fallback: fallback, files: files}
 }
 
 // attachmentContentView exposes the text content of every downloaded attachment
@@ -420,7 +428,7 @@ func (vs viewSet) attachmentStatesView() viewStmt {
 // attachment_states stays as the narrow current-answer view for back-compat.
 func (vs viewSet) attachmentContentView() viewStmt {
 	name := vs.prefix + `"attachment_content"`
-	var members []string
+	var members, files []string
 	for _, af := range vs.m.Attachments {
 		// read_text requires valid UTF-8, so binary attachments (audio, images)
 		// cannot be exposed as text; they remain downloadable via attachment_files.
@@ -431,6 +439,7 @@ func (vs viewSet) attachmentContentView() viewStmt {
 		members = append(members, fmt.Sprintf(
 			"SELECT %s AS id12, %s AS name, %s AS source, %s AS public_path, filename, content FROM read_text(%s)",
 			sqlStr(af.ID12), sqlStr(af.Name), sqlStr(af.Source), sqlStr(af.PublicPath), vs.file(af.File)))
+		files = append(files, af.File)
 	}
 	fallback := fmt.Sprintf("CREATE VIEW %s AS SELECT CAST(NULL AS VARCHAR) AS id12, CAST(NULL AS VARCHAR) AS name, CAST(NULL AS VARCHAR) AS source, CAST(NULL AS VARCHAR) AS public_path, CAST(NULL AS VARCHAR) AS filename, CAST(NULL AS VARCHAR) AS content, CAST(NULL AS JSON) AS state WHERE false", name)
 	if len(members) == 0 {
@@ -438,7 +447,7 @@ func (vs viewSet) attachmentContentView() viewStmt {
 	}
 	inner := strings.Join(members, "\nUNION ALL BY NAME\n")
 	primary := fmt.Sprintf("CREATE VIEW %s AS SELECT id12, name, source, public_path, filename, content, TRY_CAST(content AS JSON) AS state FROM (%s)", name, inner)
-	return viewStmt{name: name, primary: primary, fallback: fallback}
+	return viewStmt{name: name, primary: primary, fallback: fallback, files: files}
 }
 
 // perDownloadViews builds report_<run>, answers_<run>, history_<run>, and
@@ -595,13 +604,8 @@ func StaticViewNames() []string {
 }
 
 // applyMaterialized points a view at its Parquet when the manifest records one
-// that is fresh.
-//
-// There is deliberately no presence check. A Parquet that is absent, corrupt or
-// truncated all fail at CREATE VIEW rather than at query time, so the
-// registration loop's warning covers every shape a bad file takes, and a stat
-// per view per Open would buy only a differently worded message. A stale entry
-// is silent by contract; an unreadable one is not.
+// that is fresh. A stale entry is silent by contract; a missing or unreadable
+// one is not, and the registration loop is what tells those apart.
 func (vs viewSet) applyMaterialized(stmts []viewStmt) []viewStmt {
 	if len(vs.m.Materialized) == 0 {
 		return stmts
@@ -616,27 +620,37 @@ func (vs viewSet) applyMaterialized(stmts []viewStmt) []viewStmt {
 			continue
 		}
 		mat, ok := vs.m.Materialized[bare]
-		if !ok || !mat.Fresh(vs.canonDir, st.files, viewSignature(st, vs.canonDir, vs.prefix)) {
+		signature := viewSignature(st, vs.canonDir, vs.prefix)
+		if !ok || !mat.Fresh(vs.canonDir, st.files, signature) {
 			continue
 		}
 		stmts[i].materialized = fmt.Sprintf("CREATE VIEW %s AS SELECT * FROM read_parquet(%s)",
 			st.name, vs.file(mat.File))
+		stmts[i].parquet = filepath.Join(vs.canonDir, mat.File)
+		stmts[i].record = mat
+		stmts[i].signature = signature
 	}
 	return stmts
 }
 
-// MaterializableViews returns the views of this dataset that can be
-// materialized: those that scan files, minus the per-run views. Both halves are
-// code-derived, so a view added later joins or stays out of the set by its own
-// construction rather than by a list someone updates.
+// materializableViews returns the views of this dataset that can be
+// materialized: those that scan files, minus the per-run views and the two
+// attachment views. The first two halves are code-derived, so a view added
+// later joins or stays out of the set by its own construction rather than by a
+// list someone updates.
 //
 // It takes the manifest because "declares files" is a property of a populated
 // dataset: over an empty manifest every builder returns its stand-in and no view
 // declares anything.
-func MaterializableViews(m *dataset.Manifest) []string {
+func materializableViews(m *dataset.Manifest) []string {
 	vs := viewSet{m: m}
 	return materializableFrom(vs.statements(), vs.prefix)
 }
+
+// neverMaterialized names the views kept out of the set by hand. The attachment
+// views read_text every attachment, so materializing them would copy the
+// attachment corpus a second time for the two views with the largest output.
+var neverMaterialized = map[string]bool{"attachment_states": true, "attachment_content": true}
 
 // materializableFrom takes statements the caller has already built, so Open does
 // not build the full view set twice: applyMaterialized has the slice in hand and
@@ -651,7 +665,7 @@ func materializableFrom(stmts []viewStmt, prefix string) []string {
 	var out []string
 	for _, st := range stmts {
 		bare := bareViewName(st.name, prefix)
-		if len(st.files) > 0 && static[bare] {
+		if len(st.files) > 0 && static[bare] && !neverMaterialized[bare] {
 			out = append(out, bare)
 		}
 	}

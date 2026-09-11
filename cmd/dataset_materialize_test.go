@@ -120,7 +120,7 @@ func TestDatasetMaterializeExitsNonZeroOnARefusal(t *testing.T) {
 	if partialCode != output.ExitSuccess {
 		t.Fatalf("--allow-partial should exit 0, got %d: %s", partialCode, partialOut)
 	}
-	if !strings.Contains(partialOut, "building reports from 2 of 3 declared inputs") {
+	if !strings.Contains(partialOut, "reports: built from 2 of 3 declared inputs") {
 		t.Fatalf("--allow-partial should report the shortfall as a count: %s", partialOut)
 	}
 }
