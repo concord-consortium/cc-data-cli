@@ -144,11 +144,12 @@ func TestGuardDetectsAnUndocumentedName(t *testing.T) {
 	}
 }
 
-// reportTypesIn reads the vocabulary a core sentence states. The sentences open
-// with prose rather than a backticked name, so ParseCatalog cannot read them.
+// reportTypesIn reads the vocabulary a core sentence states. The sentences open with
+// prose rather than a backticked name, so ParseCatalog cannot read them, and the core
+// is hard-wrapped, so the list can span lines.
 func reportTypesIn(t *testing.T, body, after string) []string {
 	t.Helper()
-	re := regexp.MustCompile(regexp.QuoteMeta(after) + " `report_type` \\(((?:`[a-z]+`(?:, )?)+)\\)")
+	re := regexp.MustCompile(regexp.QuoteMeta(after) + "\\s+`report_type`\\s*\\(((?:`[a-z]+`(?:,\\s*)?)+)\\)")
 	m := re.FindStringSubmatch(body)
 	if m == nil {
 		t.Fatalf("no report_type vocabulary found after %q", after)
@@ -161,11 +162,13 @@ func reportTypesIn(t *testing.T, body, after string) []string {
 	return out
 }
 
-// runReportTypeExemptions records a value the code accepts that the guidance
-// deliberately does not name, with the reason. It is empty: the guidance states the
-// vocabulary in full. It exists so a value added later has to make a decision rather
-// than be forgotten.
-var runReportTypeExemptions = map[string]string{}
+// These record a value the code accepts that the guidance deliberately does not name,
+// with the reason. Both are empty: the guidance states both vocabularies in full. They
+// exist so a value added later has to make a decision rather than be forgotten.
+var (
+	runReportTypeExemptions      = map[string]string{}
+	downloadReportTypeExemptions = map[string]string{}
+)
 
 func TestGuidanceStatesTheRunReportTypes(t *testing.T) {
 	assertVocabulary(t, reportTypesIn(t, guidance.Core(), "Report runs have a"),
@@ -188,5 +191,24 @@ func assertVocabulary(t *testing.T, documented, inCode []string, exempt map[stri
 	}
 	if len(undocumented) > 0 {
 		t.Errorf("code accepts %v, which the %s vocabulary neither names nor exempts", undocumented, what)
+	}
+}
+
+func TestGuidanceStatesTheDownloadReportTypes(t *testing.T) {
+	assertVocabulary(t, reportTypesIn(t, guidance.Core(), "A download's"),
+		dataset.AllowedReportTypes(), downloadReportTypeExemptions, "download")
+}
+
+// TestGuidanceDocumentsOnlyRealSlugs runs one direction only. The reverse is
+// deliberately not checked, because the portal offers aggregate reports that have
+// no Go constant today. What this cannot prove is recorded beside slugToType.
+func TestGuidanceDocumentsOnlyRealSlugs(t *testing.T) {
+	documented, err := guidance.ParseCatalog(guidance.Core(), "Report slugs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	inCode := append(dataset.ReportSlugs(), duck.DimensionSlugs()...)
+	if m := guidance.Missing(documented, inCode); len(m) > 0 {
+		t.Fatalf("guidance names slugs the code does not know: %v", m)
 	}
 }

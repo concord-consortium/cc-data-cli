@@ -110,7 +110,9 @@ Four edits to `core.md`:
 
 **The Portal/Athena family and the live-versus-snapshot rule**, in "Runs and their data", phrased as a decision rule because that is what the model needs it for:
 
-> Reports come in two families. **Athena** reports are computed in the background from the log archive: a run has a query state and its result never changes once it succeeds, so a fresh snapshot means duplicating the run. **Portal** reports (`report_type` `portal`) are computed from the Portal database on every request, so they list as `live` and a fresh read means re-pulling the same run, not duplicating it. Duplicating a Portal run is refused unless forced.
+> Reports come in two families. **Athena** reports are computed in the background from the log archive: a run has a query state and its result never changes once it succeeds, so a fresh snapshot means duplicating the run. **Portal** reports are computed from the Portal database on every request, so they list as `live` and a fresh read means re-pulling the same run, not duplicating it. Duplicating a Portal run is refused unless forced.
+
+The parenthetical "(`report_type` `portal`)" an earlier draft carried is deliberately gone: a Portal run has no `report_type`, which the sentence above this one now says, and repeating the download-side value here would reintroduce the conflation.
 
 **A `## Report slugs` section**, which is the guarded catalog and the thing that makes `reports_create` usable from the guidance alone:
 

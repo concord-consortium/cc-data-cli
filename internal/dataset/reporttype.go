@@ -72,3 +72,13 @@ func IsAllowedReportType(t string) bool {
 	}
 	return false
 }
+
+// ReportSlugs returns the Athena slugs cc-data knows.
+func ReportSlugs() []string {
+	var out []string
+	for slug := range slugToType {
+		out = append(out, slug)
+	}
+	sort.Strings(out)
+	return out
+}

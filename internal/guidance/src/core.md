@@ -21,8 +21,15 @@
 
 - Datasets are duplicate-free by construction: re-fetching a run replaces its
   records. Create a dataset per point-in-time pull to compare over time.
-- Report runs have a `report_type` (`answers`, `log`, `usage`). Log runs (slug
-  `student-actions`) are fetchable as a report too and yield a clickstream
+- Reports come in two families. **Athena** reports are computed in the background
+  from the log archive: a run has a query state and its result never changes once
+  it succeeds, so a fresh snapshot means duplicating the run. **Portal** reports
+  are computed from the Portal database on every request, so they list as `live`
+  and a fresh read means re-pulling the same run, not duplicating it. Duplicating
+  a Portal run is refused unless forced.
+- Report runs have a `report_type` (`answers`, `log`, `usage`). A Portal run has
+  none: its `report_type` is null and `execution` is what identifies it. Log runs
+  (slug `student-actions`) are fetchable as a report too and yield a clickstream
   event log (columns include `session`, `application`, `activity`, `event`,
   `event_value`, `time`, `parameters`, `extras`, `run_remote_endpoint`,
   `timestamp`, `user_id`, `primary_user_id`): process, timing, and sequence data.
@@ -129,8 +136,10 @@ like `wildfire_2026.answers`):
   `state`), not just the current-answer one, so you can diff every saved snapshot
   of a doc across a session's history. Binary attachments (audio, images) are
   excluded here (not UTF-8 text) but remain downloadable via `attachment_files`.
-- `student_id_mapping` — one row per `learner_id` from Student ID Mapping runs,
-  deduplicated across runs with the latest fetch winning. Join to `answers` and
+- `student_id_mapping` — one row per `learner_id` from Student ID Mapping runs
+  (slug `student-id-mapping`), deduplicated across runs with the latest fetch
+  winning. Such a run's id is a valid source for fetching answers, history and
+  attachments. Join to `answers` and
   `history` on `run_remote_endpoint = remote_endpoint`. A NULL
   `run_remote_endpoint` is a learner with no secure key, not missing data: every
   such learner carries the same endpoint string, so the join key is withheld
@@ -140,9 +149,10 @@ like `wildfire_2026.answers`):
   report_<run_id>`. Do not compare against this view's rows for that run: it
   deduplicates **across** runs, so a learner a later run also holds is absent
   here without the earlier run having repeated anything.
-- `student_metadata` — one row per `learner_id` from Student Metadata runs, same
-  dedupe and the same `run_remote_endpoint` rule, carrying the names and roster
-  labels the mapping view deliberately has none of. Join to
+- `student_metadata` — one row per `learner_id` from Student Metadata runs (slug
+  `student-metadata`), same dedupe and the same `run_remote_endpoint` rule,
+  carrying the names and roster labels the mapping view deliberately has none of.
+  Such a run's id is a valid source for fetching answers, history and attachments. Join to
   `student_id_mapping` on `learner_id`. `hide_names` is the run's own setting:
   where it is true, `student_name` holds the student id and `username` a hash,
   so a dataset holding runs fetched under different roles is filterable rather
@@ -152,7 +162,11 @@ like `wildfire_2026.answers`):
   `reports`, which has no such column, so name-sensitive work belongs on this
   view or on a type-qualified `downloads` join.
 - `downloads` — a manifest dimension table: `run_id`, `type`, `slug`,
-  `report_type`, `hide_names` and `complete`. It is where a per-download fact
+  `report_type`, `hide_names` and `complete`. A download's `report_type`
+  (`answers`, `log`, `usage`, `portal`, `recovered`) is cc-data's own, not the
+  run's: `portal` is derived from a Portal run's execution, and `recovered` is
+  what a reindex assigns to a CSV it cannot classify, which re-fetching the run
+  replaces with the real type. It is where a per-download fact
   belongs, so it is the join for anything that varies by run rather than by row.
   **One row per download, not per run**: a run that had its report, answers and
   history pulled has three, so join it type-qualified (`AND d.type = 'report'`)
@@ -167,6 +181,38 @@ learners by either. Join to `reports` on `remote_endpoint = res_<N>_remote_endpo
 to attach the person: `user_id` is the Portal user (the learner) and `learner_id`
 is that user in one offering. Count distinct learners by `user_id` (or `learner_id`);
 cross-portal identity is out of scope.
+
+## Report slugs
+
+A run is created from a report's slug. These are the ones a data pull starts
+from. The Portal also offers aggregate metrics reports that are not listed here;
+their slugs come from an existing run or from the researcher guide.
+
+- `student-id-mapping` — the learners' portal ids and the key that joins them to
+  stored records, with no names. A run of it is a valid run id for fetching
+  answers, history and attachments.
+- `student-metadata` — the same learners with names and roster labels, joined on
+  `learner_id`.
+- `student-answers`, `student-assignment-usage` — per-student Athena reports.
+- `student-actions`, `student-actions-with-metadata`, `teacher-actions` — Athena
+  clickstream logs.
+
+### Pulling a cohort's work without authoring an Athena report
+
+1. Create a `student-id-mapping` run over the learners of interest, assembling
+   the filter from the available filter options.
+2. Fetch that run's answers, history and attachments by its run id.
+3. Fetch the run's own report CSV, which becomes `student_id_mapping`.
+4. Create and fetch a `student-metadata` run over the same learners, which
+   becomes `student_metadata`.
+5. Materialize the dataset before querying it when Materializing a dataset says
+   it is worth it.
+6. Query: `answers` joins `student_id_mapping` on `run_remote_endpoint =
+   remote_endpoint`, and `student_id_mapping` joins `student_metadata` on
+   `learner_id`. See the `student_id_mapping` entry for what a NULL join key
+   means before filtering on it.
+
+Re-read any Portal run later by re-pulling the same run id; do not duplicate it.
 
 ## Identity columns
 
