@@ -3,9 +3,12 @@ package guidance_test
 import (
 	"context"
 	"os"
+	"regexp"
+	"sort"
 	"strings"
 	"testing"
 
+	"github.com/concord-consortium/cc-data-cli/internal/dataset"
 	"github.com/concord-consortium/cc-data-cli/internal/duck"
 	"github.com/concord-consortium/cc-data-cli/internal/guidance"
 	"github.com/concord-consortium/cc-data-cli/internal/mcpserver"
@@ -138,5 +141,52 @@ func TestGuardDetectsAnUndocumentedName(t *testing.T) {
 	m := guidance.Missing([]string{"reports", "answers"}, documented)
 	if len(m) != 1 || m[0] != "answers" {
 		t.Fatalf("guard did not report the missing name, got %v", m)
+	}
+}
+
+// reportTypesIn reads the vocabulary a core sentence states. The sentences open
+// with prose rather than a backticked name, so ParseCatalog cannot read them.
+func reportTypesIn(t *testing.T, body, after string) []string {
+	t.Helper()
+	re := regexp.MustCompile(regexp.QuoteMeta(after) + " `report_type` \\(((?:`[a-z]+`(?:, )?)+)\\)")
+	m := re.FindStringSubmatch(body)
+	if m == nil {
+		t.Fatalf("no report_type vocabulary found after %q", after)
+	}
+	var out []string
+	for _, n := range regexp.MustCompile("`([a-z]+)`").FindAllStringSubmatch(m[1], -1) {
+		out = append(out, n[1])
+	}
+	sort.Strings(out)
+	return out
+}
+
+// runReportTypeExemptions records a value the code accepts that the guidance
+// deliberately does not name, with the reason. It is empty: the guidance states the
+// vocabulary in full. It exists so a value added later has to make a decision rather
+// than be forgotten.
+var runReportTypeExemptions = map[string]string{}
+
+func TestGuidanceStatesTheRunReportTypes(t *testing.T) {
+	assertVocabulary(t, reportTypesIn(t, guidance.Core(), "Report runs have a"),
+		dataset.RunReportTypes(), runReportTypeExemptions, "run")
+}
+
+func assertVocabulary(t *testing.T, documented, inCode []string, exempt map[string]string, what string) {
+	t.Helper()
+	if len(documented) == 0 {
+		t.Fatalf("%s vocabulary parsed as empty, so this checks nothing", what)
+	}
+	if m := guidance.Missing(documented, inCode); len(m) > 0 {
+		t.Errorf("%s vocabulary names %v, which the code does not accept", what, m)
+	}
+	var undocumented []string
+	for _, v := range guidance.Missing(inCode, documented) {
+		if _, ok := exempt[v]; !ok {
+			undocumented = append(undocumented, v)
+		}
+	}
+	if len(undocumented) > 0 {
+		t.Errorf("code accepts %v, which the %s vocabulary neither names nor exempts", undocumented, what)
 	}
 }
