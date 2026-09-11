@@ -243,8 +243,12 @@ cc-data reports create --report-slug student-answers --report-filter '{"cohort":
 
 Use `--report-filter-file <path>` when the filter is too long to quote. To take a
 fresh snapshot of a run you already have, `cc-data reports duplicate <run-id>`.
-Portal reports are computed live, so re-reading one with `get report` gives you
-current data and duplicating one needs `--force`.
+Portal reports are computed live, so re-reading one with `get report --refresh`
+gives you current data and duplicating one needs `--force`.
+
+To pull a whole cohort's work without authoring an Athena report at all, create a
+`student-id-mapping` run and fetch answers, history and attachments by its run
+id; the Report types section describes that path.
 
 ### A complete session
 
@@ -396,9 +400,10 @@ and queryable through the same `reports` view. `cc-data` records each run's type
 Reports come in two flavors. **Athena reports** (`execution` `async`) are
 computed in the background from the log archive, so a run has a query state and
 its result never changes once it succeeds. **Portal reports** (`execution`
-`sync`, `report_type` `portal`) are computed from the Portal database every time
-you ask for them, so `reports list` shows their state as `live` and re-pulling
-one with `get report --refresh` is how you get current data.
+`sync`) are computed from the Portal database every time you ask for them, so
+`reports list` shows their state as `live` and re-pulling one with
+`get report --refresh` is how you get current data. Such a run carries no
+`report_type` of its own; `cc-data` labels the download it records `portal`.
 
 **Athena student data, one row per student:**
 
@@ -428,14 +433,14 @@ one with `get report --refresh` is how you get current data.
 The three `log` reports share the same clickstream columns; `student-answers` and
 `student-assignment-usage` share the same per-student, per-resource shape.
 
-**Portal reports, computed live.** Two of them name a set of learners, and are
-what you use to pull those learners' answers, history and attachments without
+**Portal reports, computed live.** Two of them name a set of learners, and a run
+of either is a valid run id for `get answers`, `get history` and
+`get attachments`, so they are what you use to pull those learners' work without
 authoring an Athena report first:
 
 - **Student ID Mapping** (slug `student-id-mapping`): the portal ids and the
   `run_remote_endpoint` that joins each learner to their stored records, and no
-  names. A run of this report is a valid run id for `get answers`, `get history`
-  and `get attachments`. It also becomes the `student_id_mapping` view.
+  names. It becomes the `student_id_mapping` view.
 - **Student Metadata** (slug `student-metadata`): the human-readable context
   (name, username, class, school, teachers, permission forms), joining to
   Student ID Mapping on `learner_id`. Names are hidden unless you are an admin

@@ -943,3 +943,13 @@ func hideNamesLiteral(dl dataset.Download) string {
 func sqlTimestamp(t time.Time) string {
 	return fmt.Sprintf("CAST(%s AS TIMESTAMP)", sqlStr(t.UTC().Format("2006-01-02 15:04:05.999999")))
 }
+
+// DimensionSlugs returns the report slugs the dimension views are built from.
+func DimensionSlugs() []string {
+	var out []string
+	for _, d := range dimensionViews {
+		out = append(out, d.slug)
+	}
+	sort.Strings(out)
+	return out
+}

@@ -98,3 +98,19 @@ func TestMissingNamesTheAbsentEntries(t *testing.T) {
 		t.Fatalf("nothing missing should report nothing, got %v", got)
 	}
 }
+
+// TestParseCatalogReadsHyphenatedNames covers the failure the widened pattern
+// exists to prevent: before it, a section of report slugs parsed to nothing and
+// ParseCatalog reported success, so a guard over it checked nothing at all.
+func TestParseCatalogReadsHyphenatedNames(t *testing.T) {
+	body := "## Report slugs\n\n- `student-id-mapping` — the learners' portal ids\n" +
+		"- `student-answers`, `student-assignment-usage` — per-student Athena reports\n"
+	got, err := ParseCatalog(body, "Report slugs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"student-id-mapping", "student-answers", "student-assignment-usage"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}

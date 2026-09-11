@@ -36,7 +36,7 @@ func registerTools(s *mcp.Server, opts Options) {
 			return nil, res, err
 		})
 
-	addTool(s, &mcp.Tool{Name: "reports_list", Description: "List the user's report runs for a portal. The portal may be a hostname or an environment alias (prod / staging / dev).", Annotations: readOnly},
+	addTool(s, &mcp.Tool{Name: "reports_list", Description: "List the user's report runs for a portal. A run's execution tells an Athena run from a Portal one: async is Athena, sync is Portal. The portal may be a hostname or an environment alias (prod / staging / dev).", Annotations: readOnly},
 		func(ctx context.Context, req *mcp.CallToolRequest, in portalIn) (*mcp.CallToolResult, reportview.RunsPayload, error) {
 			client, err := portalClient(in.Portal)
 			if err != nil {
@@ -49,7 +49,7 @@ func registerTools(s *mcp.Server, opts Options) {
 			return nil, reportview.Runs(runs), nil
 		})
 
-	addTool(s, &mcp.Tool{Name: "reports_filter_options", Description: "List the values a report filter dimension offers the user, narrowed by any selections already made, so a filter can be assembled without the web form. Also answers \"what data can I see?\" on its own. Pass report_filter to narrow (the same object reports_list returns on a run), search to match labels, and report_slug to restrict to a report that offers the dimension. Set include_count=true when the user asks how many there are, and all=true to walk the pages, which stops after 1000 options and sets truncated with next_page_token to continue from. The portal may be a hostname or an environment alias (prod / staging / dev).", Annotations: readOnly},
+	addTool(s, &mcp.Tool{Name: "reports_filter_options", Description: "List the values a report filter dimension offers the user, narrowed by any selections already made, so a filter can be assembled without the web form. Also answers \"what data can I see?\" on its own. Pass report_filter to narrow (the same object reports_list returns on a run), search to match labels, and report_slug to restrict to a report that offers the dimension. Set include_count=true when the user asks how many there are, and all=true to walk the pages, which stops after 1000 options and sets truncated with next_page_token to continue from. It is also how a Student ID Mapping run's filter is assembled, which is the first step of a cohort pull. The portal may be a hostname or an environment alias (prod / staging / dev).", Annotations: readOnly},
 		func(ctx context.Context, req *mcp.CallToolRequest, in reportsFilterOptionsIn) (*mcp.CallToolResult, reportview.FilterOptionsPayload, error) {
 			client, err := portalClient(in.Portal)
 			if err != nil {
@@ -118,7 +118,7 @@ func registerTools(s *mcp.Server, opts Options) {
 			return nil, reportview.RunPayload{Run: reportview.ToRunJSON(run)}, nil
 		})
 
-	addTool(s, &mcp.Tool{Name: "get_report", Description: "Download a report CSV into a dataset."},
+	addTool(s, &mcp.Tool{Name: "get_report", Description: "Download a report CSV into a dataset. A Portal report is computed per request, so re-read it by passing refresh rather than duplicating the run."},
 		func(ctx context.Context, req *mcp.CallToolRequest, in getReportIn) (*mcp.CallToolResult, mapOut, error) {
 			d, client, err := openForFetch(in.Dataset)
 			if err != nil {
@@ -131,12 +131,12 @@ func registerTools(s *mcp.Server, opts Options) {
 			return fetchResult(fetch.FetchReport(ctx, o))
 		})
 
-	addTool(s, &mcp.Tool{Name: "get_answers", Description: "Download a run's student answers into a dataset."},
+	addTool(s, &mcp.Tool{Name: "get_answers", Description: "Download a run's student answers into a dataset. A Student ID Mapping run id is a valid source."},
 		pagedHandler(store.TypeAnswers))
-	addTool(s, &mcp.Tool{Name: "get_history", Description: "Download a run's interactive state history into a dataset."},
+	addTool(s, &mcp.Tool{Name: "get_history", Description: "Download a run's interactive state history into a dataset. A Student ID Mapping run id is a valid source."},
 		pagedHandler(store.TypeHistory))
 
-	addTool(s, &mcp.Tool{Name: "get_attachments", Description: "Download a run's file attachments into a dataset. Fetch that run's answers or history first: attachments are reached through those records. " + noArgsMsg},
+	addTool(s, &mcp.Tool{Name: "get_attachments", Description: "Download a run's file attachments into a dataset. Fetch that run's answers or history first: attachments are reached through those records. A Student ID Mapping run id is a valid source. " + noArgsMsg},
 		func(ctx context.Context, req *mcp.CallToolRequest, in getAttachmentsIn) (*mcp.CallToolResult, mapOut, error) {
 			d, client, err := openForFetch(in.Dataset)
 			if err != nil {

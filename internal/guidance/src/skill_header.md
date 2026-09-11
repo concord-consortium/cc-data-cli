@@ -38,9 +38,24 @@ guessing flags.
 - The environment names also work wherever a `portal` is passed: the `--portal`
   flag on `logout` and on every `reports` subcommand.
 
+## Making a run
+
+- `cc-data reports list` — the runs you already have.
+- `cc-data reports filter-options --dimension <name>` — the values a filter
+  dimension offers, narrowed by `--report-filter` as selections are made, and by
+  `--report-slug` to a report that offers the dimension.
+- `cc-data reports create --report-slug <slug> --report-filter '<json>'` — a run
+  from a slug and a filter. Use `--report-filter-file` when the filter is too
+  long to quote.
+- `cc-data reports duplicate <run-id>` — a fresh snapshot of an Athena run.
+
+These take `--portal` when no default portal is configured.
+
 ## Fetching data
 
-- `cc-data get report <run-id> --dataset <ref>` — the report CSV.
+- `cc-data get report <run-id> --dataset <ref>` — the report CSV. A Portal report
+  is computed per request, so re-read it with `--refresh` rather than duplicating
+  the run.
 - `cc-data get answers <run-id> --dataset <ref>` — student answers.
 - `cc-data get history <run-id> --dataset <ref>` — full interactive state history.
 - `cc-data get attachments <run-id> --dataset <ref>` — file attachments (requires

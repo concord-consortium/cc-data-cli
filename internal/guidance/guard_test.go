@@ -3,9 +3,12 @@ package guidance_test
 import (
 	"context"
 	"os"
+	"regexp"
+	"sort"
 	"strings"
 	"testing"
 
+	"github.com/concord-consortium/cc-data-cli/internal/dataset"
 	"github.com/concord-consortium/cc-data-cli/internal/duck"
 	"github.com/concord-consortium/cc-data-cli/internal/guidance"
 	"github.com/concord-consortium/cc-data-cli/internal/mcpserver"
@@ -138,5 +141,119 @@ func TestGuardDetectsAnUndocumentedName(t *testing.T) {
 	m := guidance.Missing([]string{"reports", "answers"}, documented)
 	if len(m) != 1 || m[0] != "answers" {
 		t.Fatalf("guard did not report the missing name, got %v", m)
+	}
+}
+
+// reportTypesIn reads the vocabulary a core sentence states. The sentences open with
+// prose rather than a backticked name, so ParseCatalog cannot read them, and the core
+// is hard-wrapped, so the list can span lines.
+func reportTypesIn(t *testing.T, body, after string) []string {
+	t.Helper()
+	re := regexp.MustCompile(regexp.QuoteMeta(after) + "\\s+`report_type`\\s*\\(((?:`[a-z]+`(?:,\\s*)?)+)\\)")
+	m := re.FindStringSubmatch(body)
+	if m == nil {
+		t.Fatalf("no report_type vocabulary found after %q", after)
+	}
+	var out []string
+	for _, n := range regexp.MustCompile("`([a-z]+)`").FindAllStringSubmatch(m[1], -1) {
+		out = append(out, n[1])
+	}
+	sort.Strings(out)
+	return out
+}
+
+// These record a value the code accepts that the guidance deliberately does not name,
+// with the reason. Both are empty: the guidance states both vocabularies in full. They
+// exist so a value added later has to make a decision rather than be forgotten.
+var (
+	runReportTypeExemptions      = map[string]string{}
+	downloadReportTypeExemptions = map[string]string{}
+)
+
+func TestGuidanceStatesTheRunReportTypes(t *testing.T) {
+	assertVocabulary(t, reportTypesIn(t, guidance.Core(), "Report runs have a"),
+		dataset.RunReportTypes(), runReportTypeExemptions, "run")
+}
+
+func assertVocabulary(t *testing.T, documented, inCode []string, exempt map[string]string, what string) {
+	t.Helper()
+	if len(documented) == 0 {
+		t.Fatalf("%s vocabulary parsed as empty, so this checks nothing", what)
+	}
+	if m := guidance.Missing(documented, inCode); len(m) > 0 {
+		t.Errorf("%s vocabulary names %v, which the code does not accept", what, m)
+	}
+	var undocumented []string
+	for _, v := range guidance.Missing(inCode, documented) {
+		if _, ok := exempt[v]; !ok {
+			undocumented = append(undocumented, v)
+		}
+	}
+	if len(undocumented) > 0 {
+		t.Errorf("code accepts %v, which the %s vocabulary neither names nor exempts", undocumented, what)
+	}
+}
+
+func TestGuidanceStatesTheDownloadReportTypes(t *testing.T) {
+	assertVocabulary(t, reportTypesIn(t, guidance.Core(), "A download's"),
+		dataset.AllowedReportTypes(), downloadReportTypeExemptions, "download")
+}
+
+// slugShaped matches a backticked lowercase-hyphenated identifier. Every such name in
+// the core is a report slug, so scanning for the shape covers the slugs the prose and
+// the recipe name as well as the ones the catalog lists. slugExemptions is where a
+// hyphenated identifier that is not a slug has to declare itself. Only the core is
+// scanned: `cc-data` takes the same shape, and it appears on the other surfaces.
+var slugShaped = regexp.MustCompile("`([a-z0-9]+(?:-[a-z0-9]+)+)`")
+
+var slugExemptions = map[string]bool{}
+
+// TestGuidanceDocumentsOnlyRealSlugs runs one direction only. The reverse is
+// deliberately not checked, because the portal offers aggregate reports that have
+// no Go constant today. What this cannot prove is recorded beside slugToType.
+func TestGuidanceDocumentsOnlyRealSlugs(t *testing.T) {
+	if _, err := guidance.ParseCatalog(guidance.Core(), "Report slugs"); err != nil {
+		t.Fatal(err)
+	}
+	var named []string
+	for _, m := range slugShaped.FindAllStringSubmatch(guidance.Core(), -1) {
+		if !slugExemptions[m[1]] {
+			named = append(named, m[1])
+		}
+	}
+	if len(named) == 0 {
+		t.Fatal("the core names no slug, so this checks nothing")
+	}
+	inCode := append(dataset.AthenaReportSlugs(), duck.DimensionSlugs()...)
+	if m := guidance.Missing(named, inCode); len(m) > 0 {
+		t.Fatalf("guidance names slugs the code does not know: %v", m)
+	}
+}
+
+// The re-pull mechanism is the second piece of guidance that exists on both surfaces
+// worded differently, the CLI spelling it --refresh and the MCP surface refresh, so no
+// inventory comparison can notice one of them losing it. Only the per-surface halves are
+// asserted: the rule itself is in the core, which both render by construction, so
+// checking it here would be true by construction and would test nothing.
+// The core lists the slugs and the recipe opens by creating a run from one, so the
+// skill has to carry the verb that acts on a slug or the recipe's first step is
+// unexecutable there. The core cannot carry it, the no-commands guard forbids it, and
+// nothing else checks this file's command spellings. The MCP side needs no assertion
+// here: TestGuidanceDocumentsEveryTool already fails if either tool leaves tools.md.
+func TestSkillSurfaceCanActOnASlug(t *testing.T) {
+	if !strings.Contains(guidance.Skill(), "cc-data reports create --report-slug") {
+		t.Error("skill: no command creates a run from a slug")
+	}
+	if !strings.Contains(guidance.Skill(), "cc-data reports filter-options") {
+		t.Error("skill: no command assembles the filter the recipe's first step needs")
+	}
+}
+
+func TestBothSurfacesCarryTheRePullMechanism(t *testing.T) {
+	if !strings.Contains(guidance.Skill(), "--refresh") {
+		t.Error("skill: the --refresh spelling is missing")
+	}
+	if !strings.Contains(guidance.Instructions(), "passing `refresh`") {
+		t.Error("instructions: the refresh parameter is missing")
 	}
 }
