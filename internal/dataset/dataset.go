@@ -275,6 +275,7 @@ func (d *Dataset) Purge() error {
 	m.Membership = map[string]MembershipRef{}
 	m.Downloads = nil
 	m.Attachments = nil
+	m.Materialized = map[string]Materialized{}
 	if err := purgeCommitManifest(d.Dir, m); err != nil {
 		return err
 	}

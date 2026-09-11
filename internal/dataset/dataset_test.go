@@ -255,3 +255,28 @@ func TestDeleteRemovesDerivedSubdir(t *testing.T) {
 		t.Fatalf("delete should remove %s, stat err = %v", MaterializedDir, err)
 	}
 }
+
+func TestPurgeClearsMaterialized(t *testing.T) {
+	d := newDataset(t)
+	m, err := d.ReadManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.Materialized = map[string]Materialized{
+		"answers": {File: MaterializedDir + "/answers.parquet", Inputs: map[string]string{"answers.v1.jsonl": "3-7"}},
+	}
+	if err := writeManifestFile(d.Dir, m); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := d.Purge(); err != nil {
+		t.Fatal(err)
+	}
+	after, err := d.ReadManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after.Materialized) != 0 {
+		t.Fatalf("purge left materialization entries naming files it deleted: %+v", after.Materialized)
+	}
+}

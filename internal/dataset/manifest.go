@@ -31,6 +31,18 @@ type Manifest struct {
 	Membership  map[string]MembershipRef `json:"membership"`
 	Downloads   []Download               `json:"downloads"`
 	Attachments []AttachmentFile         `json:"attachments"`
+
+	// Materialized is keyed by view name.
+	Materialized map[string]Materialized `json:"materialized,omitempty"`
+}
+
+// Materialized records one view's Parquet and the inputs it was built from.
+// Freshness is per input rather than per store version because report CSVs have
+// no version: report_<run>.csv is a fixed name overwritten on re-fetch.
+type Materialized struct {
+	File    string            `json:"file"`   // dataset-relative
+	Inputs  map[string]string `json:"inputs"` // dataset-relative path -> fingerprint
+	BuiltAt time.Time         `json:"built_at"`
 }
 
 type Store struct {
@@ -146,6 +158,9 @@ func ensureMaps(m *Manifest) {
 	}
 	if m.Membership == nil {
 		m.Membership = map[string]MembershipRef{}
+	}
+	if m.Materialized == nil {
+		m.Materialized = map[string]Materialized{}
 	}
 }
 

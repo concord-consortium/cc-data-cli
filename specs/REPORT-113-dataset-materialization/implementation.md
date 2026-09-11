@@ -97,6 +97,11 @@ func Fingerprint(path string) string {
 	return fmt.Sprintf("%d-%d", fi.Size(), fi.ModTime().UnixNano())
 }
 
+// FingerprintInputs fingerprints a view's declared files, deduplicated, in the form
+// Materialized.Inputs records and Fresh compares against. The writer records through it rather
+// than building the map itself, so "how an input is recorded" has one definition.
+func FingerprintInputs(dir string, files []string) map[string]string
+
 // Fresh reports whether the Parquet may be read: the view's current inputs are exactly the
 // recorded ones, and each still fingerprints the same. The caller supplies the current list
 // because only the engine knows which files a view reads.
@@ -107,7 +112,7 @@ func Fingerprint(path string) string {
 func (m Materialized) Fresh(dir string, current []string) bool
 ```
 
-Tests: a fingerprint changes when content is rewritten; `Fresh` is true unchanged, false after a rewrite, false when an input is deleted, and false when an input is added. And the absent round trip, verified ahead of implementation against the real view set: materialize a `reports` view one of whose CSVs is missing, and `Fresh` is true immediately afterwards and false the moment the CSV is restored from a backup.
+Tests: a fingerprint changes when content is rewritten and when only the mtime moves; `Fresh` is true unchanged, false after a rewrite, false when an input is deleted, false when an input is added, and false when the view stops declaring one of the recorded inputs. That last one is what the set comparison is for, and it is the only assertion that fails if the comparison is dropped: an added input is already caught by the lookup miss. And the absent round trip, verified ahead of implementation against the real view set: materialize a `reports` view one of whose CSVs is missing, and `Fresh` is true immediately afterwards and false the moment the CSV is restored from a backup.
 
 ---
 
