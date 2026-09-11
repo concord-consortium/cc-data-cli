@@ -29,41 +29,55 @@ type Engine struct {
 // Open registers the datasets' views and locks the sandbox to their folders plus
 // any allow-dirs. Warnings from degraded views are written to warnOut.
 func Open(ctx context.Context, datasets []DatasetSpec, allowDirs []string, warnOut io.Writer) (*Engine, error) {
+	e, _, err := open(ctx, datasets, allowDirs, warnOut, true)
+	return e, err
+}
+
+// OpenRaw registers every view from its raw artifacts, ignoring any Parquet the
+// manifest records, and reports the views that fell back to their typed-empty
+// statement. Materialization reads through it so a stale Parquet can never be
+// copied forward into a fresh-looking one.
+func OpenRaw(ctx context.Context, d *dataset.Dataset, warnOut io.Writer) (*Engine, map[string]bool, error) {
+	return open(ctx, []DatasetSpec{{DS: d}}, nil, warnOut, false)
+}
+
+func open(ctx context.Context, datasets []DatasetSpec, allowDirs []string, warnOut io.Writer, useMaterialized bool) (*Engine, map[string]bool, error) {
+	degraded := map[string]bool{}
 	if warnOut == nil {
 		warnOut = io.Discard
 	}
 	if len(datasets) == 0 {
-		return nil, fmt.Errorf("no datasets given")
+		return nil, nil, fmt.Errorf("no datasets given")
 	}
 	schemas, err := resolveSchemas(datasets)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	var allowed []string
 	for _, ds := range datasets {
 		canon, err := canonicalize(ds.DS.Dir)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		allowed = append(allowed, canon)
 	}
 	for _, dir := range allowDirs {
 		canon, err := canonicalize(dir)
 		if err != nil {
-			return nil, fmt.Errorf("--allow-dir %q: %w", dir, err)
+			return nil, nil, fmt.Errorf("--allow-dir %q: %w", dir, err)
 		}
 		allowed = append(allowed, canon)
 	}
 
 	db, err := sql.Open("duckdb", "")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	conn, err := db.Conn(ctx)
 	if err != nil {
 		db.Close()
-		return nil, err
+		return nil, nil, err
 	}
 	e := &Engine{db: db, conn: conn}
 
@@ -74,17 +88,21 @@ func Open(ctx context.Context, datasets []DatasetSpec, allowDirs []string, warnO
 			prefix = sqlIdent(schemas[i]) + "."
 			if _, err := conn.ExecContext(ctx, "CREATE SCHEMA "+sqlIdent(schemas[i])); err != nil {
 				e.Close()
-				return nil, fmt.Errorf("creating schema %q: %w", schemas[i], err)
+				return nil, nil, fmt.Errorf("creating schema %q: %w", schemas[i], err)
 			}
 		}
 		m, err := ds.DS.ReadManifest()
 		if err != nil {
 			e.Close()
-			return nil, err
+			return nil, nil, err
 		}
 		canon, _ := canonicalize(ds.DS.Dir)
 		vs := viewSet{prefix: prefix, canonDir: canon, m: m, warn: warnOut}
-		for _, stmt := range vs.applyMaterialized(vs.statements()) {
+		stmts := vs.statements()
+		if useMaterialized {
+			stmts = vs.applyMaterialized(stmts)
+		}
+		for _, stmt := range stmts {
 			if stmt.materialized != "" {
 				_, merr := conn.ExecContext(ctx, stmt.materialized)
 				if merr == nil {
@@ -95,8 +113,9 @@ func Open(ctx context.Context, datasets []DatasetSpec, allowDirs []string, warnO
 			if _, err := conn.ExecContext(ctx, stmt.primary); err != nil {
 				if _, ferr := conn.ExecContext(ctx, stmt.fallback); ferr != nil {
 					e.Close()
-					return nil, fmt.Errorf("registering view %s: %v (fallback also failed: %v)", stmt.name, err, ferr)
+					return nil, nil, fmt.Errorf("registering view %s: %v (fallback also failed: %v)", stmt.name, err, ferr)
 				}
+				degraded[bareViewName(stmt.name, prefix)] = true
 				fmt.Fprintf(warnOut, "warning: view %s degraded to empty (%v); affected files: %s\n", stmt.name, err, strings.Join(stmt.files, ", "))
 			}
 		}
@@ -104,9 +123,9 @@ func Open(ctx context.Context, datasets []DatasetSpec, allowDirs []string, warnO
 
 	if err := e.lockSandbox(ctx, allowed); err != nil {
 		e.Close()
-		return nil, err
+		return nil, nil, err
 	}
-	return e, nil
+	return e, degraded, nil
 }
 
 // Resource caps applied before lock_configuration=true. DuckDB otherwise
@@ -145,6 +164,13 @@ func (e *Engine) lockSandbox(ctx context.Context, allowed []string) error {
 }
 
 // Query runs user SQL on the pinned connection.
+// exec runs a statement that returns no rows. Query cannot serve here: dropping
+// its *sql.Rows leaks the connection and deadlocks Close.
+func (e *Engine) exec(ctx context.Context, stmt string) error {
+	_, err := e.conn.ExecContext(ctx, stmt)
+	return err
+}
+
 func (e *Engine) Query(ctx context.Context, query string) (*sql.Rows, error) {
 	return e.conn.QueryContext(ctx, query)
 }

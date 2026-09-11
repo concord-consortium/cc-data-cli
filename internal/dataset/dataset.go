@@ -101,9 +101,11 @@ func Create(dataRoot string, ref Ref, description string) (*Dataset, error) {
 	return d, nil
 }
 
-// lockMutation acquires the activity (exclusive) then per-dataset lock, both
-// non-blocking, returning a release func or ErrBusy.
-func (d *Dataset) lockMutation() (func(), error) {
+// LockMutation acquires the activity (exclusive) then per-dataset lock, both
+// non-blocking, returning a release func or ErrBusy. Callers outside this package
+// hold it only for as long as they are reading or repointing the manifest: a
+// command that holds it for a long copy makes every concurrent get fail as busy.
+func (d *Dataset) LockMutation() (func(), error) {
 	ok, err := d.actLock.TryLock()
 	if err != nil {
 		return nil, err
@@ -128,7 +130,7 @@ func (d *Dataset) lockMutation() (func(), error) {
 
 // Edit updates the dataset description under the mutation locks.
 func (d *Dataset) Edit(description string) error {
-	release, err := d.lockMutation()
+	release, err := d.LockMutation()
 	if err != nil {
 		return err
 	}
@@ -146,7 +148,7 @@ func (d *Dataset) Rename(dataRoot string, newName string) (*Dataset, error) {
 	if err := ValidateName(newName); err != nil {
 		return nil, err
 	}
-	release, err := d.lockMutation()
+	release, err := d.LockMutation()
 	if err != nil {
 		return nil, err
 	}
@@ -256,7 +258,7 @@ func sameDownload(a, b Download) bool {
 // Purge deletes all downloaded artifacts and clears the manifest holdings while
 // keeping the dataset shell. Lock files are never removed.
 func (d *Dataset) Purge() error {
-	release, err := d.lockMutation()
+	release, err := d.LockMutation()
 	if err != nil {
 		return err
 	}
