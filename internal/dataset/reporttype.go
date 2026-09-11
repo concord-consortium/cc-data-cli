@@ -18,8 +18,7 @@ const (
 // slugToType is cc-data's own copy of the Athena slugs, not a roster of what the server
 // offers. Nothing reconciles it: an unrecognized slug degrades with "unknown to this
 // cc-data version" rather than failing, and the guidance guard can only prove the guidance
-// matches this map, never that this map matches the server. REPORT-130 replaces the copy
-// with a catalog read at runtime.
+// matches this map, never that this map matches the server.
 var slugToType = map[string]string{
 	"student-answers":               ReportTypeAnswers,
 	"student-assignment-usage":      ReportTypeUsage,

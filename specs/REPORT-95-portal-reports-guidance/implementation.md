@@ -151,7 +151,8 @@ from the researcher guide.
 3. Fetch the run's own report CSV, which becomes `student_id_mapping`.
 4. Create and fetch a `student-metadata` run over the same learners, which becomes
    `student_metadata`.
-5. Materialize the dataset before querying it when Materializing a dataset says it is worth it.
+5. Materialize the dataset before querying it, when the Materializing a dataset
+   section says it is worth doing.
 6. Query: `answers` joins `student_id_mapping` on `run_remote_endpoint = remote_endpoint`,
    and `student_id_mapping` joins `student_metadata` on `learner_id`. See the
    `student_id_mapping` entry for what a NULL join key means before filtering on it.
@@ -187,8 +188,10 @@ carries a one-line pointer to it:
 // slugToType is cc-data's own copy of the Athena slugs, not a roster of what the server offers.
 // Nothing reconciles it: an unrecognized slug degrades with "unknown to this cc-data version"
 // rather than failing, and the guidance guard can only prove the guidance matches this map, never
-// that this map matches the server. REPORT-130 replaces the copy with a catalog read at runtime.
+// that this map matches the server.
 ```
+
+The comment names no ticket, deliberately. The constraint it states is complete without one, and REPORT-130's replacement of this map is planning state rather than something the code cannot express; no other comment in the tree cites a ticket.
 
 Verified that the union covers the documented set exactly: seven slugs in code, seven documented, none documented that code does not know. So the guard passes on the prose this plan writes, rather than being written and then having the prose trimmed to satisfy it.
 
@@ -208,6 +211,8 @@ Verified that the union covers the documented set exactly: seven slugs in code, 
 **Estimated diff size**: ~120 lines
 
 `skill_header.md` gains `--refresh` on the `get report` line, since the core states the rule and cannot state the flag.
+
+It also gains a `## Making a run` section, which the plan originally missed. The file had no `cc-data reports` subcommand at all, so the recipe's first step, creating a run from a slug and a filter, was unexecutable on the surface that drives the CLI: the model would know `student-id-mapping` and have no verb to use it with. The MCP surface needed nothing, since `tools.md` already names `reports_create` and `reports_filter_options`. A test holds the skill surface to it, in the same shape as the re-pull assertion and for the same reason: the core cannot carry a command spelling, so no comparison of the core can notice this file losing one. It asserts nothing about the MCP surface, because the shipped tool guard already fails if either tool leaves `tools.md`, which was checked by removing one.
 
 `tools.md`'s `get_report` entry gains `refresh` too, and this is not redundant with the tool description. A tool's `Description` is registered with the MCP server and is **not** part of `guidance.Instructions()`, which renders `mcp_header.md` + `core.md` + `tools.md` only. Verified: none of three distinctive description strings appears in the rendered instructions. So the MCP surface's *guidance* learns about `refresh` only if `tools.md` says so, and a both-surfaces test that looked for it in `Instructions()` without this edit would fail on the day it was written.
 

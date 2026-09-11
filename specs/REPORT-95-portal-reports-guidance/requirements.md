@@ -62,6 +62,7 @@ The MCP descriptions for `reports_list`, `get_report`, `get_answers`, `get_histo
 - The end-to-end recipe is documented: create a Student ID Mapping run, pull answers, history and attachments by its run id, download the Student ID Mapping and Student Metadata CSVs, materialize first if the pull is large, then query, joining answers and history on `remote_endpoint` and Student Metadata on `learner_id`.
 - The recipe's materialize step is a **conditional pointer**, not a restatement: REPORT-113 owns when materializing is worth it, and this step references that rule rather than repeating the condition. The step exists because REPORT-115 templates its CLUE workflow on this recipe and puts materialize in exactly this position ("materialize (REPORT-113) when the history store is large"), for a corpus where it is closest to mandatory. A recipe with no slot for it would force 115 to invent one and the two workflows to diverge structurally.
 - The re-pull mechanism is named on both surfaces: `--refresh` for the CLI, the `refresh` parameter for the MCP tool.
+- Each surface carries the verb that acts on a slug, or the recipe's first step is unexecutable there. The MCP surface already had it, since `tools.md` names `reports_create` and `reports_filter_options`; the skill surface named no `cc-data reports` subcommand at all, so a CLI-driving model could read the slug catalog and the recipe and still have no way to create a run or assemble a filter. That is the same defect this story was filed for, one level up: knowing the string and not the command is as unexecutable as not knowing the string. The skill header gains `reports list`, `reports filter-options`, `reports create` and `reports duplicate`, every spelling checked against its own `--help`, and a test holds the skill surface to it. The MCP side needs no new assertion, since the shipped tool guard already fails if either tool leaves the catalog.
 - The `student_id_mapping` and `student_metadata` view entries gain exactly the two facts they lack and are otherwise left alone: the slug a run of each is created from, and that such a run's id is a valid source for fetching answers, history and attachments. They already carry the dedup rule, the withheld-join-key rule and the `hide_names` rule.
 - The MCP descriptions carry named facts rather than a general instruction to mention Portal runs, and a test asserts each one, since the drift guard checks tool names and never looks at description text: `reports_list` says a run's execution tells Athena from Portal; `reports_filter_options` says it is how a Student ID Mapping run's filter is assembled, since the recipe's first step sends the model straight to it; `get_report` says a Portal report is re-read with `refresh` rather than duplicated; and `get_answers`, `get_history` and `get_attachments` each say a Student ID Mapping run id is a valid source.
 - A guard holds that every report slug named in the guidance exists in the code's slug inventories, so a typo cannot ship a slug that fails at the server.
@@ -127,6 +128,11 @@ nothing that parses today.** Measured over the rendered surfaces: Views 12 befor
 21 before and after, Identity columns 4 before and after, identical name-for-name in each. The
 earlier check had only REPORT-112's branch; Tools is 21 because REPORT-113's `dataset_materialize`
 entry is now in the catalog, and it parses the same either way.
+
+**Measured on the finished implementation (2026-09-11):** core 17,002 bytes, skill 20,319, MCP
+instructions 20,503. This story added 2,668 to the core, 3,413 to the skill and 2,781 to the
+instructions, against a baseline that had itself grown 39% since the spec was drafted. The skill
+grows most because it alone carries the command spellings the core is forbidden to name.
 
 **Moved: every byte measurement, by more than the recipe it was sizing.** Re-measured on this
 branch: core 14,334 bytes, skill 16,906, MCP instructions 17,722, against the 10,292 / 12,464 /

@@ -248,7 +248,7 @@ gives you current data and duplicating one needs `--force`.
 
 To pull a whole cohort's work without authoring an Athena report at all, create a
 `student-id-mapping` run and fetch answers, history and attachments by its run
-id; the two Portal reports below describe that path.
+id; the Report types section describes that path.
 
 ### A complete session
 

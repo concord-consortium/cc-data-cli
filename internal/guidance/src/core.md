@@ -205,8 +205,8 @@ their slugs come from an existing run or from the researcher guide.
 3. Fetch the run's own report CSV, which becomes `student_id_mapping`.
 4. Create and fetch a `student-metadata` run over the same learners, which
    becomes `student_metadata`.
-5. Materialize the dataset before querying it when Materializing a dataset says
-   it is worth it.
+5. Materialize the dataset before querying it, when the Materializing a dataset
+   section says it is worth doing.
 6. Query: `answers` joins `student_id_mapping` on `run_remote_endpoint =
    remote_endpoint`, and `student_id_mapping` joins `student_metadata` on
    `learner_id`. See the `student_id_mapping` entry for what a NULL join key

@@ -218,6 +218,20 @@ func TestGuidanceDocumentsOnlyRealSlugs(t *testing.T) {
 // inventory comparison can notice one of them losing it. Only the per-surface halves are
 // asserted: the rule itself is in the core, which both render by construction, so
 // checking it here would be true by construction and would test nothing.
+// The core lists the slugs and the recipe opens by creating a run from one, so the
+// skill has to carry the verb that acts on a slug or the recipe's first step is
+// unexecutable there. The core cannot carry it, the no-commands guard forbids it, and
+// nothing else checks this file's command spellings. The MCP side needs no assertion
+// here: TestGuidanceDocumentsEveryTool already fails if either tool leaves tools.md.
+func TestSkillSurfaceCanActOnASlug(t *testing.T) {
+	if !strings.Contains(guidance.Skill(), "cc-data reports create --report-slug") {
+		t.Error("skill: no command creates a run from a slug")
+	}
+	if !strings.Contains(guidance.Skill(), "cc-data reports filter-options") {
+		t.Error("skill: no command assembles the filter the recipe's first step needs")
+	}
+}
+
 func TestBothSurfacesCarryTheRePullMechanism(t *testing.T) {
 	if !strings.Contains(guidance.Skill(), "--refresh") {
 		t.Error("skill: the --refresh spelling is missing")

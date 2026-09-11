@@ -38,6 +38,18 @@ guessing flags.
 - The environment names also work wherever a `portal` is passed: the `--portal`
   flag on `logout` and on every `reports` subcommand.
 
+## Making a run
+
+- `cc-data reports list --portal <portal|env>` — the runs you already have.
+- `cc-data reports filter-options --dimension <name> --portal <portal|env>` — the
+  values a filter dimension offers, narrowed by `--report-filter` as selections
+  are made, and by `--report-slug` to a report that offers the dimension.
+- `cc-data reports create --report-slug <slug> --report-filter '<json>' --portal
+  <portal|env>` — a run from a slug and a filter. Use `--report-filter-file` when
+  the filter is too long to quote.
+- `cc-data reports duplicate <run-id> --portal <portal|env>` — a fresh snapshot of
+  an Athena run.
+
 ## Fetching data
 
 - `cc-data get report <run-id> --dataset <ref>` — the report CSV. A Portal report
