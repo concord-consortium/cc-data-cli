@@ -344,6 +344,45 @@ When you (or Claude) query a dataset, the data is exposed as a set of SQL
 | `student_metadata` | One row per learner from Student Metadata runs: name, username, class, school, teachers, permission forms. |
 | `run_membership`, `downloads` | Provenance: which run's fetch covered which records, and what each download was, including whether its run hid names. |
 
+### Speeding up a large dataset
+
+Every query re-reads the JSONL and CSV files your downloads produced. That is
+fine for a few thousand answers and slow once a dataset runs to gigabytes.
+`cc-data dataset materialize <ref>` writes each view to a compressed Parquet file
+that queries read instead, while the copy is still current:
+
+```
+<data-root>/<portal>/datasets/<name>/materialized/<view>.parquet
+```
+
+A few things worth knowing about that folder.
+
+- **It never changes an answer.** A query returns the same rows either way. When a
+  later download changes a file a view reads, that view quietly goes back to
+  reading the raw files, and `cc-data dataset show <ref>` tells you which views
+  are worth refreshing.
+- **The path is stable, and the files are ordinary Parquet.** Any tool that reads
+  Parquet, DuckDB, pandas or Polars, can open one directly without going through
+  cc-data, which is the point of the fixed path: analysis scripts can hardcode it.
+- **You can delete the folder whenever you like**, and cc-data itself removes it
+  only when you purge or delete the whole dataset. Nothing else in cc-data
+  removes it, so a script of yours can rely on it being there until you say
+  otherwise.
+- **It is bigger than the one view you care about**, for two reasons. `reports`
+  unions the same log CSVs `logs` reads, so both carry those rows (on a
+  200,000-row log fixture, a 5.4 MB `reports.parquet` beside a 9.5 MB
+  `logs.parquet`). And a view's derived columns cost nothing until they are
+  written down: `logs` carries both `parameters` and its parsed `parameters_json`,
+  which together with the other derived columns is about 45% of that file.
+- **`dataset show` and `dataset list` report the folder's size separately**, so
+  you can see at a glance what deleting it would reclaim.
+
+If a view reads a file that is no longer on disk, materializing refuses that view
+rather than writing a short Parquet, names the file, and tells you both ways to
+fix it; other views are still written, and the command exits non-zero so a script
+stops. `--allow-partial` builds from what is there anyway and says how much of
+the declared input it used.
+
 ### Report types
 
 You generate report runs in the report server, and `cc-data` downloads whichever
