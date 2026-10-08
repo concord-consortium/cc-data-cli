@@ -586,7 +586,7 @@ import (
 
 var classHashRe = regexp.MustCompile(`^[0-9a-f]{48}$`)
 
-// Class and Assignment are scope.json's entries (final-design.md section 10).
+// Class and Assignment are scope.json's entries.
 type Class struct {
 	ClassHash string `json:"class_hash"`
 	ClassID   int64  `json:"class_id"`
@@ -752,7 +752,7 @@ type RunOptions struct {
 // Run prepares the runner's layout, runs the entrypoint and reads its result.
 func Run(ctx context.Context, o RunOptions) (Result, error) {
 	if o.Manifest.CluePrepull {
-		return Result{}, &Refused{Reason: "the package sets clue_prepull, and cc-data cannot fetch CLUE data yet (final-design.md section 13), so it runs only on the VM"}
+		return Result{}, &Refused{Reason: "the package sets clue_prepull, and cc-data cannot fetch CLUE data yet, so it runs only on the VM"}
 	}
 	if o.Manifest.URLs.DeclaresPatterns() {
 		v, err := o.Applies(ctx, o.Manifest.URLs)
@@ -813,8 +813,7 @@ func Run(ctx context.Context, o RunOptions) (Result, error) {
 	cmd.Stderr = o.Stderr
 	killGroup(cmd)
 	err = cmd.Run()
-	// The runner kills everything the package left behind before it reads the output, so a
-	// background process can neither outlive the run nor write a later run's files.
+	// As on the VM, nothing the package started outlives it or writes after it.
 	reapGroup(cmd)
 	if err != nil {
 		switch {
@@ -999,7 +998,7 @@ Tests (the entrypoint is a `/bin/sh` script, so these skip on Windows):
   - The package dumps its environment, copies `scope.json` and lists its working directory.
   - The environment carries `RD_DATASET` (the full ref), `CC_DATA_PORTAL`, `RD_SCOPE_FILE` a passed-through `LC_ALL` and lower-case `https_proxy`, and not an injected `AWS_SECRET_ACCESS_KEY`.
   - `scope.json` has the bare `dataset`, `clue_source: "firebase"` and the absolute `output_dir`.
-  - The working directory has no `local-data/`, and `.gitignore` is `*`.
+  - The working directory holds exactly `manifest.json` and `run.sh` (no `local-data/`), the staged `run.sh` keeps mode 0755, and `.gitignore` is `*`.
 - **`TestRunRefusesBeforeStarting`**: when `Applies` says no, the error is the runner's prefix plus the reason, and the entrypoint never starts. A `clue_prepull` package is refused.
 - **`TestRunWarnsAndRunsWhenApplicabilityIsUnconfirmed`**: an unconfirmed verdict prints the warning and runs.
 - **`TestRunKillsAtTheBound`**: `sleep 30 & wait` under a 300 ms bound fails as "past its bound" within 5 seconds.
