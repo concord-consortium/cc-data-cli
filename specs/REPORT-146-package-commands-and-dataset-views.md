@@ -1,94 +1,12 @@
 # cc-data-cli: the package commands and the dataset views that replace `_lib`
 
 **Jira**: https://concord-consortium.atlassian.net/browse/REPORT-146
-**Repo**: https://github.com/concord-consortium/cc-data-cli
-**Implementation Spec**: [implementation.md](implementation.md)
-**Status**: **In Development**
+
+**Status**: **Closed**
 
 ## Overview
 
 Researchers get four `cc-data package` commands (`init`, `run`, `build`, `publish`) for writing a Researcher Dashboard package on a laptop, testing it the way the dashboard's runner will run it, and publishing it to the package catalog with the cc-data token they already have. A new dataset view, `run_answers`, and documented joins on views cc-data already has replace the counting SQL the spike copied into every package.
-
-## Project Owner Overview
-
-The Researcher Dashboard runs analysis "packages" for a class on a short-lived virtual machine. In the spike, a package was built and uploaded by a script that called AWS directly. Each package also carried a shared library of SQL describing how cc-data lays out a dataset. As a result, developing a package needed AWS credentials, and the only way to find a mistake was to run the package on a VM.
-
-This story moves the whole loop onto the researcher's laptop and onto the token they already use for cc-data. `cc-data package run` runs a package against their own dataset under the runner's rules: the same `scope.json`, the same output files and the same size limit on the result. It asks report-server, rather than a copy of its rules, whether the package is valid and whether it applies to the class. An author therefore hits these failures on their laptop, not on a VM. `cc-data package publish` registers the package in the catalog in one step. The shared SQL becomes a named view and documented joins in cc-data itself, so a package writes plain SQL against stable names and carries no library. The first package built this way is the Wildfire package (REPORT-147), whose spec waits on this one.
-
-**One rule, one home.** The package rules (what a valid package is) and applicability (whether a package suits a class) are decided by report-server alone. cc-data, the dashboard app and the runner ask it and do not keep their own copies. The new report-service routes this needs are one companion story, REPORT-167 (see Dependencies).
-
-## Background
-
-The design is `final-design.md` (global oob, `streams/researcher-dashboard/`) sections 5.5 (applicability by URL patterns), 5.7 (publishing and iterating), 10 (`manifest.json`, `scope.json`, the result a package writes) and 13 (data sources). The section numbers below are that document's.
-
-**What `_lib` was.** On cc-data-studies' unmerged spike branch `RIGSE-365-analysis-packages` (`838a603`), `studies/_lib/reports.py` held three queries. `studies/_lib/ccdata.py` held the cc-data calls a class study makes: it creates the Student Answers and Student Actions runs, pulls them, and keeps run ids in `runs.json`. `publish-package.sh` copied `_lib/` into every archive. REPORT-147 builds on cc-data-studies `main`, where `_lib` never landed, so this story adds new views rather than replacing existing code. `_lib` is only the reference for what the views must cover (stream channel, 2026-10-07). The three queries are:
-
-1. **Answers scoped to a run**: `answers JOIN run_membership USING (source_key, remote_endpoint, question_id) WHERE m.run_id = <run> AND m.type = 'answers'`. The query is written this way, and not against `answers_<run>`, because the per-run view exists only once the run has membership on disk. A class with no answers would then fail to bind instead of counting zero.
-2. **Learners with at least one answer**: a `UNION ALL` over every `res_<N>_remote_endpoint` column of `report_<run>` (paired with `user_id`), joined to that run's answers, then `count(DISTINCT user_id)`. The column list differs from class to class, so the spike read it with `DESCRIBE` before building the SQL.
-3. **Log freshness**: `count(*), max(event_time) FROM logs WHERE run_id = <run>`.
-
-`ccdata.py`'s run creation and pulling stay package code. Section 13 says a package makes its own pulls, and the Jira story says the runner does not create a package's report runs. Nothing replaces that half in cc-data.
-
-**What cc-data already has** (`internal/duck/views.go`, released in v0.2.0, which is `main` at `58c9172`):
-
-- `run_membership` (run_id, type, identity columns), `answers`, `history`, `reports`, `report_<run>`, `answers_<run>`. Each has a typed-empty fallback, so they always bind.
-- `logs`, with `run_id` and `event_time` (REPORT-112). The freshness query is already plain SQL against stable names, so query 3 needs no new view.
-- `student_id_mapping`, one row per learner from Student ID Mapping runs, with `user_id` and `run_remote_endpoint` (a bare endpoint already nulled). Joined to a run's answers, it counts learners without double-counting a student who answered in two assignments, which is query 2's goal, so query 2 needs no new view either.
-
-**Why learners come from Student ID Mapping, not the Student Answers CSV** (REPORT-147's measurements on production, `bca55aa`, decided by Doug 2026-10-08). A whole-class Student Answers run fails above three or four assignments, and real Wildfire classes have 8 to 14. A reused Student Answers run's CSV is fixed when its query ran, so a learner who joins later has answers but no row. A Student ID Mapping run is a Portal report computed on every download, with no assignment limit, and its id fetches answers like any run. So the package route this story teaches is Student ID Mapping, and `_lib`'s Student Answers union (query 2) does not carry over.
-- A drift guard (`internal/guidance/guard_test.go`): every name in `StaticViewNames()` must be documented in `internal/guidance/src/core.md`'s Views section and in `docs/researcher-guide.md`'s "How datasets are organized" table, and the reverse. `cc-data query --help` and the MCP `query` tool description list the static views from the same function.
-
-**What the runner does to a package.** This is RD-4 pass 2 as spec'd and built in its stage-verification throwaway build (`stage5-throwaway-build.patch`, researcher-dashboard branch oob `RD-4-pass-2-pull-loop`). It is not implemented on any branch yet.
-
-- It validates `manifest.json`:
-  - required fields;
-  - `expected_duration_seconds` a positive integer and at most `PACKAGE_MAX_DURATION_SECONDS` (default 7200);
-  - `clue_prepull` boolean if present;
-  - `urls` keys only `all`, `any` and `none`, each a list of non-empty strings;
-  - the entrypoint inside the package;
-  - `name` equal to the last segment of the identity.
-- When `urls` declares any pattern, it matches the patterns against the class profile's `assignment_urls` ∪ `interactive_urls`, using the glob of section 5.5. It refuses with "the package does not apply to this class: <reason naming the pattern>". It also refuses a package that declares patterns on a class with no profile yet.
-- It writes `scope.json` with exactly `kind`, `id`, `classes`, `assignments`, `clue_source`, `dataset` (the bare name `pkg-<catalog id>`) and `output_dir`. It names the file in `RD_SCOPE_FILE`.
-- It replaces the package's environment with `HOME`, `PATH=/usr/local/bin:/usr/bin:/bin`, `CC_DATA_ROOT`, `CC_DATA_PORTAL`, `CC_DATA_LOCAL`, `RD_DATASET` (`<portal host>/pkg-<catalog id>`), `RD_SCOPE_FILE`, `RD_DATA_DIR` and `RD_OUTPUT_DIR`, plus `RD_REPORT_SERVER_URL`, `RD_BUCKET` and `RD_STORAGE_PREFIX` when set.
-- It runs a `.py` entrypoint with `python3.11`, and any other entrypoint directly. The bound is `expected_duration_seconds` plus a 10-minute margin.
-- It empties the output directory before each run. Afterwards it reads, without following links:
-  - `display.md`, required and refused over 65,536 bytes (never truncated);
-  - `summary.txt`, whose first line, trimmed, is the summary (or null);
-  - `counts.json`, for `answers`, `logs` and `log_freshness_at` only.
-
-**What report-server accepts** (`server/lib/report_server/packages/*.ex` and `package_controller.ex` on report-service `master`, `067a1c4`, live on staging as `1.12.0-pre.2`):
-
-- **The request.** `POST /api/v1/packages` behind the ordinary API token (the cc-data token). The body is the zip, with `Content-Type: application/zip` and a declared `Content-Length`. Query parameters are `origin=projects/<id>` (absent means the caller's own `users/<id>`) and `official=true|false`. Only a publisher may set `official`.
-- **Archive limits.** At most 10 MiB, at most 50 MiB declared uncompressed in total, no absolute or `..` entry, exactly one root `manifest.json` of at most 64 KiB.
-- **Manifest rules.**
-  - `name` matches `^[a-z0-9][a-z0-9-]{0,62}$`.
-  - `version` is `MAJOR.MINOR.PATCH[-prerelease]`, at most 64 characters.
-  - `title` is non-empty, at most 200 characters.
-  - `description` is optional: one line, at most 500 characters.
-  - `urls` has only `all`/`any`/`none` arrays, each pattern non-empty with no whitespace or control characters and at most 256 characters, and at most 20 patterns in total.
-  - `clue_prepull` is boolean.
-  - `entrypoint` is a file in the archive.
-  - `expected_duration_seconds` is 1 to 28,800.
-  - No `owner`, `maintainer`, `origin`, `visibility`, `project` or `official` key.
-- **On success (201).** The response is `{catalog_id, identity, version, checksum, visibility, official, current_version}`, where `checksum` is `sha256:<hex>` of the body.
-- **On failure.** The flat envelope `{"error", "message"}` with `BAD_REQUEST`, `UNPROCESSABLE` (422), `FORBIDDEN`, `ALREADY_EXISTS` (409), `NOT_AUTHENTICATED` or `SERVICE_UNAVAILABLE`.
-- **Visibility and the version pointer.** A first publish creates the package `private`. For a private package, every publish moves `current_version` to the new version.
-
-## Dependencies
-
-**REPORT-167** (report-service: one home for the package rules and applicability, created 2026-10-08) owns the routes cc-data calls. REPORT-146 codes against the contract below, which that story's spec may refine. Until those routes are deployed, `build` and `run` warn and proceed (R6, R12), so REPORT-146 is not blocked on it.
-
-- **`POST /api/v1/packages/validate`** (cc-data token). The body is the raw zip, sent exactly as for publish, with `origin` and `official` as optional query parameters, as publish takes them. It runs every check `POST /api/v1/packages` runs, including permission and origin, and stops before writing any row or object. It answers 200 with `{identity, version, checksum, visibility, already_published}` (what a publish would record now), or the same coded error a publish would give for any other refusal. **A version that is already published is reported, not refused:** `already_published` is true and the answer is still 200, while only the publish itself answers `ALREADY_EXISTS` (REPORT-167's R12, refined after REPORT-146's first spec commit). **A portal that cannot store packages yet is reported, not refused:** `publishing_unavailable` is `null` or publish's own message (today only "publishing is not configured for <server>", before the portal has a bucket in `PackageBuckets`), the answer is still 200, and every other check still runs; only the publish answers that 422. Without this, `package run` would refuse every package on staging until its bucket is set (REPORT-167, `1ff2fc0`). The answer is thus `{identity, version, checksum, visibility, already_published, publishing_unavailable}`.
-  - It is a separate route, not a `dry_run` parameter on publish. Today's publish ignores parameters it does not know, so a `dry_run=true` sent to a server without the feature would publish for real. A missing route answers 404.
-- **`POST /api/v1/packages/applies`** (cc-data token, or the researcher token the runner holds). The body is JSON: `{urls: {all, any, none}, assignment_urls: [...], scope_urls: [...]}`.
-  - **Assignment URLs** are followed by report-service's existing deriver (`deriveProfile` in `functions/src/researcher-dashboard/derive-profile.ts`). report-server reaches it through a new `derive_urls` route on the `api` function, the way it already calls `bulk_read`.
-  - **Scope URLs** are matched as given; that is the runner's case, since it already holds the class profile.
-  - **`urls` is required**: a missing or `null` `urls` is 400 `BAD_REQUEST`, while a `null` group inside it counts as empty. cc-data always sends it.
-  - **The answer** is `{applies, reason, interactive_urls, unread: [{url, reason}], truncated}`. The `reason` uses the runner's wording.
-  - **The matcher** behind it is the only glob matcher in the system. The app gets the same answer through the package-list call it already makes.
-- **One contract fixture** of identity, version and package-key cases lives in report-service, asserted by report-server, the function, the runner and the app. cc-data's only copy of that grammar is `init`'s name check (R9), kept on purpose.
-- **Neither route answers 404 on a report-server that has it** (REPORT-167). So a 404 still means only that the route is not deployed. A deriver failure answers 400 or 503, and report-server waits up to 270 seconds for the deriver, inside cc-data's 5-minute timeout.
-- **report-server adopts the runner's stricter rules,** so that anything it accepts the runner will run: `expected_duration_seconds` at most 7,200 (today 28,800), and no symbolic-link entries in an archive.
 
 ## Requirements
 
@@ -218,7 +136,7 @@ The design is `final-design.md` (global oob, `streams/researcher-dashboard/`) se
   - **One classification.** Both steps read one decision made once in the workflow, and a test pins both uses.
   - The change ships in this story's PR, so the first tag after merge is already safe.
 
-## Done when
+### Done when
 
 - A package made with `init`, edited and run with `package run` against a real dataset, produces `display.md`, `summary.txt` and `counts.json` under the runner's layout.
 - `display.md` over 65,536 bytes fails `package run` at the same size the runner refuses.
@@ -229,6 +147,24 @@ The design is `final-design.md` (global oob, `streams/researcher-dashboard/`) se
 - Moved to REPORT-147 (Doug, 2026-10-08): a package built on a laptop runs on the VM and produces the same output.
 
 ## Technical Notes
+
+### Dependencies
+
+**REPORT-167** (report-service: one home for the package rules and applicability, created 2026-10-08) owns the routes cc-data calls. REPORT-146 codes against the contract below, which that story's spec may refine. Until those routes are deployed, `build` and `run` warn and proceed (R6, R12), so REPORT-146 is not blocked on it.
+
+- **`POST /api/v1/packages/validate`** (cc-data token). The body is the raw zip, sent exactly as for publish, with `origin` and `official` as optional query parameters, as publish takes them. It runs every check `POST /api/v1/packages` runs, including permission and origin, and stops before writing any row or object. It answers 200 with `{identity, version, checksum, visibility, already_published}` (what a publish would record now), or the same coded error a publish would give for any other refusal. **A version that is already published is reported, not refused:** `already_published` is true and the answer is still 200, while only the publish itself answers `ALREADY_EXISTS` (REPORT-167's R12, refined after REPORT-146's first spec commit). **A portal that cannot store packages yet is reported, not refused:** `publishing_unavailable` is `null` or publish's own message (today only "publishing is not configured for <server>", before the portal has a bucket in `PackageBuckets`), the answer is still 200, and every other check still runs; only the publish answers that 422. Without this, `package run` would refuse every package on staging until its bucket is set (REPORT-167, `1ff2fc0`). The answer is thus `{identity, version, checksum, visibility, already_published, publishing_unavailable}`.
+  - It is a separate route, not a `dry_run` parameter on publish. Today's publish ignores parameters it does not know, so a `dry_run=true` sent to a server without the feature would publish for real. A missing route answers 404.
+- **`POST /api/v1/packages/applies`** (cc-data token, or the researcher token the runner holds). The body is JSON: `{urls: {all, any, none}, assignment_urls: [...], scope_urls: [...]}`.
+  - **Assignment URLs** are followed by report-service's existing deriver (`deriveProfile` in `functions/src/researcher-dashboard/derive-profile.ts`). report-server reaches it through a new `derive_urls` route on the `api` function, the way it already calls `bulk_read`.
+  - **Scope URLs** are matched as given; that is the runner's case, since it already holds the class profile.
+  - **`urls` is required**: a missing or `null` `urls` is 400 `BAD_REQUEST`, while a `null` group inside it counts as empty. cc-data always sends it.
+  - **The answer** is `{applies, reason, interactive_urls, unread: [{url, reason}], truncated}`. The `reason` uses the runner's wording.
+  - **The matcher** behind it is the only glob matcher in the system. The app gets the same answer through the package-list call it already makes.
+- **One contract fixture** of identity, version and package-key cases lives in report-service, asserted by report-server, the function, the runner and the app. cc-data's only copy of that grammar is `init`'s name check (R9), kept on purpose.
+- **Neither route answers 404 on a report-server that has it** (REPORT-167). So a 404 still means only that the route is not deployed. A deriver failure answers 400 or 503, and report-server waits up to 270 seconds for the deriver, inside cc-data's 5-minute timeout.
+- **report-server adopts the runner's stricter rules,** so that anything it accepts the runner will run: `expected_duration_seconds` at most 7,200 (today 28,800), and no symbolic-link entries in an archive.
+
+### Notes
 
 - **Views live in `internal/duck/views.go`.** Add one builder to `viewSet.statements()`, after `runMembershipView` (`run_answers` reads `answers` and `run_membership`, so it must register after both). Use `vs.prefix` for every referenced view so multi-dataset sessions resolve to the right schema, as `perStoreView` does.
 - **What the tests can see.** `StaticViewNames()` and the guard pick up the view automatically. `cmd/query.go`'s help and `internal/mcpserver/tools.go`'s `query` description list it with no edit.
@@ -256,12 +192,16 @@ The design is `final-design.md` (global oob, `streams/researcher-dashboard/`) se
 - Bumping the runner image's cc-data pin; deleting `_lib` or the spike packages; a dashboard control that hands an author a ready-made scope file (RD-3).
 - Recording the cc-data version in a package's result, which is the runner's image version (section 13).
 
-## Open Questions
+## Not Yet Implemented
 
-<!-- Requirements-focused questions only (scope, acceptance criteria, business rules).
-     Implementation questions go in implementation.md. -->
+- Tagging `main` as `v0.3.0-pre.1` after this story merges, and checking that its GitHub release is marked as a pre-release with the linux/amd64 archive and its `.sha256` and no Homebrew formula (R25, Done when). It is a release step after the merge, not code on the branch.
+- Publishing a private package and a version row on staging with `cc-data package publish` (Done when). It runs against staging once the branch is released.
+- `build` and `run` refusing what report-server refuses, and `run` refusing a package that does not apply, as observed against a live server (Done when): both wait on REPORT-167's routes being deployed, and until then both warn and proceed.
+- A package built on a laptop producing the same output on the VM: moved to REPORT-147 (Doug, 2026-10-08).
 
-### RESOLVED: Which URLs does `package run` match a package's patterns against?
+## Decisions
+
+### Which URLs does `package run` match a package's patterns against?
 **Context**: The runner matches against the class profile's `assignment_urls` ∪ `interactive_urls`, while `scope.json` carries only assignment URLs, so a pattern on an interactive (the Wildfire case) would be refused locally and accepted on the VM. The profile is derived by report-service's function from public authoring JSON.
 **Options considered**:
 - A) A Go port of the deriver's walk in cc-data.
@@ -271,20 +211,28 @@ The design is `final-design.md` (global oob, `streams/researcher-dashboard/`) se
 
 **Decision**: D, taken further (Doug, 2026-10-08): report-server holds the only matcher, and cc-data, the dashboard app and the runner all ask it (Dependencies, `POST /api/v1/packages/applies`). The deriver keeps its one copy, and there is no glob matcher anywhere else. The app and the runner already call report-service at startup, so the call adds no new dependency for either. Before the route is deployed, `run` warns and proceeds (R12).
 
-### RESOLVED: Where does the shared pattern fixture live?
+---
+
+### Where does the shared pattern fixture live?
 **Decision**: The question dissolves under the decision above (Doug, 2026-10-08). With one matcher in report-server, `url-patterns.json` is an ordinary test file beside it in report-service, and nothing vendors a copy. cc-data has none.
 
-### RESOLVED: How is "a package built on a laptop runs in the VM and produces the same output" verified?
+---
+
+### How is "a package built on a laptop runs in the VM and produces the same output" verified?
 **Decision**: REPORT-147 owns it (Doug, 2026-10-08). Its done-when already requires the Wildfire package to run "identically under `cc-data package run` on a laptop and on a VM", and it is the first story that can put a package on a VM. REPORT-146 closes on the criteria in "Done when" below.
 
-### RESOLVED: Judgment call: doing applicability and the rules in report-server rather than in cc-data
+---
+
+### Doing applicability and the rules in report-server rather than in cc-data
 **Options considered**:
 - A) cc-data keeps Go copies of the manifest rules, the archive limits and the matcher, guarded by fixtures.
 - B) cc-data asks report-server's validate and applies routes, keeping only what it needs to stage and start a package.
 
 **Decision**: B (Doug, 2026-10-08, to remove DRY violations without multiplying stories). The copies already disagreed: report-server allows 28,800 seconds where the runner refuses over 7,200. REPORT-167 makes report-server adopt the runner's stricter rules, so its answer is the runner's.
 
-### RESOLVED: Keep `learner_endpoints`, and which route the `init` stub teaches
+---
+
+### Keep `learner_endpoints`, and which route the `init` stub teaches
 **Context**: REPORT-147 (`bca55aa`) counts learners through a Student ID Mapping run with `run_answers` and `student_id_mapping`, after measuring on production that whole-class Student Answers runs fail above three or four assignments and that a reused run's learner list goes stale. That left `learner_endpoints` with no consumer, and the stub teaching the failing route.
 **Options considered**:
 - A) Drop `learner_endpoints`, document the Student ID Mapping learner count, and switch the stub to Student ID Mapping.
@@ -292,21 +240,27 @@ The design is `final-design.md` (global oob, `streams/researcher-dashboard/`) se
 
 **Decision**: A (Doug, 2026-10-08). Nothing uses the view, the route it rests on fails on real classes, and the existing `student_id_mapping` view already makes the count without double-counting. The stub is the template authors copy, so it teaches the route that works.
 
-### RESOLVED: Judgment call: where a local scope comes from
+---
+
+### Where a local scope comes from
 **Options considered**:
 - A) An author-supplied file (`--scope`) carrying the four keys rigse supplies.
 - B) Synthesized from a pulled Student Answers report (`class_id`, and `res_<N>_offering_id`, `_name` and `_resource_url` per assignment).
 
 **Decision**: A. The report has no `class_hash` or `runnable_id`, and the scope contract has no room for nulls in either. Any synthesized scope would differ from the VM's in exactly the fields a package might key on. A dashboard control that hands out the real scope is the eventual source (RD-3, out of scope).
 
-### RESOLVED: Judgment call: a `clue_prepull` package under `package run`
+---
+
+### A `clue_prepull` package under `package run`
 **Options considered**:
 - A) Refuse it locally (R15).
 - B) Run it with `clue_source: "firebase"` and an empty corpus.
 
 **Decision**: A. B tells the package something false, and the package would produce numbers the VM would not. Section 13 already says a CLUE package is the one package that cannot be developed locally until REPORT-109 to 111.
 
-### RESOLVED: Low confidence: the passthrough environment in R11
+---
+
+### The passthrough environment in R11
 **Context**: The runner replaces the environment entirely. Locally, a package's own `cc-data` calls must find the researcher's credential: the OS keychain via `go-keyring`, or `~/.config/cc-data/credentials.json`.
 **Options considered**:
 - A) The R11 allowlist.
@@ -314,7 +268,9 @@ The design is `final-design.md` (global oob, `streams/researcher-dashboard/`) se
 
 **Decision**: A, verified on this machine (Linux, keyring backend). `env -i` with the R11 list, then `cc-data reports list --portal learn.concord.org --json`, reads the keyring token and lists runs. So does `env -i HOME PATH USER` alone: go-keyring reaches the session bus without `DBUS_SESSION_BUS_ADDRESS` here, so the D-Bus and XDG variables are kept only for setups that need them. On macOS go-keyring calls `/usr/bin/security`, which needs nothing beyond `HOME` and a `PATH` reaching `/usr/bin`. A cc-data query under the same `env -i` reads a dataset. B would let a package pass locally while depending on a variable the VM never sets.
 
-### RESOLVED: Low confidence: `scope.json`'s `dataset` is a bare name
+---
+
+### `scope.json`'s `dataset` is a bare name
 **Context**: `final-design.md` section 10 shows `"dataset": "<cc-data dataset ref>"`. RD-4 pass 2's `scopeFile` writes the bare `pkg-<id>`, while `RD_DATASET` carries the full ref. A package that passes `scope["dataset"]` to `cc-data query --dataset` resolves it under the configured default portal, which may not be the dataset's.
 **Options considered**:
 - A) Mirror the runner (bare name), have the `init` stub read `RD_DATASET`, and record the discrepancy for RD-4 and the design to settle.
@@ -322,40 +278,176 @@ The design is `final-design.md` (global oob, `streams/researcher-dashboard/`) se
 
 **Decision**: A. This story's contract is "exactly as the runner", and B changes a contract RD-4 owns from a story that consumes it. RD-4 pass 2 has since settled it as the bare name, and `final-design.md` section 10 says so (stream channel #28). The `init` stub reads `RD_DATASET`, the one name that is a full ref on both sides.
 
-## Self-Review
+---
 
-Roles: senior engineer, security engineer, QA engineer, education researcher, package author, operator. Every finding below was checked against the code before it was written down. Each had one defensible correction, which has been applied to the requirements above.
+### Emptying the run directory could follow a link out of the package
+**Context**: Raised in self-review (Security Engineer).
 
-### Security Engineer
+**Decision**: R11 empties `dir/.cc-data-run/in` and `out` on every run. If `.cc-data-run` were a symbolic link to another directory, the emptying would delete under that target. Fixed in R11: every directory `package run` empties or creates must be a real directory, and a link is refused before anything is removed.
 
-#### RESOLVED: Emptying the run directory could follow a link out of the package
-R11 empties `dir/.cc-data-run/in` and `out` on every run. If `.cc-data-run` were a symbolic link to another directory, the emptying would delete under that target. Fixed in R11: every directory `package run` empties or creates must be a real directory, and a link is refused before anything is removed.
+---
 
-#### RESOLVED: `publish` would upload a hand-made zip the runner then refuses
-report-server checks entry paths but not entry types, and the runner refuses a symbolic link after unpacking (RD-4's `checkTree`). So a zip made outside `build` could publish and then fail on every VM. Resolved by REPORT-167: report-server refuses link entries at publish, so the one check covers every zip.
+### `publish` would upload a hand-made zip the runner then refuses
+**Context**: Raised in self-review (Security Engineer).
 
-### Education Researcher
+**Decision**: report-server checks entry paths but not entry types, and the runner refuses a symbolic link after unpacking (RD-4's `checkTree`). So a zip made outside `build` could publish and then fail on every VM. Resolved by REPORT-167: report-server refuses link entries at publish, so the one check covers every zip.
 
-#### RESOLVED: Run output written inside a git checkout
-`out/display.md` is derived from student data and lands inside the package directory. cc-data-studies' `.gitignore` ignores only `local-data/`, `__pycache__/` and `*.pyc` (read 2026-10-07), so `git add -A` would stage it. Fixed in R11 and R20: each working directory gets a `.gitignore` of `*`.
+---
 
-#### RESOLVED: `_run_id` reads like run scoping and is not
-The answers store stamps `_run_id` with the run that fetched each stored version (`internal/store/segment.go` `AppendPage`), and a later run's re-fetch overwrites it. Next to `run_answers.run_id`, a researcher could filter `answers` by `_run_id` and silently undercount. Fixed in R5's documentation requirement.
+### Run output written inside a git checkout
+**Context**: Raised in self-review (Education Researcher).
 
-### Package Author
+**Decision**: `out/display.md` is derived from student data and lands inside the package directory. cc-data-studies' `.gitignore` ignores only `local-data/`, `__pycache__/` and `*.pyc` (read 2026-10-07), so `git add -A` would stage it. Fixed in R11 and R20: each working directory gets a `.gitignore` of `*`.
 
-#### RESOLVED: The default build output would be swept into the next build
-With the output in the current directory and `build` run from inside the package, as authors do, R20 as written either refused its own default or zipped the last build into the next. Fixed in R20: the default is `dir/.cc-data-build/`, which R17 already excludes.
+---
 
-#### RESOLVED: An `init` stub that only reads existing runs reports nothing on the VM
-On the VM a package's dataset (`pkg-<catalog id>`) starts empty, and section 13 makes run creation package code. A stub that assumed a pulled run would pass locally and count zero on its first VM run. Fixed in R9: the stub reuses or creates its own run, as `_lib/ccdata.py` and RD-4's smoke package do (a Student ID Mapping run since 2026-10-08).
+### `_run_id` reads like run scoping and is not
+**Context**: Raised in self-review (Education Researcher).
 
-### QA Engineer
+**Decision**: The answers store stamps `_run_id` with the run that fetched each stored version (`internal/store/segment.go` `AppendPage`), and a later run's re-fetch overwrites it. Next to `run_answers.run_id`, a researcher could filter `answers` by `_run_id` and silently undercount. Fixed in R5's documentation requirement.
 
-#### RESOLVED: R3 could pass with a fixture that cannot tell the queries apart
-With one assignment per learner, counting endpoints and counting users give the same number, so a broken learner view would pass. Fixed in R3: the synthetic dataset includes a two-assignment learner, a bare endpoint, an answer in two runs and a second class's run.
+---
 
-### Operator
+### The default build output would be swept into the next build
+**Context**: Raised in self-review (Package Author).
 
-#### RESOLVED: Staging's answer before `PackageBuckets` exists was unstated
-`Store.bucket_for` returns 422 "publishing is not configured for <server>" after every archive and manifest check has passed. Recorded in Technical Notes, so that answer reads as a well-formed request rather than a failure of this story.
+**Decision**: With the output in the current directory and `build` run from inside the package, as authors do, R20 as written either refused its own default or zipped the last build into the next. Fixed in R20: the default is `dir/.cc-data-build/`, which R17 already excludes.
+
+---
+
+### An `init` stub that only reads existing runs reports nothing on the VM
+**Context**: Raised in self-review (Package Author).
+
+**Decision**: On the VM a package's dataset (`pkg-<catalog id>`) starts empty, and section 13 makes run creation package code. A stub that assumed a pulled run would pass locally and count zero on its first VM run. Fixed in R9: the stub reuses or creates its own run, as `_lib/ccdata.py` and RD-4's smoke package do (a Student ID Mapping run since 2026-10-08).
+
+---
+
+### R3 could pass with a fixture that cannot tell the queries apart
+**Context**: Raised in self-review (QA Engineer).
+
+**Decision**: With one assignment per learner, counting endpoints and counting users give the same number, so a broken learner view would pass. Fixed in R3: the synthetic dataset includes a two-assignment learner, a bare endpoint, an answer in two runs and a second class's run.
+
+---
+
+### Staging's answer before `PackageBuckets` exists was unstated
+**Context**: Raised in self-review (Operator).
+
+**Decision**: `Store.bucket_for` returns 422 "publishing is not configured for <server>" after every archive and manifest check has passed. Recorded in Technical Notes, so that answer reads as a well-formed request rather than a failure of this story.
+
+---
+
+### How a raw zip body reaches the server
+**Options considered**:
+- A) Generalize `Client.do` into `send` with a content type.
+- B) Build a separate `http.Request` for the zip routes.
+
+**Decision**: A. Publish and validate then share the bearer, the cross-origin redirect refusal, the no-retry rule for POST and the error-envelope decoding with every other call. B would re-implement each of them.
+
+---
+
+### The exit class for a refused or failed package
+**Options considered**:
+- A) Exit 1 with codes `PACKAGE_REFUSED`, `PACKAGE_FAILED` and `PACKAGE_OUTPUT_REFUSED`.
+- B) A new exit code 7.
+
+**Decision**: A. The root help defines exit 1 as "internal/other error", and the JSON envelope's code already distinguishes the cases. A new exit class is a contract change for every script that reads cc-data's exit codes.
+
+---
+
+### Following no link without `O_NOFOLLOW`
+**Options considered**:
+- A) `Lstat`, then open, then `os.SameFile`.
+- B) `syscall.O_NOFOLLOW`.
+
+**Decision**: A. CI tests on `windows-2022`, where `syscall.O_NOFOLLOW` does not exist. On a laptop the race A leaves open would need the author's own package to swap a file mid-read, and the runner, which runs as root, is the boundary that matters.
+
+---
+
+### What a 404 from the new routes means
+**Options considered**:
+- A) Any 404 from validate or applies means the route is not deployed: warn and proceed.
+- B) Require a specific error code before treating it as "not deployed".
+
+**Decision**: A. report-server's router has no route either path could match today (`/packages/validate` and `/packages/applies` are one segment, and the only other `POST /packages/...` route takes four). So a 404 can only mean the route is missing, and B would need a code that an older server, by definition, cannot send.
+
+---
+
+### The process-group kill on macOS
+**Context**: `TestRunKillsAtTheBound` ran on Linux only.
+
+**Decision**: `Setpgid` and `kill(-pgid, SIGKILL)` are POSIX and behave the same on Darwin, and `GOOS=darwin go build ./internal/packages/` compiles. CI's `macos-15` and `macos-15-intel` jobs run the test, so a Darwin difference would fail there.
+
+---
+
+### A shell entrypoint would run locally and be refused on the VM
+**Context**: Raised in self-review (Senior Engineer).
+
+**Decision**: The zip originally gave every entry mode 0644, and the runner executes a non-`.py` entrypoint directly. A Go zip with a 0644 `plain.sh` and a 0755 `exec.sh`, unpacked with `unzip`, gives "Permission denied" for the first and runs the second, so `unzip` restores the zip's modes. Locally, the staged copy kept the source's 0755, so `package run` passed. Fixed:
+- `Files` records a ship mode per file (0755 if any execute bit is set, else 0644).
+- `Zip` and the staging copy both use it.
+- `CheckEntrypointMode` refuses a non-executable non-`.py` entrypoint in `run` and `build`.
+
+R17 states the rule.
+
+---
+
+### A scope file inside the package ships with it
+**Context**: Raised in self-review (Operator).
+
+**Decision**: An author naming the file `scope.json` in the package directory would publish a class hash in every archive. The documentation step says to keep it outside the package or under a dot name, which `Collect` already excludes.
+
+---
+
+### The applicability call would time out before the deriver finishes
+**Context**: Raised in self-review (Operator).
+
+**Decision**: The deriver may spend up to 240 seconds on a scope's activities, and the client's per-attempt timeout for JSON calls is 60 seconds. `appliesFor` copies the client with a 5-minute `RequestTimeout`, which also keeps the shared client's default for every other call.
+
+---
+
+### An applies failure lost its code and exit class
+**Context**: Raised in self-review (Senior Engineer).
+
+**Decision**: `Run` returns `appliesFor`'s `*output.CLIError` unchanged, and `packageRunError` matched only the three package error types, so it fell through to `Internalf`. A throwaway test fed it applies' 503 `SERVICE_UNAVAILABLE` and `NOT_AUTHENTICATED`, and both came back exit 1 `INTERNAL`, against R16. `packageRunError` now returns a `CLIError` as it is, and `TestPackageRunKeepsTheServersCode` pins it.
+
+---
+
+### Ctrl-C left the package running
+**Context**: Raised in self-review (Package Author).
+
+**Decision**: `Setpgid` takes the package out of the terminal's foreground group, and cc-data had no interrupt handling outside `dataset materialize`. Sending `SIGINT` to cc-data's group, as a terminal does, ended cc-data while the package's `sleep 30` kept running. `package run` now cancels on `os.Interrupt` (the `materialize` idiom), which kills the group through the existing `cmd.Cancel`, and `Run` reports "the package was interrupted". Rerun with the fix, the package was gone a second after the signal.
+
+---
+
+### `build`'s default path came from unchecked manifest fields
+**Context**: Raised in self-review (Security Engineer).
+
+**Decision**: On a server without the validate route, a manifest named `../../escaped` built to `escaped-1.0.0.zip` two directories above the package, outside `.cc-data-build` and its `.gitignore`. `build` now refuses a name and version that make a path. It is a path check, not a copy of report-server's name grammar.
+
+---
+
+### The proxy variables were not passed through
+**Context**: Raised in self-review (Operator).
+
+**Decision**: cc-data's client uses Go's default transport, which reads `HTTPS_PROXY`, and the runner sets the proxy variables when it has a proxy (`package-env.js`). Behind a proxy, `package run`'s own requests would succeed while the package's `cc-data` calls failed. They are now on the passthrough list.
+
+---
+
+### "No extra fields" in the zip was untrue
+**Context**: Raised in self-review (Senior Engineer).
+
+**Decision**: `archive/zip` writes `Modified` as an extended-timestamp extra field (`5554...` on every entry of a scratch build). It is as fixed as the time, so R18 holds; the comment and R18 now say so.
+
+---
+
+### `publish` kept a local copy of the origin rule
+**Context**: Raised in self-review (One Source of Truth).
+
+**Decision**: `publish` refused an `--origin` without the `projects/` prefix, `build` did not, and report-server answers the same case with 422 "origin must be projects/<id>; a user origin is always your own". The local check is deleted, so both commands give report-server's answer.
+
+---
+
+### Assumptions the second self-review checked and kept
+**Context**: Raised in self-review (second round), each checked against the code or the live sources.
+
+**Decision**: Found sound: the R3 test (dropping `m.run_id = <run>` fails it at run 800, 2 learners against 1); a second `get answers` on a fetched run re-fetches and merges new answers, so the stub stays current; `reports list --json`'s `report_filter` carries `filters` and `class` as the stub reads them; `query --format json` answers an array of objects; report-server's 270-second wait sits between the deriver's 240 and cc-data's 300; an old report-server answers both new routes with a JSON 404 even without a token; and no publish check refuses an ordinary user's own origin, so `run`'s validate call cannot lock out a researcher who may use the API.
