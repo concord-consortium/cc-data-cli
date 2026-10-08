@@ -203,7 +203,6 @@ Links are checked with `Lstat` then `os.SameFile` rather than `O_NOFOLLOW`, whic
 package packages
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -243,28 +242,24 @@ type Manifest struct {
 	ExpectedDurationSeconds int    `json:"expected_duration_seconds"`
 }
 
-// ReadManifest reads the fields package run needs to stage and start a package: the
-// entrypoint, which must be one of files, the duration that sets the time bound, the patterns
-// and clue_prepull. A wrongly typed field is refused here because the run cannot proceed
-// without it; the full rules are report-server's.
+// ReadManifest reads the fields a run acts on, refusing an entrypoint outside files and a
+// duration that is not a positive integer; every other rule is report-server's.
 func ReadManifest(data []byte, files map[string]bool) (Manifest, error) {
 	var m Manifest
 	if err := json.Unmarshal(data, &m); err != nil {
 		return m, fmt.Errorf("manifest.json: %v", err)
 	}
-	var raw map[string]json.RawMessage
-	json.Unmarshal(data, &raw)
-	if !files[m.Entrypoint] || UnsafePath(m.Entrypoint) {
+	if !files[m.Entrypoint] || unsafePath(m.Entrypoint) {
 		return m, fmt.Errorf("manifest.json: entrypoint %q is not a file in the package", m.Entrypoint)
 	}
-	if v := raw["expected_duration_seconds"]; len(v) == 0 || v[0] == '"' || bytes.ContainsAny(v, ".eE") || m.ExpectedDurationSeconds < 1 {
+	if m.ExpectedDurationSeconds < 1 {
 		return m, fmt.Errorf("manifest.json: expected_duration_seconds must be a positive integer")
 	}
 	return m, nil
 }
 
-// UnsafePath is report-server's Archive.unsafe_path?: absolute, a drive letter, or a ".." segment.
-func UnsafePath(name string) bool {
+// unsafePath is report-server's Archive.unsafe_path?: absolute, a drive letter, or a ".." segment.
+func unsafePath(name string) bool {
 	if strings.HasPrefix(name, "/") || strings.HasPrefix(name, `\`) {
 		return true
 	}
@@ -330,9 +325,8 @@ func (f Files) Set() map[string]bool {
 	return set
 }
 
-// excluded is what a build leaves behind: anything under a segment starting with ".",
-// which covers this tool's own .cc-data-run and .cc-data-build as well as .git, and the
-// three things cc-data-studies ignores.
+// excluded is what a build leaves out: any dot path (.git, .cc-data-run, .cc-data-build),
+// __pycache__, *.pyc and local-data.
 func excluded(rel string, isDir bool) bool {
 	base := path.Base(rel)
 	if strings.HasPrefix(base, ".") || base == "__pycache__" || (isDir && base == "local-data") {
@@ -341,9 +335,8 @@ func excluded(rel string, isDir bool) bool {
 	return !isDir && strings.HasSuffix(base, ".pyc")
 }
 
-// Collect walks dir for the files a package is made of. A symbolic link or any other
-// non-regular file is refused rather than skipped, since the runner refuses an archive
-// holding one and a link silently dropped would be a package that differs from its tree.
+// Collect walks dir for the files a package is made of. A link or other non-regular file is
+// refused rather than skipped, since the runner refuses an archive holding one.
 func Collect(dir string) (Files, error) {
 	files := Files{Dir: dir, Modes: map[string]os.FileMode{}}
 	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
@@ -385,9 +378,8 @@ func Collect(dir string) (Files, error) {
 	return files, err
 }
 
-// Zip writes the files as a reproducible archive: sorted entries, Deflate, a fixed time, and
-// each file's ship mode. archive/zip also writes that time as an extended-timestamp extra
-// field, which is as fixed as the time itself. The size limits are report-server's to apply.
+// Zip writes a reproducible archive: sorted entries, Deflate, a fixed time and each file's ship
+// mode. The size limits are report-server's.
 func Zip(files Files) ([]byte, error) {
 	var buf bytes.Buffer
 	w := zip.NewWriter(&buf)
@@ -415,8 +407,7 @@ func Zip(files Files) ([]byte, error) {
 }
 
 // CheckEntrypointMode refuses a non-.py entrypoint that would not be executable once unzipped,
-// since the runner executes such an entrypoint directly. Windows records no execute bit, so
-// there the check cannot be made.
+// since the runner executes it directly. Windows records no execute bit to check.
 func (f Files) CheckEntrypointMode(entrypoint string) error {
 	if runtime.GOOS == "windows" || strings.HasSuffix(entrypoint, ".py") || f.Modes[entrypoint]&0o111 != 0 {
 		return nil
@@ -444,10 +435,8 @@ import (
 	"strings"
 )
 
-// DisplayLimitBytes is the cap on display.md, counted in UTF-8 bytes. final-design.md
-// section 10 is the only place this number is decided; the runner and this constant both
-// cite it, because a local cap looser than the runner's is a check that passes here and a
-// VM that then refuses.
+// DisplayLimitBytes is the runner's cap on display.md in UTF-8 bytes, decided only in
+// final-design.md section 10.
 const DisplayLimitBytes = 64 * 1024
 
 // countKeys are the counts.json keys the runner reads; anything else a package writes there
@@ -553,7 +542,7 @@ Tests (the link and mode tests skip on Windows, where links need privileges and 
 - **`TestCollectLeavesOutWhatBuildMustNotShip`**: the tree holds `.git/`, `.cc-data-run/`, `.cc-data-build/`, `__pycache__/cache.txt`, `lib/y.pyc`, `local-data/` and `.DS_Store`. Exactly `lib/q.sql,manifest.json,run.py` is collected. `__pycache__` holds a non-`.pyc` file so the directory rule is tested on its own.
 - **`TestCollectRefusesALink`**.
 - **`TestZipIsReproducible`**: a touched mtime leaves the checksum unchanged.
-- **`TestModesSurviveBuildAndStaging`**: `run.py` (0755 on disk) zips as 0755 and a 0600 `manifest.json` as 0644. A 0644 `run.sh` entrypoint fails `CheckEntrypointMode`, and a 0644 `run.py` passes it.
+- **`TestModesSurviveTheZip`**: `run.py` (0755 on disk) zips as 0755 and a 0600 `manifest.json` as 0644. A 0644 `run.sh` entrypoint fails `CheckEntrypointMode`, and a 0644 `run.py` passes it.
 - **`TestDisplayCapEdges`**: 65,536 bytes pass and 65,537 are refused, and the constant equals 65,536.
 - **`TestResultReadsOnlyTheRunnersKeys`**: the summary is the first line, trimmed, and `learners` in `counts.json` is dropped.
 - **`TestResultRefusesALinkedDisplay`**.
@@ -562,8 +551,8 @@ Tests (the link and mode tests skip on Windows, where links need privileges and 
 |---|---|
 | `size >= DisplayLimitBytes` | `TestDisplayCapEdges` |
 | `__pycache__` not excluded | `TestCollectLeavesOutWhatBuildMustNotShip` |
-| every entry zipped 0644 | `TestModesSurviveBuildAndStaging` |
-| a quoted duration accepted | `TestReadManifestNeedsWhatTheRunActsOn` |
+| every entry zipped 0644 | `TestModesSurviveTheZip` |
+| a duration of 0 accepted | `TestReadManifestNeedsWhatTheRunActsOn` |
 
 ---
 
