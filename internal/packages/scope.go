@@ -30,9 +30,8 @@ type LocalScope struct {
 	Assignments []Assignment `json:"assignments"`
 }
 
-// ScopeFile is scope.json as the runner writes it. ClueSource is always "firebase" today, the
-// runner's constant; Dataset is the bare dataset name, as the runner writes pkg-<id>, while
-// RD_DATASET carries the full ref.
+// ScopeFile is scope.json as the runner writes it: ClueSource is its constant "firebase", and
+// Dataset the bare name, as it writes pkg-<id>, while RD_DATASET carries the full ref.
 type ScopeFile struct {
 	LocalScope
 	ClueSource string `json:"clue_source"`

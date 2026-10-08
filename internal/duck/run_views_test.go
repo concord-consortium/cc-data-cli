@@ -1,6 +1,7 @@
 package duck
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"testing"
@@ -63,5 +64,27 @@ func TestRunAnswersIsEmptyNotMissingOnAFreshDataset(t *testing.T) {
 	}
 	if n := queryInt(t, e, fmt.Sprintf(learnersOfRun, 1, 1)); n != 0 {
 		t.Errorf("the learner count binds to %d on a fresh dataset, want 0", n)
+	}
+}
+
+func TestRunAnswersRunIDIsBigint(t *testing.T) {
+	d := newDS(t, "ds")
+	buildStore(t, d, 700, [][]byte{answerRec("s", "https://p/d/e1", "q1", "a")})
+	for name, e := range map[string]*Engine{
+		"with membership": openEngine(t, []DatasetSpec{{DS: d}}, nil),
+		"fresh":           openEngine(t, []DatasetSpec{{DS: newDS(t, "fresh")}}, nil),
+	} {
+		rows, err := e.Query(context.Background(), "SELECT data_type FROM information_schema.columns WHERE table_name = 'run_answers' AND column_name = 'run_id'")
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		var typ string
+		if rows.Next() {
+			rows.Scan(&typ)
+		}
+		rows.Close()
+		if typ != "BIGINT" {
+			t.Errorf("%s: run_id is %s, want BIGINT", name, typ)
+		}
 	}
 }

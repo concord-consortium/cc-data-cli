@@ -7,8 +7,8 @@ import (
 	"syscall"
 )
 
-// killGroup runs the package in its own process group and kills the whole group on timeout,
-// so a child the entrypoint started (cc-data, a shell) does not outlive the bound.
+// killGroup runs the package in its own process group and kills the whole group when the run
+// is canceled or times out, so a child the entrypoint started does not outlive it.
 func killGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }

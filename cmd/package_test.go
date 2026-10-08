@@ -160,6 +160,9 @@ func TestPackageBuildValidatesThenWrites(t *testing.T) {
 	if !bytes.Equal(reqs[0].body, written) || reqs[0].contentType != "application/zip" {
 		t.Errorf("validate got %d bytes as %q; the zip written is %d bytes", len(reqs[0].body), reqs[0].contentType, len(written))
 	}
+	if gi, err := os.ReadFile(filepath.Join(dir, packages.BuildDirName, ".gitignore")); err != nil || string(gi) != "*\n" {
+		t.Errorf(".cc-data-build/.gitignore = %q, %v", gi, err)
+	}
 	r, err := zip.NewReader(bytes.NewReader(written), int64(len(written)))
 	if err != nil || len(r.File) != 2 {
 		t.Fatalf("zip: %v, %v", r, err)
@@ -471,5 +474,53 @@ func TestPackagePublishPassesTheServersCodeThrough(t *testing.T) {
 	}
 	if n := len(srv.requests("/api/v1/packages")); n != 1 {
 		t.Errorf("%d publish requests, want 1", n)
+	}
+}
+
+func TestPackageRunWarnsWhatTheDeriverCouldNotRead(t *testing.T) {
+	srv := newPackageServer(t, map[string]func(http.ResponseWriter, []byte){
+		"/api/v1/packages/applies": answer(http.StatusOK, `{"applies": true, "reason": null, "unread": [{"url": "https://a/1", "reason": "timeout"}], "truncated": true}`),
+	})
+	_, errb := capture(t)
+	if _, err := appliesFor(api.New(srv.URL, "tok"), testScope(t))(context.Background(), packages.URLs{Any: []string{"*x*"}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"could not read https://a/1 (timeout)", "profile was truncated"} {
+		if !strings.Contains(errb.String(), want) {
+			t.Errorf("stderr = %q, want %q", errb.String(), want)
+		}
+	}
+}
+
+func TestPackageRunRefusesAnUnreadableScopeFile(t *testing.T) {
+	dir := writePackage(t)
+	capture(t)
+	cmd := newPackageRunCmd()
+	cmd.SetArgs([]string{dir, "--dataset", "learn.concord.org/d", "--scope", filepath.Join(t.TempDir(), "missing.json")})
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	if cliErr := asCLIError(t, cmd.Execute()); cliErr.Code != "INVALID_SCOPE" || cliErr.ExitCode != output.ExitUsage {
+		t.Errorf("err = %+v", cliErr)
+	}
+}
+
+func TestPackagePublishMapsAuthAndUnansweredFailures(t *testing.T) {
+	srv := newPackageServer(t, map[string]func(http.ResponseWriter, []byte){
+		"/api/v1/packages": answer(http.StatusUnauthorized, `{"error":"NOT_AUTHENTICATED","message":"bad token"}`),
+	})
+	capture(t)
+	err := (packagePublishFlags{}).run(context.Background(), api.New(srv.URL, "tok"), []byte("zip"))
+	if cliErr := asCLIError(t, err); cliErr.ExitCode != output.ExitNotAuth {
+		t.Errorf("NOT_AUTHENTICATED: %+v", cliErr)
+	}
+
+	dropped := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, _, _ := w.(http.Hijacker).Hijack()
+		conn.Close()
+	}))
+	t.Cleanup(dropped.Close)
+	err = (packagePublishFlags{}).run(context.Background(), api.New(dropped.URL, "tok"), []byte("zip"))
+	if cliErr := asCLIError(t, err); !strings.Contains(cliErr.Action, "Publishing again is safe") {
+		t.Errorf("unanswered: %+v", cliErr)
 	}
 }

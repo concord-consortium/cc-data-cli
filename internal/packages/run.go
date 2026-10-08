@@ -21,11 +21,8 @@ const TimeoutMargin = 10 * time.Minute
 // with "." so Collect, and so build, never ships it.
 const RunDirName = ".cc-data-run"
 
-// passthrough is what a laptop adds to the runner's environment so the package's own cc-data
-// calls find the researcher's stored credential (keychain or credentials file), reach the
-// server, and run at all. The runner sets HTTPS_PROXY and HTTP_PROXY when it has a proxy, and
-// NO_PROXY keeps a laptop's exemptions with them. Matching is case-insensitive, so the
-// lower-case spellings pass too.
+// passthrough is what a laptop adds so the package's own cc-data calls find the stored
+// credential, reach the server through any proxy, and run at all. Matching is case-insensitive.
 var passthrough = []string{
 	"HOME", "PATH", "USER", "LOGNAME", "LANG", "TZ", "TMPDIR",
 	"DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR",
@@ -198,7 +195,11 @@ func prepare(run string, files Files) (runPaths, error) {
 // ignoreAll keeps git out of a directory this tool makes inside a package, whose files can
 // hold student data.
 func ignoreAll(dir string) error {
-	return os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("*\n"), 0o644)
+	p := filepath.Join(dir, ".gitignore")
+	if info, err := os.Lstat(p); err == nil && !info.Mode().IsRegular() {
+		return fmt.Errorf("refusing to write %s: it is a link or not a file", p)
+	}
+	return os.WriteFile(p, []byte("*\n"), 0o644)
 }
 
 func ensureRealDir(d string) error {

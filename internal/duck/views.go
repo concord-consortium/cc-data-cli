@@ -368,7 +368,7 @@ func (vs viewSet) runAnswersView() viewStmt {
 	name := vs.prefix + `"run_answers"`
 	answers := vs.prefix + sqlIdent(store.TypeAnswers)
 	membership := vs.prefix + `"run_membership"`
-	primary := fmt.Sprintf("CREATE VIEW %s AS SELECT m.run_id, s.* FROM %s s JOIN %s m USING (source_key, remote_endpoint, question_id) WHERE m.type = %s",
+	primary := fmt.Sprintf("CREATE VIEW %s AS SELECT CAST(m.run_id AS BIGINT) AS run_id, s.* FROM %s s JOIN %s m USING (source_key, remote_endpoint, question_id) WHERE m.type = %s",
 		name, answers, membership, sqlStr(store.TypeAnswers))
 	fallback := fmt.Sprintf("CREATE VIEW %s AS SELECT CAST(NULL AS BIGINT) AS run_id, s.* FROM %s s WHERE false", name, answers)
 	return viewStmt{name: name, primary: primary, fallback: fallback}

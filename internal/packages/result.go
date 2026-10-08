@@ -27,8 +27,8 @@ type Result struct {
 	Counts       map[string]any `json:"counts"`
 }
 
-// OutputRefused is a result the runner would refuse: no display.md, one that is a link or
-// not a file, or one over the cap.
+// OutputRefused is a result the runner would refuse: a missing, linked or oversized
+// display.md, a linked summary.txt, or a linked output directory.
 type OutputRefused struct{ Reason string }
 
 func (e *OutputRefused) Error() string { return e.Reason }

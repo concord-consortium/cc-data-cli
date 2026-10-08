@@ -23,9 +23,9 @@ The package rules and applicability are report-server's (requirements, Dependenc
 **Estimated diff size**: ~170 lines
 
 ```diff
---- /tmp/o	2026-10-08 09:00:24.920084911 -0400
-+++ internal/duck/views.go	2026-10-08 09:00:14.224272861 -0400
-@@ -71,6 +71,7 @@
+--- /tmp/o
++++ internal/duck/views.go
+@@ -71,6 +71,7 @@ func (vs viewSet) statements() []viewStmt {
  	stmts = append(stmts, vs.storeView(store.TypeAnswers))
  	stmts = append(stmts, vs.storeView(store.TypeHistory))
  	stmts = append(stmts, vs.runMembershipView())
@@ -33,19 +33,18 @@ The package rules and applicability are report-server's (requirements, Dependenc
  	stmts = append(stmts, vs.downloadsView())
  	stmts = append(stmts, vs.attachmentFilesView())
  	stmts = append(stmts, vs.attachmentStatesView())
-@@ -360,6 +361,20 @@
+@@ -360,6 +361,19 @@ func (vs viewSet) runMembershipView() viewStmt {
  	return viewStmt{name: name, primary: primary, fallback: fallback, files: files}
  }
  
-+// runAnswersView is every answer once per run whose answers fetch holds it in membership: the
-+// type-qualified membership join, registered on every dataset so a run with no answers counts
-+// zero rather than failing to bind the way answers_<run> does. It must follow both views it
-+// reads, and it declares no files, so materializing reads it through theirs.
++// runAnswersView is answers with the run_id of each answers membership. Always bound, unlike
++// answers_<run>; it must follow both views it reads and declares no files, so materialize reads
++// it through theirs.
 +func (vs viewSet) runAnswersView() viewStmt {
 +	name := vs.prefix + `"run_answers"`
 +	answers := vs.prefix + sqlIdent(store.TypeAnswers)
 +	membership := vs.prefix + `"run_membership"`
-+	primary := fmt.Sprintf("CREATE VIEW %s AS SELECT m.run_id, s.* FROM %s s JOIN %s m USING (source_key, remote_endpoint, question_id) WHERE m.type = %s",
++	primary := fmt.Sprintf("CREATE VIEW %s AS SELECT CAST(m.run_id AS BIGINT) AS run_id, s.* FROM %s s JOIN %s m USING (source_key, remote_endpoint, question_id) WHERE m.type = %s",
 +		name, answers, membership, sqlStr(store.TypeAnswers))
 +	fallback := fmt.Sprintf("CREATE VIEW %s AS SELECT CAST(NULL AS BIGINT) AS run_id, s.* FROM %s s WHERE false", name, answers)
 +	return viewStmt{name: name, primary: primary, fallback: fallback}
@@ -62,6 +61,7 @@ The package rules and applicability are report-server's (requirements, Dependenc
 package duck
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"testing"
@@ -126,12 +126,35 @@ func TestRunAnswersIsEmptyNotMissingOnAFreshDataset(t *testing.T) {
 		t.Errorf("the learner count binds to %d on a fresh dataset, want 0", n)
 	}
 }
+
+func TestRunAnswersRunIDIsBigint(t *testing.T) {
+	d := newDS(t, "ds")
+	buildStore(t, d, 700, [][]byte{answerRec("s", "https://p/d/e1", "q1", "a")})
+	for name, e := range map[string]*Engine{
+		"with membership": openEngine(t, []DatasetSpec{{DS: d}}, nil),
+		"fresh":           openEngine(t, []DatasetSpec{{DS: newDS(t, "fresh")}}, nil),
+	} {
+		rows, err := e.Query(context.Background(), "SELECT data_type FROM information_schema.columns WHERE table_name = 'run_answers' AND column_name = 'run_id'")
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		var typ string
+		if rows.Next() {
+			rows.Scan(&typ)
+		}
+		rows.Close()
+		if typ != "BIGINT" {
+			t.Errorf("%s: run_id is %s, want BIGINT", name, typ)
+		}
+	}
+}
 ```
 
 | Mutation | Test that fails |
 |---|---|
 | `m.type = 'answers'` dropped | run 700 answers = 5 (the history membership joins) |
 | the documented count by endpoint instead of `user_id` | run 700 learners = 3 |
+| `run_id` taken from membership without the cast | `TestRunAnswersRunIDIsBigint` (INTEGER) |
 
 Documentation (the two guards in `internal/guidance/guard_test.go` fail until both files carry the name; the dashes in `core.md` match that list's existing entries):
 
@@ -451,8 +474,8 @@ type Result struct {
 	Counts       map[string]any `json:"counts"`
 }
 
-// OutputRefused is a result the runner would refuse: no display.md, one that is a link or
-// not a file, or one over the cap.
+// OutputRefused is a result the runner would refuse: a missing, linked or oversized
+// display.md, a linked summary.txt, or a linked output directory.
 type OutputRefused struct{ Reason string }
 
 func (e *OutputRefused) Error() string { return e.Reason }
@@ -607,9 +630,8 @@ type LocalScope struct {
 	Assignments []Assignment `json:"assignments"`
 }
 
-// ScopeFile is scope.json as the runner writes it. ClueSource is always "firebase" today, the
-// runner's constant; Dataset is the bare dataset name, as the runner writes pkg-<id>, while
-// RD_DATASET carries the full ref.
+// ScopeFile is scope.json as the runner writes it: ClueSource is its constant "firebase", and
+// Dataset the bare name, as it writes pkg-<id>, while RD_DATASET carries the full ref.
 type ScopeFile struct {
 	LocalScope
 	ClueSource string `json:"clue_source"`
@@ -699,11 +721,8 @@ const TimeoutMargin = 10 * time.Minute
 // with "." so Collect, and so build, never ships it.
 const RunDirName = ".cc-data-run"
 
-// passthrough is what a laptop adds to the runner's environment so the package's own cc-data
-// calls find the researcher's stored credential (keychain or credentials file), reach the
-// server, and run at all. The runner sets HTTPS_PROXY and HTTP_PROXY when it has a proxy, and
-// NO_PROXY keeps a laptop's exemptions with them. Matching is case-insensitive, so the
-// lower-case spellings pass too.
+// passthrough is what a laptop adds so the package's own cc-data calls find the stored
+// credential, reach the server through any proxy, and run at all. Matching is case-insensitive.
 var passthrough = []string{
 	"HOME", "PATH", "USER", "LOGNAME", "LANG", "TZ", "TMPDIR",
 	"DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR",
@@ -876,7 +895,11 @@ func prepare(run string, files Files) (runPaths, error) {
 // ignoreAll keeps git out of a directory this tool makes inside a package, whose files can
 // hold student data.
 func ignoreAll(dir string) error {
-	return os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("*\n"), 0o644)
+	p := filepath.Join(dir, ".gitignore")
+	if info, err := os.Lstat(p); err == nil && !info.Mode().IsRegular() {
+		return fmt.Errorf("refusing to write %s: it is a link or not a file", p)
+	}
+	return os.WriteFile(p, []byte("*\n"), 0o644)
 }
 
 func ensureRealDir(d string) error {
@@ -970,8 +993,8 @@ import (
 	"syscall"
 )
 
-// killGroup runs the package in its own process group and kills the whole group on timeout,
-// so a child the entrypoint started (cc-data, a shell) does not outlive the bound.
+// killGroup runs the package in its own process group and kills the whole group when the run
+// is canceled or times out, so a child the entrypoint started does not outlive it.
 func killGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
@@ -1011,6 +1034,9 @@ Tests (the entrypoint is a `/bin/sh` script, so these skip on Windows):
 - **`TestRunLeavesNothingBehind`**: a package that backgrounds `(sleep 1; echo late > "$RD_OUTPUT_DIR/late.txt")` and exits 0 succeeds, and 1.5 seconds later `late.txt` does not exist.
 - **`TestRunKillsTheGroupWhenInterrupted`**: the same package, with the parent context canceled after 300 ms, fails as "interrupted" within 5 seconds.
 - **`TestRunRefusesALinkedRunDirectory`**: `.cc-data-run` linked to another directory is refused, and a file in that directory survives.
+- **`TestRunRefusesALinkedGitignore`**: a `.cc-data-run/.gitignore` linked to another file is refused, and the file keeps its content.
+- **`TestEntrypointFallsBackToPython3WithANote`**: `python3.11` when found, else `python3` with a note naming 3.11, else an error.
+- **`TestWriteBuildRefusesALinkedBuildDirectory`**: a `.cc-data-build` linked elsewhere is refused, and nothing is written behind it.
 
 | Mutation | Test that fails |
 |---|---|
@@ -1322,7 +1348,7 @@ func newPackageRunCmd() *cobra.Command {
 			}
 			raw, err := os.ReadFile(scopePath)
 			if err != nil {
-				return output.Usagef("reading the scope file: %v", err)
+				return &output.CLIError{ExitCode: output.ExitUsage, Code: "INVALID_SCOPE", Message: fmt.Sprintf("reading the scope file: %v", err)}
 			}
 			scope, err := packages.ParseLocalScope(raw)
 			if err != nil {
@@ -1372,13 +1398,12 @@ func newPackageRunCmd() *cobra.Command {
 	return cmd
 }
 
-// derivationTimeout covers report-service's deriver, which may spend up to 240 seconds
-// fetching a scope's activities; the client's 60-second default would cut it off.
+// derivationTimeout covers report-server's wait of up to 270 seconds on report-service's
+// deriver; the client's 60-second default would cut it off.
 const derivationTimeout = 5 * time.Minute
 
-// validate asks report-server whether a publish of the archive would be accepted, and returns
-// its answer. A report-server without the route is not a refusal: the archive is unchecked,
-// the answer is nil, and saying so is the whole result.
+// validate asks report-server whether a publish of the archive would be accepted. A server
+// without the route gets a warning and a nil answer: the archive is unchecked, not refused.
 func validate(ctx context.Context, client *api.Client, archive []byte, origin string, official bool) (*api.ValidatedPackage, error) {
 	ans, err := client.ValidatePackage(ctx, archive, origin, official)
 	switch {
@@ -1528,7 +1553,7 @@ func (f packagePublishFlags) run(ctx context.Context, client *api.Client, archiv
 func newPackagePublishCmd() *cobra.Command {
 	var f packagePublishFlags
 	cmd := &cobra.Command{
-		Use:   "publish <zip> [--portal <portal|env>]",
+		Use:   "publish <zip> [--portal <portal|env>] [--origin projects/<id>] [--official] [--json]",
 		Short: "Publish a built package to the catalog with your cc-data token",
 		Long: "POST the zip to report-server's catalog, which creates the package private on its first\n" +
 			"publish and records the version. --origin projects/<id> publishes a project package;\n" +
@@ -1658,13 +1683,16 @@ func excludedAncestor(rel string) bool {
 // directory for git.
 func WriteBuild(out string, archive []byte) error {
 	dir := filepath.Dir(out)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	if filepath.Base(dir) == BuildDirName {
-		if err := ignoreAll(dir); err != nil {
+	if filepath.Base(dir) != BuildDirName {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return err
 		}
+	} else if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
+		return err
+	} else if err := ensureRealDir(dir); err != nil {
+		return err
+	} else if err := ignoreAll(dir); err != nil {
+		return err
 	}
 	return os.WriteFile(out, archive, 0o644)
 }
@@ -1768,7 +1796,7 @@ Tests (against an `httptest` server that answers 404 for any route it was not gi
 - **`TestPackageInitRefusesASecondInit`**.
 - **`TestPackageBuildValidatesThenWrites`**:
   - Exactly one validate request is made, carrying the bytes that were written, as `application/zip`.
-  - The zip is `wildfire-responses-0.1.0.zip` with two files, and the printed checksum is the archive's own.
+  - The zip is `wildfire-responses-0.1.0.zip` with two files, `.cc-data-build/.gitignore` is `*`, and the printed checksum is the archive's own.
   - A second build from inside the package gives the same checksum.
 - **`TestPackageBuildWritesNothingTheServerRefuses`**: a 422 `UNPROCESSABLE` keeps its code, exits 5, and no zip is written.
 - **`TestPackageBuildWarnsOnAPublishedVersionAndStillWrites`**: `already_published: true` prints "users/7/p 0.1.0 is already published; publish will refuse it until the version changes", and the zip is still written. **`TestPackageBuildIsQuietOnANewVersion`** checks the converse.
@@ -1786,6 +1814,9 @@ Tests (against an `httptest` server that answers 404 for any route it was not gi
 - **`TestPackagePublishSendsTheZipAsTheBody`**: checks POST, `application/zip`, `Content-Length`, `origin=projects/20` present, `official` absent, and the bearer.
 - **`TestPackagePublishRefusesAChecksumItDidNotSend`**.
 - **`TestPackagePublishPassesTheServersCodeThrough`**: a 409 `ALREADY_EXISTS` keeps its code, exits 5, and is sent once.
+- **`TestPackagePublishMapsAuthAndUnansweredFailures`**: `NOT_AUTHENTICATED` exits 3, and a connection dropped before any answer carries the "Publishing again is safe" action.
+- **`TestPackageRunWarnsWhatTheDeriverCouldNotRead`**: each unread URL with its reason, and a truncated profile, reach stderr.
+- **`TestPackageRunRefusesAnUnreadableScopeFile`**: a missing scope file is `INVALID_SCOPE`, exit 2.
 
 | Mutation | Test that fails |
 |---|---|

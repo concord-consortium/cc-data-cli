@@ -108,7 +108,7 @@ func newPackageRunCmd() *cobra.Command {
 			}
 			raw, err := os.ReadFile(scopePath)
 			if err != nil {
-				return output.Usagef("reading the scope file: %v", err)
+				return &output.CLIError{ExitCode: output.ExitUsage, Code: "INVALID_SCOPE", Message: fmt.Sprintf("reading the scope file: %v", err)}
 			}
 			scope, err := packages.ParseLocalScope(raw)
 			if err != nil {
@@ -158,13 +158,12 @@ func newPackageRunCmd() *cobra.Command {
 	return cmd
 }
 
-// derivationTimeout covers report-service's deriver, which may spend up to 240 seconds
-// fetching a scope's activities; the client's 60-second default would cut it off.
+// derivationTimeout covers report-server's wait of up to 270 seconds on report-service's
+// deriver; the client's 60-second default would cut it off.
 const derivationTimeout = 5 * time.Minute
 
-// validate asks report-server whether a publish of the archive would be accepted, and returns
-// its answer. A report-server without the route is not a refusal: the archive is unchecked,
-// the answer is nil, and saying so is the whole result.
+// validate asks report-server whether a publish of the archive would be accepted. A server
+// without the route gets a warning and a nil answer: the archive is unchecked, not refused.
 func validate(ctx context.Context, client *api.Client, archive []byte, origin string, official bool) (*api.ValidatedPackage, error) {
 	ans, err := client.ValidatePackage(ctx, archive, origin, official)
 	switch {
@@ -314,7 +313,7 @@ func (f packagePublishFlags) run(ctx context.Context, client *api.Client, archiv
 func newPackagePublishCmd() *cobra.Command {
 	var f packagePublishFlags
 	cmd := &cobra.Command{
-		Use:   "publish <zip> [--portal <portal|env>]",
+		Use:   "publish <zip> [--portal <portal|env>] [--origin projects/<id>] [--official] [--json]",
 		Short: "Publish a built package to the catalog with your cc-data token",
 		Long: "POST the zip to report-server's catalog, which creates the package private on its first\n" +
 			"publish and records the version. --origin projects/<id> publishes a project package;\n" +

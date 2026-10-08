@@ -45,13 +45,16 @@ func excludedAncestor(rel string) bool {
 // directory for git.
 func WriteBuild(out string, archive []byte) error {
 	dir := filepath.Dir(out)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	if filepath.Base(dir) == BuildDirName {
-		if err := ignoreAll(dir); err != nil {
+	if filepath.Base(dir) != BuildDirName {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return err
 		}
+	} else if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
+		return err
+	} else if err := ensureRealDir(dir); err != nil {
+		return err
+	} else if err := ignoreAll(dir); err != nil {
+		return err
 	}
 	return os.WriteFile(out, archive, 0o644)
 }

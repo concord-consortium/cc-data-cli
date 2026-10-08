@@ -263,3 +263,60 @@ func TestRunRefusesALinkedRunDirectory(t *testing.T) {
 		t.Errorf("a file behind the link was removed: %v", err)
 	}
 }
+
+func TestRunRefusesALinkedGitignore(t *testing.T) {
+	skipOnWindows(t, "links need privileges on Windows")
+	dir, files := shellPackage(t, `echo ok > "$RD_OUTPUT_DIR/display.md"`+"\n", nil)
+	target := filepath.Join(t.TempDir(), "precious")
+	writeTree(t, filepath.Dir(target), map[string]string{"precious": "keep"})
+	writeTree(t, dir, map[string]string{RunDirName + "/": ""})
+	if err := os.Symlink(target, filepath.Join(dir, RunDirName, ".gitignore")); err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	if _, err := Run(context.Background(), runOpts(t, dir, files, nil, &stderr)); err == nil {
+		t.Error("a linked .gitignore was written through")
+	}
+	if got, _ := os.ReadFile(target); string(got) != "keep" {
+		t.Errorf("the link's target became %q", got)
+	}
+}
+
+func TestWriteBuildRefusesALinkedBuildDirectory(t *testing.T) {
+	skipOnWindows(t, "links need privileges on Windows")
+	dir := t.TempDir()
+	elsewhere := t.TempDir()
+	if err := os.Symlink(elsewhere, filepath.Join(dir, BuildDirName)); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteBuild(filepath.Join(dir, BuildDirName, "p-0.1.0.zip"), []byte("zip")); err == nil {
+		t.Error("a linked build directory was written into")
+	}
+	if entries, _ := os.ReadDir(elsewhere); len(entries) != 0 {
+		t.Errorf("files written behind the link: %v", entries)
+	}
+}
+
+func TestEntrypointFallsBackToPython3WithANote(t *testing.T) {
+	look := func(have ...string) func(string) (string, error) {
+		return func(name string) (string, error) {
+			for _, h := range have {
+				if h == name {
+					return "/usr/bin/" + name, nil
+				}
+			}
+			return "", exec.ErrNotFound
+		}
+	}
+	cmd, _, note, err := entrypointCommand("/pkg", "run.py", look("python3.11", "python3"))
+	if err != nil || cmd != "/usr/bin/python3.11" || note != "" {
+		t.Errorf("with python3.11: %s, %q, %v", cmd, note, err)
+	}
+	cmd, _, note, err = entrypointCommand("/pkg", "run.py", look("python3"))
+	if err != nil || cmd != "/usr/bin/python3" || !strings.Contains(note, "python3.11") {
+		t.Errorf("without python3.11: %s, %q, %v", cmd, note, err)
+	}
+	if _, _, _, err := entrypointCommand("/pkg", "run.py", look()); err == nil {
+		t.Error("no interpreter was not an error")
+	}
+}

@@ -137,7 +137,7 @@ The design is `final-design.md` (global oob, `streams/researcher-dashboard/`) se
   - `--scope` names a local scope file. It holds the four keys rigse supplies on the VM: `kind`, `id`, `classes` (`[{class_hash, class_id}]`) and `assignments` (`[{offering_id, runnable_id, name, url}]`). The shape is checked; any other key is refused.
   - `package init` does not write a scope file, so the file comes from the author.
 - **R11. The package sees the runner's layout.** Before the entrypoint runs:
-  - **A fresh run directory** under `dir/.cc-data-run/`, with `in/` and `out/`, both emptied. `.cc-data-run` and everything `package run` empties or creates under it must be a real directory, never a link. A link is refused before anything is removed, so a stray link can never point the emptying at a directory outside the package.
+  - **A fresh run directory** under `dir/.cc-data-run/`, with `in/` and `out/`, both emptied. `.cc-data-run` and everything `package run` empties or creates under it must be a real directory, never a link. A link is refused before anything is removed, so a stray link can never point the emptying at a directory outside the package, and a `.gitignore` that is a link is refused rather than written through.
   - **A `.gitignore` containing `*`** written into `dir/.cc-data-run/`. A package directory is usually a git checkout (cc-data-studies ignores only `local-data/`, `__pycache__/` and `*.pyc`), and `out/display.md` holds counts or text drawn from student data.
   - **`in/scope.json`** in the runner's exact shape: the scope file's four keys; `clue_source` `"firebase"`; `dataset` as the ref's bare name, as the runner writes `pkg-<id>`; and `output_dir` as the absolute `out/` path.
   - **The runner's environment:**
@@ -154,7 +154,7 @@ The design is `final-design.md` (global oob, `streams/researcher-dashboard/`) se
   - **The question asked.** When the manifest declares any pattern, `package run` sends the patterns and the scope's assignment URLs to `POST /api/v1/packages/applies`. report-server derives the interactive URLs inside those assignments, so the URLs matched are the ones the runner matches.
   - **A refusal.** If the package does not apply, `run` refuses with report-server's reason, prefixed as the runner prefixes it ("the package does not apply to this class: "), and does not start the entrypoint.
   - **Partial profiles.** Each URL the deriver could not read, and a truncated profile, is reported on stderr.
-  - **The call's timeout** is 5 minutes, since the deriver may spend up to 240 seconds; the client's 60-second default would cut it off.
+  - **The call's timeout** is 5 minutes, since report-server waits up to 270 seconds for a deriver that may spend 240; the client's 60-second default would cut it off.
   - **Before the route exists (404).** `run` warns that applicability cannot be checked yet and that the VM's runner is the check, and runs the package.
 - **R13. Execution.**
   - **The interpreter.** A `.py` entrypoint runs with `python3.11` when it is on `PATH`, else with `python3`, after a one-line note that the VM runs 3.11. Any other entrypoint is executed directly.
@@ -166,8 +166,8 @@ The design is `final-design.md` (global oob, `streams/researcher-dashboard/`) se
   - **No sandbox.** No network namespace, no other uid and no egress proxy: those are the VM's, and the story forbids needing researcher-dashboard infrastructure locally.
 - **R14. The result, read as the runner reads it.** After the entrypoint exits 0, the output is read without following links:
   - `display.md` is required, and is refused over R8's cap with its size and the limit (never truncated).
-  - `summary.txt` is optional, and its first line, trimmed, is the summary.
-  - `counts.json`, when present and valid, contributes `answers`, `logs` and `log_freshness_at` only.
+  - `summary.txt` is optional, and its first line, trimmed, is the summary. A `summary.txt` that is a link or not a file refuses the result, as the runner's reader does.
+  - `counts.json`, when present and valid, contributes `answers`, `logs` and `log_freshness_at` only. One that is a link, not a file or not JSON is ignored, as on the VM.
 
   On success, stdout carries one JSON line: the display path and size in bytes, the summary, the counts and the elapsed seconds.
 - **R15. A `clue_prepull: true` package is refused locally.** The message says CLUE data cannot be fetched by cc-data yet (section 13), so such a package runs only on the VM.
@@ -176,7 +176,7 @@ The design is `final-design.md` (global oob, `streams/researcher-dashboard/`) se
   - A refusal or failure from report-server's validate or applies route keeps the server's code and exit class: 5 for a contract error, 3 for `NOT_AUTHENTICATED`, as every server call does.
   - A package the scope does not satisfy, or a `clue_prepull` package, is `PACKAGE_REFUSED`.
   - A non-zero exit, a timeout or an interrupt is `PACKAGE_FAILED`.
-  - A missing, linked or oversized `display.md` is `PACKAGE_OUTPUT_REFUSED`.
+  - A missing, linked or oversized `display.md`, or a linked `summary.txt`, is `PACKAGE_OUTPUT_REFUSED`.
 
   The last three exit 1 with the single JSON error envelope on stdout.
 
@@ -191,7 +191,7 @@ The design is `final-design.md` (global oob, `streams/researcher-dashboard/`) se
 - **R18. Reproducible.** The same tree builds to the same bytes: entries in sorted order, a fixed modification time (which Go's writer also records as an extended-timestamp extra field), and nothing that varies between builds. The same package therefore always has the same checksum.
 - **R19. `build` refuses what `publish` would refuse,** by asking report-server (R6). It takes `--portal` (default: the configured portal), `--origin projects/<id>` and `--official` so the check is made as the publish will be. A refused archive is not written. When validate answers `already_published`, `build` still writes the zip and warns "<identity> <version> is already published; publish will refuse it until the version changes". When `publishing_unavailable` names a reason, `build` warns "this package cannot be published yet: <reason>" and still writes the zip. `run` ignores both, since running a package needs neither a new version nor a bucket.
 - **R20. Output.**
-  - The default output path is `dir/.cc-data-build/<name>-<version>.zip`. It sits inside an excluded dot directory, with the same `.gitignore` as R11's, so building from inside the package directory never feeds one build's zip into the next. A name or version holding a path separator is `INVALID_MANIFEST` rather than a path, since it is unchecked until validate answers, and for good on a server without the route.
+  - The default output path is `dir/.cc-data-build/<name>-<version>.zip`. It sits inside an excluded dot directory, which must be a real directory as R11's are, with the same `.gitignore` as R11's, so building from inside the package directory never feeds one build's zip into the next. A name or version holding a path separator is `INVALID_MANIFEST` rather than a path, since it is unchecked until validate answers, and for good on a server without the route.
   - An explicit `--out` inside `dir` is refused unless R17 would exclude that path anyway.
   - stdout carries one JSON line: the path, `sha256:<hex>`, the size and the file count.
 
