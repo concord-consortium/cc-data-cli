@@ -71,6 +71,7 @@ func (vs viewSet) statements() []viewStmt {
 	stmts = append(stmts, vs.storeView(store.TypeAnswers))
 	stmts = append(stmts, vs.storeView(store.TypeHistory))
 	stmts = append(stmts, vs.runMembershipView())
+	stmts = append(stmts, vs.runAnswersView())
 	stmts = append(stmts, vs.downloadsView())
 	stmts = append(stmts, vs.attachmentFilesView())
 	stmts = append(stmts, vs.attachmentStatesView())
@@ -358,6 +359,19 @@ func (vs viewSet) runMembershipView() viewStmt {
 	sort.Strings(members)
 	primary := fmt.Sprintf("CREATE VIEW %s AS %s", name, strings.Join(members, "\nUNION ALL BY NAME\n"))
 	return viewStmt{name: name, primary: primary, fallback: fallback, files: files}
+}
+
+// runAnswersView is answers with the run_id of each answers membership. Always bound, unlike
+// answers_<run>; it must follow both views it reads and declares no files, so materialize reads
+// it through theirs.
+func (vs viewSet) runAnswersView() viewStmt {
+	name := vs.prefix + `"run_answers"`
+	answers := vs.prefix + sqlIdent(store.TypeAnswers)
+	membership := vs.prefix + `"run_membership"`
+	primary := fmt.Sprintf("CREATE VIEW %s AS SELECT m.run_id, s.* FROM %s s JOIN %s m USING (source_key, remote_endpoint, question_id) WHERE m.type = %s",
+		name, answers, membership, sqlStr(store.TypeAnswers))
+	fallback := fmt.Sprintf("CREATE VIEW %s AS SELECT CAST(NULL AS BIGINT) AS run_id, s.* FROM %s s WHERE false", name, answers)
+	return viewStmt{name: name, primary: primary, fallback: fallback}
 }
 
 // downloadsView is a VALUES dimension table from the manifest.

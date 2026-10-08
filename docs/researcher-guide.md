@@ -346,6 +346,7 @@ When you (or Claude) query a dataset, the data is exposed as a set of SQL
 | `attachment_content` | The text/JSON content of every saved CODAP/SageModeler snapshot, queryable and diffable. |
 | `student_id_mapping` | One row per learner from Student ID Mapping runs, with the ids that join them to their answers and history. |
 | `student_metadata` | One row per learner from Student Metadata runs: name, username, class, school, teachers, permission forms. |
+| `run_answers` | Every answer with the `run_id` of each run that holds it: `SELECT count(*) FROM run_answers WHERE run_id = 584` counts one run's answers. Join it to `student_id_mapping` on `remote_endpoint = run_remote_endpoint` to count learners by `user_id`. |
 | `run_membership`, `downloads` | Provenance: which run's fetch covered which records, and what each download was, including whether its run hid names. |
 
 ### Speeding up a large dataset
