@@ -11,11 +11,14 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/concord-consortium/cc-data-cli/internal/api"
+	"github.com/concord-consortium/cc-data-cli/internal/config"
+	"github.com/concord-consortium/cc-data-cli/internal/dataset"
 	"github.com/concord-consortium/cc-data-cli/internal/output"
 	"github.com/concord-consortium/cc-data-cli/internal/packages"
 )
@@ -522,5 +525,67 @@ func TestPackagePublishMapsAuthAndUnansweredFailures(t *testing.T) {
 	err = (packagePublishFlags{}).run(context.Background(), api.New(dropped.URL, "tok"), []byte("zip"))
 	if cliErr := asCLIError(t, err); !strings.Contains(cliErr.Action, "Publishing again is safe") {
 		t.Errorf("unanswered: %+v", cliErr)
+	}
+}
+
+func TestPackageRunValidatesThenRunsWithTheRunnersNames(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the entrypoint is a shell script")
+	}
+	dir := t.TempDir()
+	manifest := strings.Replace(testManifest, `"entrypoint": "run.py"`, `"entrypoint": "run.sh"`, 1)
+	script := "#!/bin/sh\nenv > \"$RD_OUTPUT_DIR/../env.txt\"\ncp \"$RD_SCOPE_FILE\" \"$RD_OUTPUT_DIR/../scope.json\"\necho ok > \"$RD_OUTPUT_DIR/display.md\"\n"
+	for name, content := range map[string]string{"manifest.json": manifest, "run.sh": script} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	scopePath := filepath.Join(t.TempDir(), "scope.json")
+	if err := os.WriteFile(scopePath, []byte(`{"kind": "class", "id": "h",
+	  "classes": [{"class_hash": "0123456789abcdef0123456789abcdef0123456789abcdef", "class_id": 6}], "assignments": []}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f := packageRunFlags{scopePath: scopePath, environ: func() []string { return []string{"PATH=" + os.Getenv("PATH")} }}
+	pkg, err := f.load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := newPackageServer(t, validateAnswering(validated))
+	out, _ := capture(t)
+	ref := dataset.Ref{Portal: config.MustPortal("learn.concord.org"), Name: "wildfire"}
+	if err := f.run(context.Background(), api.New(srv.URL, "tok"), pkg, ref, "/data/root"); err != nil {
+		t.Fatal(err)
+	}
+
+	reqs := srv.requests("/api/v1/packages/validate")
+	if len(reqs) != 1 || reqs[0].contentType != "application/zip" || len(reqs[0].body) == 0 {
+		t.Fatalf("validate requests = %d", len(reqs))
+	}
+	run := filepath.Join(dir, packages.RunDirName)
+	env, err := os.ReadFile(filepath.Join(run, "env.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"RD_DATASET=learn.concord.org/wildfire\n", "CC_DATA_PORTAL=learn.concord.org\n", "CC_DATA_ROOT=/data/root\n", "RD_REPORT_SERVER_URL=" + srv.URL + "\n"} {
+		if !strings.Contains(string(env), want) {
+			t.Errorf("environment lacks %q", strings.TrimSpace(want))
+		}
+	}
+	var scope map[string]any
+	raw, err := os.ReadFile(filepath.Join(run, "scope.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &scope); err != nil || scope["dataset"] != "wildfire" {
+		t.Errorf("scope.json dataset = %v, %v", scope["dataset"], err)
+	}
+	var line map[string]any
+	if err := json.Unmarshal(out.Bytes(), &line); err != nil {
+		t.Fatalf("stdout %q: %v", out.String(), err)
+	}
+	for _, key := range []string{"display", "display_bytes", "summary", "counts", "elapsed_seconds"} {
+		if _, ok := line[key]; !ok {
+			t.Errorf("result line lacks %s: %v", key, line)
+		}
 	}
 }

@@ -709,6 +709,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -959,7 +960,7 @@ func environment(from []string, set map[string]string) []string {
 		if !ok {
 			continue
 		}
-		if strings.HasPrefix(k, "LC_") || contains(passthrough, strings.ToUpper(k)) {
+		if strings.HasPrefix(k, "LC_") || slices.Contains(passthrough, strings.ToUpper(k)) {
 			keep[k] = v
 		}
 	}
@@ -972,15 +973,6 @@ func environment(from []string, set map[string]string) []string {
 	}
 	sort.Strings(out)
 	return out
-}
-
-func contains(list []string, s string) bool {
-	for _, x := range list {
-		if x == s {
-			return true
-		}
-	}
-	return false
 }
 ```
 ```go
@@ -1225,7 +1217,7 @@ func RouteMissing(err error) bool {
 **Summary**: R9, R12, R16, R19 to R23.
 - **Wiring.** Adds the four subcommands to the root, and `Init` with the embedded stub.
 - **The report-server calls.** `validate` is shared by `build` and `run` and returns report-server's answer: `build` warns when `already_published` is true or `publishing_unavailable` names a reason, and `run` ignores both, since running a package needs neither a new version nor a bucket. `appliesFor` gives `run` its `Applies` function, with a 5-minute timeout for the deriver.
-- **Testability.** `build` and `publish` carry a `run(ctx, client, ...)` method, as `reportCreateFlags` does, so both are tested against `httptest` with no stored credential.
+- **Testability.** `run`, `build` and `publish` each carry a `run(ctx, client, ...)` method, as `reportCreateFlags` does, so all three are tested against `httptest` with no stored credential. `package run` reads and checks the package and scope file (`load`) before it looks up a credential.
 
 **Files affected**:
 - `cmd/package.go`: new.
@@ -1252,6 +1244,7 @@ import (
 	"time"
 
 	"github.com/concord-consortium/cc-data-cli/internal/api"
+	"github.com/concord-consortium/cc-data-cli/internal/dataset"
 	"github.com/concord-consortium/cc-data-cli/internal/output"
 	"github.com/concord-consortium/cc-data-cli/internal/packages"
 	"github.com/spf13/cobra"
@@ -1327,8 +1320,65 @@ func newPackageInitCmd() *cobra.Command {
 	return cmd
 }
 
+// loadedPackage is a package directory and scope file read and checked, before any credential
+// is needed.
+type loadedPackage struct {
+	dir      string
+	manifest packages.Manifest
+	files    packages.Files
+	scope    packages.LocalScope
+}
+
+type packageRunFlags struct {
+	datasetRef, scopePath string
+	environ               func() []string
+}
+
+func (f packageRunFlags) load(dir string) (loadedPackage, error) {
+	m, files, err := loadPackage(dir)
+	if err != nil {
+		return loadedPackage{}, err
+	}
+	raw, err := os.ReadFile(f.scopePath)
+	if err != nil {
+		return loadedPackage{}, &output.CLIError{ExitCode: output.ExitUsage, Code: "INVALID_SCOPE", Message: fmt.Sprintf("reading the scope file: %v", err)}
+	}
+	scope, err := packages.ParseLocalScope(raw)
+	if err != nil {
+		return loadedPackage{}, &output.CLIError{ExitCode: output.ExitUsage, Code: "INVALID_SCOPE", Message: err.Error()}
+	}
+	return loadedPackage{dir: dir, manifest: m, files: files, scope: scope}, nil
+}
+
+// run validates, runs and reports a loaded package; it takes the client so it can be exercised
+// against a test server without a stored credential.
+func (f packageRunFlags) run(ctx context.Context, client *api.Client, pkg loadedPackage, ref dataset.Ref, dataRoot string) error {
+	archive, err := packages.Zip(pkg.files)
+	if err != nil {
+		return output.Internalf("%v", err)
+	}
+	// A version that is already published, or a portal that cannot store packages yet,
+	// still runs; only a publish is refused.
+	if _, err := validate(ctx, client, archive, "", false); err != nil {
+		return err
+	}
+	start := time.Now()
+	res, err := packages.Run(ctx, packages.RunOptions{
+		Dir: pkg.dir, Manifest: pkg.manifest, Files: pkg.files, Scope: pkg.scope, Applies: appliesFor(client, pkg.scope),
+		Dataset: ref.String(), Name: ref.Name, Portal: ref.Portal.Host(), DataRoot: dataRoot,
+		ReportSrv: client.BaseURL, Stderr: output.Stderr(), Environ: f.environ, LookPath: exec.LookPath,
+	})
+	if err != nil {
+		return packageRunError(err)
+	}
+	return output.ResultLine(map[string]any{
+		"display": res.DisplayPath, "display_bytes": res.DisplayBytes, "summary": res.Summary,
+		"counts": res.Counts, "elapsed_seconds": int(time.Since(start).Seconds()),
+	})
+}
+
 func newPackageRunCmd() *cobra.Command {
-	var datasetRef, scopePath string
+	f := packageRunFlags{environ: os.Environ}
 	cmd := &cobra.Command{
 		Use:   "run [dir] --dataset <ref> --scope <file>",
 		Short: "Run a package locally exactly as the dashboard's runner will",
@@ -1338,27 +1388,18 @@ func newPackageRunCmd() *cobra.Command {
 			"Results are written under <dir>/.cc-data-run/, which build never ships.\n\n" + runDifferences,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if datasetRef == "" || scopePath == "" {
+			if f.datasetRef == "" || f.scopePath == "" {
 				return output.Usagef("--dataset and --scope are required")
 			}
-			dir := packageDir(args)
-			m, files, err := loadPackage(dir)
+			pkg, err := f.load(packageDir(args))
 			if err != nil {
 				return err
-			}
-			raw, err := os.ReadFile(scopePath)
-			if err != nil {
-				return &output.CLIError{ExitCode: output.ExitUsage, Code: "INVALID_SCOPE", Message: fmt.Sprintf("reading the scope file: %v", err)}
-			}
-			scope, err := packages.ParseLocalScope(raw)
-			if err != nil {
-				return &output.CLIError{ExitCode: output.ExitUsage, Code: "INVALID_SCOPE", Message: err.Error()}
 			}
 			cfg, dataRoot, err := loadRuntime()
 			if err != nil {
 				return err
 			}
-			ref, err := resolveRef(cfg, datasetRef)
+			ref, err := resolveRef(cfg, f.datasetRef)
 			if err != nil {
 				return err
 			}
@@ -1369,32 +1410,11 @@ func newPackageRunCmd() *cobra.Command {
 			// The terminal's Ctrl-C cannot reach the package's own process group, so it cancels the run.
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 			defer stop()
-			archive, err := packages.Zip(files)
-			if err != nil {
-				return output.Internalf("%v", err)
-			}
-			// A version that is already published, or a portal that cannot store packages yet,
-			// still runs; only a publish is refused.
-			if _, err := validate(ctx, client, archive, "", false); err != nil {
-				return err
-			}
-			start := time.Now()
-			res, err := packages.Run(ctx, packages.RunOptions{
-				Dir: dir, Manifest: m, Files: files, Scope: scope, Applies: appliesFor(client, scope),
-				Dataset: ref.String(), Name: ref.Name, Portal: ref.Portal.Host(), DataRoot: dataRoot,
-				ReportSrv: client.BaseURL, Stderr: output.Stderr(), Environ: os.Environ, LookPath: exec.LookPath,
-			})
-			if err != nil {
-				return packageRunError(err)
-			}
-			return output.ResultLine(map[string]any{
-				"display": res.DisplayPath, "display_bytes": res.DisplayBytes, "summary": res.Summary,
-				"counts": res.Counts, "elapsed_seconds": int(time.Since(start).Seconds()),
-			})
+			return f.run(ctx, client, pkg, ref, dataRoot)
 		},
 	}
-	cmd.Flags().StringVar(&datasetRef, "dataset", "", "the dataset the package pulls into and reads: <portal>/<name>")
-	cmd.Flags().StringVar(&scopePath, "scope", "", "a JSON file holding the scope's kind, id, classes and assignments")
+	cmd.Flags().StringVar(&f.datasetRef, "dataset", "", "the dataset the package pulls into and reads: <portal>/<name>")
+	cmd.Flags().StringVar(&f.scopePath, "scope", "", "a JSON file holding the scope's kind, id, classes and assignments")
 	return cmd
 }
 
@@ -1808,6 +1828,7 @@ Tests (against an `httptest` server that answers 404 for any route it was not gi
 - **`TestPackageBuildRefusesAnOutputItWouldCollect`**.
 - **`TestPackageBuildRefusesANameThatIsAPath`**: on a server without the validate route, a manifest named `../../escaped` is `INVALID_MANIFEST`, and no zip is written anywhere.
 - **`TestPackageRunKeepsTheServersCode`**: `packageRunError` given applies' 503 `SERVICE_UNAVAILABLE` returns that code with exit 5, and given `NOT_AUTHENTICATED` exit 3.
+- **`TestPackageRunValidatesThenRunsWithTheRunnersNames`**: one validate request carries the zip, the package sees `RD_DATASET` as the full ref, `CC_DATA_PORTAL`, `CC_DATA_ROOT` and `RD_REPORT_SERVER_URL` as the client's server, `scope.json` carries the bare name, and the stdout line has `display`, `display_bytes`, `summary`, `counts` and `elapsed_seconds`.
 - **`TestPackageRunAsksTheServersMatcher`**: the request carries the patterns and the assignment URLs, and a "does not apply" answer comes back as the verdict.
 - **`TestPackageRunOnAServerWithoutTheRouteIsUnconfirmed`**.
 - **`TestPackageRunAlwaysSendsURLs`**: the applies body always carries `urls`, which REPORT-167 requires (a missing or `null` `urls` is 400 there).
@@ -1828,6 +1849,7 @@ Tests (against an `httptest` server that answers 404 for any route it was not gi
 | the warning printed when `publishing_unavailable` is `null` | `TestPackageBuildIsQuietWhenPublishingIsAvailable` |
 | `publishing_unavailable` read under the wrong name | `TestPackageBuildWarnsWhenThePortalCannotPublishAndStillWrites`, `TestValidateReturnsAnUnavailablePortalAsAnAnswerNotAnError` |
 | `official` not sent to validate | `TestPackageBuildValidatesAsThePublishWillBe` |
+| `package run` skips validate, or swaps the ref and its bare name | `TestPackageRunValidatesThenRunsWithTheRunnersNames` |
 | `packageRunError` without its `CLIError` case | `TestPackageRunKeepsTheServersCode` (exit 1, `INTERNAL`) |
 | the default output name not checked | `TestPackageBuildRefusesANameThatIsAPath` (the zip lands two directories up) |
 | `already_published` read under the wrong name | `TestPackageBuildWarnsOnAPublishedVersionAndStillWrites`, `TestValidateReturnsAPublishedVersionAsAnAnswerNotAnError` |

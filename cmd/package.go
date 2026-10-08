@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/concord-consortium/cc-data-cli/internal/api"
+	"github.com/concord-consortium/cc-data-cli/internal/dataset"
 	"github.com/concord-consortium/cc-data-cli/internal/output"
 	"github.com/concord-consortium/cc-data-cli/internal/packages"
 	"github.com/spf13/cobra"
@@ -87,8 +88,65 @@ func newPackageInitCmd() *cobra.Command {
 	return cmd
 }
 
+// loadedPackage is a package directory and scope file read and checked, before any credential
+// is needed.
+type loadedPackage struct {
+	dir      string
+	manifest packages.Manifest
+	files    packages.Files
+	scope    packages.LocalScope
+}
+
+type packageRunFlags struct {
+	datasetRef, scopePath string
+	environ               func() []string
+}
+
+func (f packageRunFlags) load(dir string) (loadedPackage, error) {
+	m, files, err := loadPackage(dir)
+	if err != nil {
+		return loadedPackage{}, err
+	}
+	raw, err := os.ReadFile(f.scopePath)
+	if err != nil {
+		return loadedPackage{}, &output.CLIError{ExitCode: output.ExitUsage, Code: "INVALID_SCOPE", Message: fmt.Sprintf("reading the scope file: %v", err)}
+	}
+	scope, err := packages.ParseLocalScope(raw)
+	if err != nil {
+		return loadedPackage{}, &output.CLIError{ExitCode: output.ExitUsage, Code: "INVALID_SCOPE", Message: err.Error()}
+	}
+	return loadedPackage{dir: dir, manifest: m, files: files, scope: scope}, nil
+}
+
+// run validates, runs and reports a loaded package; it takes the client so it can be exercised
+// against a test server without a stored credential.
+func (f packageRunFlags) run(ctx context.Context, client *api.Client, pkg loadedPackage, ref dataset.Ref, dataRoot string) error {
+	archive, err := packages.Zip(pkg.files)
+	if err != nil {
+		return output.Internalf("%v", err)
+	}
+	// A version that is already published, or a portal that cannot store packages yet,
+	// still runs; only a publish is refused.
+	if _, err := validate(ctx, client, archive, "", false); err != nil {
+		return err
+	}
+	start := time.Now()
+	res, err := packages.Run(ctx, packages.RunOptions{
+		Dir: pkg.dir, Manifest: pkg.manifest, Files: pkg.files, Scope: pkg.scope, Applies: appliesFor(client, pkg.scope),
+		Dataset: ref.String(), Name: ref.Name, Portal: ref.Portal.Host(), DataRoot: dataRoot,
+		ReportSrv: client.BaseURL, Stderr: output.Stderr(), Environ: f.environ, LookPath: exec.LookPath,
+	})
+	if err != nil {
+		return packageRunError(err)
+	}
+	return output.ResultLine(map[string]any{
+		"display": res.DisplayPath, "display_bytes": res.DisplayBytes, "summary": res.Summary,
+		"counts": res.Counts, "elapsed_seconds": int(time.Since(start).Seconds()),
+	})
+}
+
 func newPackageRunCmd() *cobra.Command {
-	var datasetRef, scopePath string
+	f := packageRunFlags{environ: os.Environ}
 	cmd := &cobra.Command{
 		Use:   "run [dir] --dataset <ref> --scope <file>",
 		Short: "Run a package locally exactly as the dashboard's runner will",
@@ -98,27 +156,18 @@ func newPackageRunCmd() *cobra.Command {
 			"Results are written under <dir>/.cc-data-run/, which build never ships.\n\n" + runDifferences,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if datasetRef == "" || scopePath == "" {
+			if f.datasetRef == "" || f.scopePath == "" {
 				return output.Usagef("--dataset and --scope are required")
 			}
-			dir := packageDir(args)
-			m, files, err := loadPackage(dir)
+			pkg, err := f.load(packageDir(args))
 			if err != nil {
 				return err
-			}
-			raw, err := os.ReadFile(scopePath)
-			if err != nil {
-				return &output.CLIError{ExitCode: output.ExitUsage, Code: "INVALID_SCOPE", Message: fmt.Sprintf("reading the scope file: %v", err)}
-			}
-			scope, err := packages.ParseLocalScope(raw)
-			if err != nil {
-				return &output.CLIError{ExitCode: output.ExitUsage, Code: "INVALID_SCOPE", Message: err.Error()}
 			}
 			cfg, dataRoot, err := loadRuntime()
 			if err != nil {
 				return err
 			}
-			ref, err := resolveRef(cfg, datasetRef)
+			ref, err := resolveRef(cfg, f.datasetRef)
 			if err != nil {
 				return err
 			}
@@ -129,32 +178,11 @@ func newPackageRunCmd() *cobra.Command {
 			// The terminal's Ctrl-C cannot reach the package's own process group, so it cancels the run.
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 			defer stop()
-			archive, err := packages.Zip(files)
-			if err != nil {
-				return output.Internalf("%v", err)
-			}
-			// A version that is already published, or a portal that cannot store packages yet,
-			// still runs; only a publish is refused.
-			if _, err := validate(ctx, client, archive, "", false); err != nil {
-				return err
-			}
-			start := time.Now()
-			res, err := packages.Run(ctx, packages.RunOptions{
-				Dir: dir, Manifest: m, Files: files, Scope: scope, Applies: appliesFor(client, scope),
-				Dataset: ref.String(), Name: ref.Name, Portal: ref.Portal.Host(), DataRoot: dataRoot,
-				ReportSrv: client.BaseURL, Stderr: output.Stderr(), Environ: os.Environ, LookPath: exec.LookPath,
-			})
-			if err != nil {
-				return packageRunError(err)
-			}
-			return output.ResultLine(map[string]any{
-				"display": res.DisplayPath, "display_bytes": res.DisplayBytes, "summary": res.Summary,
-				"counts": res.Counts, "elapsed_seconds": int(time.Since(start).Seconds()),
-			})
+			return f.run(ctx, client, pkg, ref, dataRoot)
 		},
 	}
-	cmd.Flags().StringVar(&datasetRef, "dataset", "", "the dataset the package pulls into and reads: <portal>/<name>")
-	cmd.Flags().StringVar(&scopePath, "scope", "", "a JSON file holding the scope's kind, id, classes and assignments")
+	cmd.Flags().StringVar(&f.datasetRef, "dataset", "", "the dataset the package pulls into and reads: <portal>/<name>")
+	cmd.Flags().StringVar(&f.scopePath, "scope", "", "a JSON file holding the scope's kind, id, classes and assignments")
 	return cmd
 }
 

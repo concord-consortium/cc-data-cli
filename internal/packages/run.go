@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -259,7 +260,7 @@ func environment(from []string, set map[string]string) []string {
 		if !ok {
 			continue
 		}
-		if strings.HasPrefix(k, "LC_") || contains(passthrough, strings.ToUpper(k)) {
+		if strings.HasPrefix(k, "LC_") || slices.Contains(passthrough, strings.ToUpper(k)) {
 			keep[k] = v
 		}
 	}
@@ -272,13 +273,4 @@ func environment(from []string, set map[string]string) []string {
 	}
 	sort.Strings(out)
 	return out
-}
-
-func contains(list []string, s string) bool {
-	for _, x := range list {
-		if x == s {
-			return true
-		}
-	}
-	return false
 }
