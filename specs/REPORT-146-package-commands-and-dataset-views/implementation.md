@@ -1043,7 +1043,7 @@ Tests (the entrypoint is a `/bin/sh` script, so these skip on Windows):
 +	return c.send(ctx, method, path, query, body, "application/json")
 +}
 +
-+// send is do with the body's media type named, for the one route that takes raw bytes.
++// send is do with the body's media type named, for the routes that take raw bytes.
 +func (c *Client) send(ctx context.Context, method, path string, query url.Values, body []byte, contentType string) ([]byte, error) {
  	u := c.BaseURL + path
  	if len(query) > 0 {
@@ -1087,7 +1087,7 @@ import (
 	"net/url"
 )
 
-// PublishedPackage is report-server's answer to a publish (REPORT-142).
+// PublishedPackage is report-server's answer to a publish.
 type PublishedPackage struct {
 	CatalogID      int64  `json:"catalog_id"`
 	Identity       string `json:"identity"`
@@ -1102,14 +1102,7 @@ type PublishedPackage struct {
 // caller's own users/<id>, or projects/<id>; official asks the server to mark it official,
 // which only a publisher may. Like every POST it is never retried.
 func (c *Client) PublishPackage(ctx context.Context, archive []byte, origin string, official bool) (*PublishedPackage, error) {
-	q := url.Values{}
-	if origin != "" {
-		q.Set("origin", origin)
-	}
-	if official {
-		q.Set("official", "true")
-	}
-	data, err := c.send(ctx, http.MethodPost, "/api/v1/packages", q, archive, "application/zip")
+	data, err := c.send(ctx, http.MethodPost, "/api/v1/packages", packageQuery(origin, official), archive, "application/zip")
 	if err != nil {
 		return nil, err
 	}
@@ -1120,10 +1113,9 @@ func (c *Client) PublishPackage(ctx context.Context, archive []byte, origin stri
 	return &out, nil
 }
 
-// ValidatedPackage is what a publish of the archive would record, as report-server's validate
-// route answers it without recording anything. Neither of the last two is a refusal: both say
-// a publish of this zip would be refused right now (the version exists, or the portal cannot
-// store packages yet), while running it is fine. PublishingUnavailable is publish's own message.
+// ValidatedPackage is what a publish of the archive would record. The last two are not
+// refusals: each says only a publish would be refused now, with publish's own message for the
+// second.
 type ValidatedPackage struct {
 	Identity              string  `json:"identity"`
 	Version               string  `json:"version"`
@@ -1137,14 +1129,7 @@ type ValidatedPackage struct {
 // before storing it, with the same origin and official a publish would send. A refusal is the
 // same coded error a publish would answer.
 func (c *Client) ValidatePackage(ctx context.Context, archive []byte, origin string, official bool) (*ValidatedPackage, error) {
-	q := url.Values{}
-	if origin != "" {
-		q.Set("origin", origin)
-	}
-	if official {
-		q.Set("official", "true")
-	}
-	data, err := c.send(ctx, http.MethodPost, "/api/v1/packages/validate", q, archive, "application/zip")
+	data, err := c.send(ctx, http.MethodPost, "/api/v1/packages/validate", packageQuery(origin, official), archive, "application/zip")
 	if err != nil {
 		return nil, err
 	}
@@ -1155,20 +1140,18 @@ func (c *Client) ValidatePackage(ctx context.Context, archive []byte, origin str
 	return &out, nil
 }
 
-// AppliesRequest names the patterns and the scope's URLs. AssignmentURLs are followed into
-// their activities by report-service's deriver, so the URLs matched are the runner's.
+// AppliesRequest names the patterns and the scope's assignment URLs, which report-service's
+// deriver follows into their activities, so the URLs matched are the runner's.
 type AppliesRequest struct {
 	URLs           map[string][]string `json:"urls"`
 	AssignmentURLs []string            `json:"assignment_urls,omitempty"`
-	ScopeURLs      []string            `json:"scope_urls,omitempty"`
 }
 
 // AppliesAnswer is report-server's verdict, with what the deriver read and could not.
 type AppliesAnswer struct {
-	Applies         bool     `json:"applies"`
-	Reason          string   `json:"reason"`
-	InteractiveURLs []string `json:"interactive_urls"`
-	Unread          []struct {
+	Applies bool   `json:"applies"`
+	Reason  string `json:"reason"`
+	Unread  []struct {
 		URL    string `json:"url"`
 		Reason string `json:"reason"`
 	} `json:"unread"`
@@ -1182,6 +1165,17 @@ func (c *Client) PackageApplies(ctx context.Context, req AppliesRequest) (*Appli
 		return nil, err
 	}
 	return &out, nil
+}
+
+func packageQuery(origin string, official bool) url.Values {
+	q := url.Values{}
+	if origin != "" {
+		q.Set("origin", origin)
+	}
+	if official {
+		q.Set("official", "true")
+	}
+	return q
 }
 
 // RouteMissing reports a 404 from a route this cc-data expects and the server does not have
