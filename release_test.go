@@ -121,3 +121,18 @@ func readFile(t *testing.T, path string) string {
 	}
 	return string(data)
 }
+
+// A pre-release tag exists to be pinned, so it must not become GitHub's latest release or
+// reach researchers through brew upgrade. Both steps read the one classification.
+func TestReleaseWorkflowKeepsPreReleasesBack(t *testing.T) {
+	rel := readFile(t, ".github/workflows/release.yml")
+	for _, want := range []string{
+		`if [[ "${GITHUB_REF_NAME}" == *-* ]]; then`,
+		"--prerelease=${{ steps.tag.outputs.prerelease }}",
+		"if: steps.tag.outputs.prerelease == 'false'",
+	} {
+		if !strings.Contains(rel, want) {
+			t.Fatalf("release workflow must hold a pre-release tag back from latest and from Homebrew; missing %q", want)
+		}
+	}
+}

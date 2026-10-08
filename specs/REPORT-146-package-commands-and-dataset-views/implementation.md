@@ -1855,9 +1855,8 @@ Tests (against an `httptest` server that answers 404 for any route it was not gi
 and, before "Create GitHub release":
 
 ```yaml
-      # A tag with a semver pre-release suffix (v0.3.0-pre.1) is published for pinning,
-      # by the runner image and package workflows, and never offered as the current
-      # release: GitHub does not mark it latest and Homebrew never sees it.
+      # A pre-release tag (v0.3.0-pre.1) exists to be pinned: it is never marked latest
+      # and never reaches Homebrew.
       - name: Classify the tag
         id: tag
         run: |
