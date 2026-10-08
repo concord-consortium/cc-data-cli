@@ -1231,16 +1231,18 @@ import (
 	"github.com/spf13/cobra"
 )
 
+const runDifferences = `What run cannot reproduce from the VM: the package runs as you, with no network
+sandbox, and with HOME, PATH, the locale and any proxy settings passed through so its own
+cc-data calls find your login and reach the server. A .py entrypoint runs with python3.11
+when it is on PATH, as on the VM, else python3.`
+
 const packageLong = `Develop, test and publish a Researcher Dashboard package.
 
 A package is a directory holding manifest.json and an entrypoint. init writes both; run
 executes the package against your own dataset under the runner's rules; build zips it;
 publish registers the zip in the catalog with your cc-data token.
 
-What run cannot reproduce from the VM: the package runs as you, with no network sandbox,
-and with HOME, PATH, the locale and any proxy settings passed through so its own cc-data
-calls find your login and reach the server. A .py entrypoint runs with python3.11 when it is on PATH, as on the VM, else
-python3.`
+` + runDifferences
 
 func newPackageCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -1307,7 +1309,7 @@ func newPackageRunCmd() *cobra.Command {
 		Long: "Run a package against your own dataset under the runner's rules: the same scope.json,\n" +
 			"environment variables, output files, display.md cap and applicability check.\n\n" +
 			"--scope names a file holding the scope's kind, id, classes and assignments.\n" +
-			"Results are written under <dir>/.cc-data-run/, which build never ships.",
+			"Results are written under <dir>/.cc-data-run/, which build never ships.\n\n" + runDifferences,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if datasetRef == "" || scopePath == "" {
@@ -1811,7 +1813,7 @@ Tests (against an `httptest` server that answers 404 for any route it was not gi
 - `.cc-data-run/` and `.cc-data-build/` (gitignored, and holding student data);
 - the 422 "publishing is not configured" answer a portal gives before its bucket exists.
 
-`skill_header.md` gains a short "Packages" list naming the four commands. The `--help` texts above already state the differences between a local run and a VM.
+`skill_header.md` gains a short "Packages" list naming the four commands. The `--help` texts above state the differences between a local run and a VM, on both `package` and `package run`. The guide's later sections renumber from 8.
 
 **Files affected**:
 - `README.md`.

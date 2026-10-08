@@ -68,6 +68,10 @@ cc-data get history     <run-id> --dataset <portal>/<name>
 cc-data get attachments <run-id> --dataset <portal>/<name> [--answer <id>] [--url] [--inline]
 cc-data query --dataset <portal>/<name> "SELECT ..." [--format table|csv|json|jsonl]
 cc-data repl  --dataset <portal>/<name>
+cc-data package init [dir] [--name <name>]    # manifest.json skeleton + run.py stub for a dashboard package
+cc-data package run [dir] --dataset <portal>/<name> --scope <file>   # run it locally under the runner's rules
+cc-data package build [dir] [--out <file>]    # reproducible zip, checked against the catalog's rules
+cc-data package publish <zip> [--portal <portal|env>] [--origin projects/<id>] [--official]
 cc-data mcp                                   # MCP stdio server for Claude Desktop
 ```
 

@@ -585,7 +585,98 @@ write the cross-dataset query for you.
 
 ---
 
-## 7. A few things to keep in mind
+## 7. Developing and publishing a package
+
+A Researcher Dashboard **package** is a small program the dashboard runs for a
+class on a short-lived virtual machine (the "runner"), which pulls the class's
+data with `cc-data` and writes a short report. `cc-data package` lets you write
+one on your own machine, run it the way the runner will, and publish it to the
+dashboard's catalog with the cc-data login you already have.
+
+### The loop
+
+```
+cc-data package init my-package          # writes manifest.json and run.py
+# edit run.py and manifest.json
+cc-data package run my-package --dataset learn.concord.org/my-package-dev --scope ~/scopes/class-6.json
+cc-data package build my-package         # writes my-package/.cc-data-build/<name>-<version>.zip
+cc-data package publish my-package/.cc-data-build/my-package-0.1.0.zip --portal prod
+```
+
+The `run.py` that `init` writes is a complete package: it finds or creates a
+Student ID Mapping run for the class, pulls its answers, counts answers and
+learners through `cc-data query`, and writes `display.md`, `summary.txt` and
+`counts.json`. Change the counting and the display, and keep the rest.
+
+### The scope file
+
+`package run` needs to know which class to run for. On the VM the dashboard
+supplies that; on your machine a scope file does, holding exactly these four keys:
+
+```json
+{
+  "kind": "class",
+  "id": "<the class hash>",
+  "classes": [{"class_hash": "<the class hash>", "class_id": 6}],
+  "assignments": [{"offering_id": 9, "runnable_id": 1234, "name": "Moth 1.2", "url": "https://..."}]
+}
+```
+
+Keep it **outside the package directory**, or under a name starting with a dot
+such as `.scope.json`, so `build` never ships a class hash in the zip.
+
+### What `run` reproduces, and what it cannot
+
+`run` stages exactly the files `build` would ship into
+`<dir>/.cc-data-run/pkg/` and runs the package from there, writes the runner's
+`scope.json`, sets the runner's environment variables (`RD_DATASET`,
+`RD_SCOPE_FILE`, `RD_OUTPUT_DIR` and the rest), applies the same time limit, and
+reads the result as the runner does, including the 65,536-byte cap on
+`display.md`. A package that reads a file `build` leaves out, such as something
+under `local-data/`, fails locally as it would on the VM.
+
+What it cannot reproduce:
+
+- **No sandbox.** The package runs as you, with your network. The VM runs it as
+  its own user behind an egress proxy.
+- **A few of your variables pass through.** `HOME`, `PATH`, your locale, the
+  proxy settings and a handful of others reach the package, so its own `cc-data`
+  calls find your login. Nothing else from your environment does.
+- **Python.** A `.py` entrypoint runs with `python3.11` when it is on your
+  `PATH`, as on the VM, and otherwise with `python3` after a note saying so.
+- **CLUE.** A package with `clue_prepull: true` is refused locally, since
+  `cc-data` cannot fetch CLUE data yet.
+
+### Checked against report-server
+
+`build` and `run` send the zip to report-server, which checks it against the
+catalog's rules without publishing it, and `run` asks report-server whether the
+package's `urls` patterns apply to the scope's assignments. A refusal stops the
+command with report-server's own message. A report-server too old to have these
+checks answers with a warning, and the command carries on: the package is then
+unchecked until you publish it.
+
+`build` also warns, and still writes the zip, when that version is already
+published (bump `version` in `manifest.json`) or when the portal cannot store
+packages yet.
+
+### Publishing
+
+`publish` sends the zip to the catalog with your cc-data token. A first publish
+creates the package private to you; `--origin projects/<id>` publishes it as a
+project's, and `--official` needs the publisher role. A portal whose report-server
+has no package storage configured answers `UNPROCESSABLE` "publishing is not
+configured for <server>" even though the zip itself passed every check.
+
+### Files the commands leave in your package
+
+`.cc-data-run/` (the last run's staged copy, inputs, outputs and the package's
+data directory) and `.cc-data-build/` (built zips) each carry a `.gitignore`
+of `*`, so git never commits them. **Both can hold student data**: `display.md`
+is drawn from it. `build` never ships either, nor any other path starting with a
+dot.
+
+## 8. A few things to keep in mind
 
 - **One dataset belongs to one portal.** Run IDs are specific to a portal (and to
   the report server behind it); the same run number on a different portal is a
@@ -608,7 +699,7 @@ write the cross-dataset query for you.
 
 ---
 
-## 8. Troubleshooting
+## 9. Troubleshooting
 
 - **`NOT_AUTHENTICATED`, or a prompt to "run `cc-data login`".** Your token is
   missing or expired. Run `cc-data login` (add `--portal` if you're not on
@@ -628,7 +719,7 @@ write the cross-dataset query for you.
 
 ---
 
-## 9. Sensitive data and cleanup
+## 10. Sensitive data and cleanup
 
 Downloading turns a transient export into a durable local corpus that can contain
 student names and other PII. Keep only what you need, and purge datasets when you
