@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"regexp"
 )
 
@@ -62,6 +63,9 @@ func ParseLocalScope(data []byte) (LocalScope, error) {
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&s); err != nil {
 		return s, fmt.Errorf("scope file: %v (it holds exactly kind, id, classes and assignments)", err)
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		return s, fmt.Errorf("scope file: it must hold one JSON object and nothing after it")
 	}
 	switch {
 	case s.Kind == "":

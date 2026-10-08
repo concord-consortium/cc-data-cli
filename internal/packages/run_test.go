@@ -87,7 +87,10 @@ func TestLocalScopeRefusesTheRunnersKeys(t *testing.T) {
 	if _, err := ParseLocalScope([]byte(withDataset)); err == nil {
 		t.Error("a scope file setting dataset was accepted")
 	}
-	if _, err := ParseLocalScope([]byte(scopeJSON)); err != nil {
+	if _, err := ParseLocalScope([]byte(scopeJSON + ` {"dataset": "other"}`)); err == nil {
+		t.Error("a scope file with a second JSON value after it was accepted")
+	}
+	if _, err := ParseLocalScope([]byte(scopeJSON + "\n")); err != nil {
 		t.Errorf("a good scope file was refused: %v", err)
 	}
 }
@@ -318,5 +321,29 @@ func TestEntrypointFallsBackToPython3WithANote(t *testing.T) {
 	}
 	if _, _, _, err := entrypointCommand("/pkg", "run.py", look()); err == nil {
 		t.Error("no interpreter was not an error")
+	}
+}
+
+func TestWriteBuildReplacesALinkedZipRatherThanFollowingIt(t *testing.T) {
+	skipOnWindows(t, "links need privileges on Windows")
+	dir := t.TempDir()
+	target := filepath.Join(t.TempDir(), "precious")
+	writeTree(t, filepath.Dir(target), map[string]string{"precious": "keep"})
+	writeTree(t, dir, map[string]string{BuildDirName + "/": ""})
+	out := filepath.Join(dir, BuildDirName, "p-0.1.0.zip")
+	if err := os.Symlink(target, out); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteBuild(out, []byte("zip")); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(target); string(got) != "keep" {
+		t.Errorf("the link's target became %q", got)
+	}
+	if info, err := os.Lstat(out); err != nil || !info.Mode().IsRegular() {
+		t.Errorf("the zip is not a regular file: %v, %v", info, err)
+	}
+	if entries, _ := os.ReadDir(filepath.Join(dir, BuildDirName)); len(entries) != 2 {
+		t.Errorf("build directory holds %v, want the zip and .gitignore only", entries)
 	}
 }

@@ -56,5 +56,27 @@ func WriteBuild(out string, archive []byte) error {
 	} else if err := ignoreAll(dir); err != nil {
 		return err
 	}
-	return os.WriteFile(out, archive, 0o644)
+	return replaceFile(out, archive)
+}
+
+// replaceFile writes data beside path and renames it into place, so a link already at path is
+// replaced rather than followed.
+func replaceFile(path string, data []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".build-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(0o644); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
 }

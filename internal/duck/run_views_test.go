@@ -10,13 +10,15 @@ import (
 	"github.com/concord-consortium/cc-data-cli/internal/store"
 )
 
-// The documented learner count, run-scoped on both sides, as the guidance gives it.
-const learnersOfRun = "SELECT count(DISTINCT m.user_id) FROM student_id_mapping m JOIN run_answers a ON a.remote_endpoint = m.run_remote_endpoint WHERE a.run_id = %d AND m.run_id = %d"
+// The documented learner count, scoped by the answers' run as the guidance gives it.
+const learnersOfRun = "SELECT count(DISTINCT m.user_id) FROM student_id_mapping m JOIN run_answers a ON a.remote_endpoint = m.run_remote_endpoint WHERE a.run_id = %d"
 
 // Each wrong way to count gives a different number here: counting endpoints instead of users
 // (user 1 answered in two assignments), joining the bare-endpoint learner (who would borrow
 // another bare answer), counting an answer once instead of once per run (e3/q1 is in runs 700
-// and 800), and joining membership untyped (run 700's history holds e1a/q1 too).
+// and 900), joining membership untyped (run 700's history holds e1a/q1 too), leaving the
+// answers unscoped (run 800 is another class), and scoping the mapping by run (run 900, a later
+// mapping run of the same class, holds user 3's row in the deduplicated view).
 func TestRunAnswersAndTheDocumentedLearnerCount(t *testing.T) {
 	d := newDS(t, "ds")
 	buildStore(t, d, 700, [][]byte{
@@ -32,7 +34,8 @@ func TestRunAnswersAndTheDocumentedLearnerCount(t *testing.T) {
 	if _, err := d.MergeCompact(store.TypeHistory, 700, seg); err != nil {
 		t.Fatal(err)
 	}
-	buildStore(t, d, 800, [][]byte{answerRec("s", "https://p/d/e3", "q1", "c"), answerRec("s", "https://p/d/e9", "q1", "z")})
+	buildStore(t, d, 800, [][]byte{answerRec("s", "https://p/d/e9", "q1", "z")})
+	buildStore(t, d, 900, [][]byte{answerRec("s", "https://p/d/e3", "q1", "c")})
 	row := func(learner, user, class, offering int, endpoint string) string {
 		return fmt.Sprintf("%d,%d,%d,s%d,%d,%d,https://act/1,%s", learner, user, user, user, class, offering, endpoint)
 	}
@@ -41,18 +44,20 @@ func TestRunAnswersAndTheDocumentedLearnerCount(t *testing.T) {
 		row(103, 3, 1, 70, "https://p/d/e3"), row(104, 4, 1, 70, "https://p/d/"))})
 	addDimensionCSV(t, d, dimFixture{run: 800, slug: "student-id-mapping", fetchedAt: at(2), filter: `{}`, csv: mappingCSV(
 		row(109, 9, 2, 90, "https://p/d/e9"))})
+	addDimensionCSV(t, d, dimFixture{run: 900, slug: "student-id-mapping", fetchedAt: at(3), filter: `{}`, csv: mappingCSV(
+		row(103, 3, 1, 70, "https://p/d/e3"))})
 	e := openEngine(t, []DatasetSpec{{DS: d}}, nil)
 
 	if n := queryInt(t, e, "SELECT count(*) FROM run_answers WHERE run_id = 700"); n != 4 {
 		t.Errorf("run 700 answers = %d, want 4", n)
 	}
-	if n := queryInt(t, e, "SELECT count(*) FROM run_answers WHERE run_id = 800"); n != 2 {
-		t.Errorf("run 800 answers = %d, want 2", n)
+	if n := queryInt(t, e, "SELECT count(*) FROM run_answers WHERE run_id = 900"); n != 1 {
+		t.Errorf("run 900 answers = %d, want 1", n)
 	}
-	if n := queryInt(t, e, fmt.Sprintf(learnersOfRun, 700, 700)); n != 2 {
+	if n := queryInt(t, e, fmt.Sprintf(learnersOfRun, 700)); n != 2 {
 		t.Errorf("run 700 learners = %d, want 2 (users 1 and 3; user 4's endpoint is bare)", n)
 	}
-	if n := queryInt(t, e, fmt.Sprintf(learnersOfRun, 800, 800)); n != 1 {
+	if n := queryInt(t, e, fmt.Sprintf(learnersOfRun, 800)); n != 1 {
 		t.Errorf("run 800 learners = %d, want 1", n)
 	}
 }
@@ -62,7 +67,7 @@ func TestRunAnswersIsEmptyNotMissingOnAFreshDataset(t *testing.T) {
 	if n := queryInt(t, e, "SELECT count(*) FROM run_answers"); n != 0 {
 		t.Errorf("run_answers has %d rows", n)
 	}
-	if n := queryInt(t, e, fmt.Sprintf(learnersOfRun, 1, 1)); n != 0 {
+	if n := queryInt(t, e, fmt.Sprintf(learnersOfRun, 1)); n != 0 {
 		t.Errorf("the learner count binds to %d on a fresh dataset, want 0", n)
 	}
 }

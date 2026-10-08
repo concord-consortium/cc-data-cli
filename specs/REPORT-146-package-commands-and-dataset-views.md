@@ -16,12 +16,12 @@ Researchers get four `cc-data package` commands (`init`, `run`, `build`, `publis
 - **R2. Dropped (Doug, 2026-10-08): no `learner_endpoints` view.** It would have unioned each Student Answers CSV's `res_<N>_remote_endpoint` columns, so it is empty for a Student ID Mapping run and rests on the route REPORT-147 measured as failing on real classes. Nothing uses it, so nothing builds it.
 - **R3. The documented counts.** For a run whose answers were fetched:
   - answers: `SELECT count(*) FROM run_answers WHERE run_id = <run>`;
-  - learners with at least one answer, for a Student ID Mapping run: `SELECT count(DISTINCT m.user_id) FROM student_id_mapping m JOIN run_answers a ON a.remote_endpoint = m.run_remote_endpoint WHERE a.run_id = <run> AND m.run_id = <run>`, by `user_id` and never by endpoint, since a student has one endpoint per assignment.
+  - learners with at least one answer, for a Student ID Mapping run: `SELECT count(DISTINCT m.user_id) FROM student_id_mapping m JOIN run_answers a ON a.remote_endpoint = m.run_remote_endpoint WHERE a.run_id = <run>`, by `user_id` and never by endpoint, since a student has one endpoint per assignment. It is scoped by the answers' run only: `student_id_mapping` keeps each learner's row from whichever mapping run was fetched last, so filtering it by `run_id` drops a learner another mapping run of the class also holds.
 
   The tests run both on a synthetic dataset built so that each wrong answer differs from the right one. It has:
   - a learner with answers in two assignments, so counting endpoints gives 2 where counting users gives 1;
   - a learner with a bare `.../` endpoint, who must not join;
-  - an answer whose membership puts it in two runs, so it counts once per run;
+  - an answer whose membership puts it in two runs, so it counts once per run, the second run being a later mapping run of the same class that holds that learner's row in `student_id_mapping`;
   - a history membership for one of the answers, which an untyped join would count;
   - a second Student ID Mapping run for another class, which must not leak into the first run's counts.
 
@@ -44,7 +44,7 @@ Researchers get four `cc-data package` commands (`init`, `run`, `build`, `publis
   - The stub is stdlib-only Python and is the smallest complete package. It reads `RD_SCOPE_FILE` and `RD_DATASET`.
     - **Runs.** It takes the researcher's newest Student ID Mapping run filtered to exactly the scope's class (from `cc-data reports list --json`: slug `student-id-mapping`, `report_filter.filters` equal to `["class"]` and `report_filter.class` equal to `[<class_id>]`), as REPORT-147's R7 does. Otherwise it creates one with `cc-data reports create --report-slug student-id-mapping --report-filter '{"class":[<class_id>]}'`.
     - **Pulls and counts.** It re-reads the run with `get report --refresh` (computed live, so learners who joined since appear) and pulls `get answers` on it, then counts with the R3 queries through `cc-data query`, never by locating dataset files.
-    - **Guard.** It keeps the empty-scope guard that section 13 places in package code: no `student_id_mapping` rows for the run is an error.
+    - **Guard.** It keeps the empty-scope guard that section 13 places in package code: no rows in the run's own `report_<run>` is an error, which, unlike `student_id_mapping`, holds every learner of that run.
     - **Output.** It writes `display.md`, `summary.txt` and `counts.json` to the scope's `output_dir`.
   - **Why the stub creates runs.** On the VM its dataset starts empty, so a stub that only read an existing run would report nothing there. The VM path is what a package exists for.
 
@@ -450,4 +450,23 @@ R17 states the rule.
 ### Assumptions the second self-review checked and kept
 **Context**: Raised in self-review (second round), each checked against the code or the live sources.
 
-**Decision**: Found sound: the R3 test (dropping `m.run_id = <run>` fails it at run 800, 2 learners against 1); a second `get answers` on a fetched run re-fetches and merges new answers, so the stub stays current; `reports list --json`'s `report_filter` carries `filters` and `class` as the stub reads them; `query --format json` answers an array of objects; report-server's 270-second wait sits between the deriver's 240 and cc-data's 300; an old report-server answers both new routes with a JSON 404 even without a token; and no publish check refuses an ordinary user's own origin, so `run`'s validate call cannot lock out a researcher who may use the API.
+**Decision**: Found sound: a second `get answers` on a fetched run re-fetches and merges new answers, so the stub stays current; `reports list --json`'s `report_filter` carries `filters` and `class` as the stub reads them; `query --format json` answers an array of objects; report-server's 270-second wait sits between the deriver's 240 and cc-data's 300; an old report-server answers both new routes with a JSON 404 even without a token; and no publish check refuses an ordinary user's own origin, so `run`'s validate call cannot lock out a researcher who may use the API.
+
+---
+
+### The documented learner count filtered the deduplicated mapping by run
+**Context**: Raised in Copilot's review of PR #18. `student_id_mapping` keeps one row per learner across every mapping run, latest fetch winning (`TestPerRunDuplicateCheckIsNotConfusedByLaterRuns` already showed that filtering it by an older `run_id` loses learners). The count's `AND m.run_id = <run>` therefore dropped a learner whom a later-fetched mapping run of the same class also held, and the `init` stub's empty-scope guard, which counted `student_id_mapping` rows for the run, could fail on a class with data.
+**Options considered**:
+- A) A new per-run mapping view, deduplicated within each run only.
+- B) Count over `report_<run>`, the raw per-run CSV, repeating the bare-endpoint rule in the query.
+- C) Drop the mapping-side filter: the answers are already scoped by `a.run_id`, a run's answers fetch holds only its own learners' answers, and an endpoint maps to one learner whichever mapping run's row won.
+
+**Decision**: C for the count, and the guard counts `report_<run>`, which the stub has just pulled. No new view, and the bare-endpoint rule stays in `student_id_mapping` alone. The test gains a later mapping run of the same class, so scoping the mapping by run fails it.
+
+---
+
+### Copilot's other findings on PR #18
+**Context**: Raised in Copilot's review of PR #18.
+
+**Decision**: The default build zip is written to a temporary file and renamed into place, so a link already at that path is replaced rather than followed. The scope file must hold one JSON object and nothing after it. `summary.txt` and `counts.json` stay read under the display cap, since the runner reads them that way too, and the code now says so.
+

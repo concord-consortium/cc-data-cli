@@ -60,7 +60,7 @@ def main():
     cc_data("get", "report", str(run), "--dataset", dataset, "--refresh")
     cc_data("get", "answers", str(run), "--dataset", dataset)
 
-    rows = query(dataset, f"SELECT count(*) AS n FROM student_id_mapping WHERE run_id = {run}")[0]["n"]
+    rows = query(dataset, f"SELECT count(*) AS n FROM report_{run}")[0]["n"]
     if rows == 0:
         raise RuntimeError("no report-service access to this class, or the class has no data")
     answers = query(dataset, f"SELECT count(*) AS n FROM run_answers WHERE run_id = {run}")[0]["n"]
@@ -68,7 +68,7 @@ def main():
     learners = query(dataset, f"""
         SELECT count(DISTINCT m.user_id) AS n FROM student_id_mapping m
         JOIN run_answers a ON a.remote_endpoint = m.run_remote_endpoint
-        WHERE a.run_id = {run} AND m.run_id = {run}""")[0]["n"]
+        WHERE a.run_id = {run}""")[0]["n"]
 
     out = scope["output_dir"]
     with open(os.path.join(out, "display.md"), "w", encoding="utf-8") as handle:

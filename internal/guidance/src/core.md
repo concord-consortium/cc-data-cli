@@ -132,10 +132,12 @@ like `wildfire_2026.answers`):
   undercounts a run whose answers a later run re-fetched.
 - A run's learners with at least one answer come from its Student ID Mapping
   report: `SELECT count(DISTINCT m.user_id) FROM student_id_mapping m JOIN
-  run_answers a ON a.remote_endpoint = m.run_remote_endpoint WHERE a.run_id = 584
-  AND m.run_id = 584`, where 584 is a Student ID Mapping run whose answers were
-  fetched. Count by `user_id`, never by endpoint, since a student has one endpoint
-  per assignment. A Student ID Mapping run is computed live, so re-reading it with
+  run_answers a ON a.remote_endpoint = m.run_remote_endpoint WHERE a.run_id =
+  584`, where 584 is a Student ID Mapping run whose answers and report were
+  fetched. Scope it by the answers' `run_id` only: `student_id_mapping` keeps each
+  learner's row from whichever run was fetched last, so `m.run_id = 584` drops a
+  learner another mapping run of the class also holds. Count by `user_id`, never
+  by endpoint, since a student has one endpoint per assignment. A Student ID Mapping run is computed live, so re-reading it with
   `--refresh` picks up learners who joined since; a Student Answers run is fixed
   when its query ran, and a whole-class one fails above three or four assignments.
 - A run's log freshness is `SELECT count(*) AS logs, max(event_time) AS

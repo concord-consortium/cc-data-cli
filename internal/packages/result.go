@@ -50,6 +50,7 @@ func ReadResult(outDir string) (Result, error) {
 		return res, &OutputRefused{Reason: fmt.Sprintf("the package's display.md is %d bytes, over the %d-byte limit", size, DisplayLimitBytes)}
 	}
 	res.DisplayPath = filepath.Join(outDir, "display.md")
+	// The runner reads summary.txt and counts.json under the display cap too, truncating them.
 	res.DisplayBytes = size
 	if text, _, err := readOwnFile(outDir, "summary.txt", DisplayLimitBytes); err == nil {
 		line := strings.TrimSpace(strings.SplitN(strings.ReplaceAll(text, "\r\n", "\n"), "\n", 2)[0])
