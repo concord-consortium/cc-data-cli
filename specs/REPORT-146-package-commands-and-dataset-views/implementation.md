@@ -6,47 +6,38 @@
 
 ## Implementation Plan
 
-The plan comes in six commits. Each one builds and passes `go test ./...` on its own, in this order. All of the code below was compiled and tested in a scratch copy of `main` (`58c9172`) while this plan was written: the full suite passes, `go vet` is clean for Linux, and `GOOS=windows go vet` is clean for `internal/packages` and `internal/api`. A table under each step names mutations its tests catch; every one listed was applied and made a test fail. The scratch copy has been deleted.
+The plan comes in seven commits. Each one builds and passes `go test ./...` on its own, in this order. All of the code below was compiled and tested in a scratch copy of `main` (`58c9172`) while this plan was written: the full suite passes, `go vet` is clean for Linux, and `GOOS=windows go vet` is clean for `internal/packages` and `internal/api`. A table under each step names mutations its tests catch; every one listed was applied and made a test fail. The scratch copy has been deleted.
 
-The package rules and applicability are report-server's (requirements, Dependencies). cc-data calls `POST /api/v1/packages/validate` and `POST /api/v1/packages/applies`, which the companion report-service story adds. A 404 from either means an older report-server, and is a warning, not a failure. So this plan ships and works before that story lands, and gains its checks when it does.
+The package rules and applicability are report-server's (requirements, Dependencies). cc-data calls `POST /api/v1/packages/validate` and `POST /api/v1/packages/applies`, which REPORT-167 adds. A 404 from either means an older report-server, and is a warning, not a failure. So this plan ships and works before that story lands, and gains its checks when it does.
 
-### The run-scoped views: `run_answers` and `learner_endpoints`
+### The run-scoped view `run_answers`, and the documented counts
 
-**Summary**: R1 to R5. Adds two static views to `internal/duck/views.go`, documents them where the drift guards check, and tests the counts on a dataset where each wrong way of counting gives a different number. Static views are derived everywhere else, so `cmd/query.go`'s help and the MCP `query` description pick both up with no edit.
+**Summary**: R1, R3 to R5. Adds the static view `run_answers` to `internal/duck/views.go`, and documents it with the learner count through the existing `student_id_mapping` view and the log-freshness query, where the drift guards check. It tests both counts on a dataset where each wrong way of counting gives a different number. Static views are derived everywhere else, so `cmd/query.go`'s help and the MCP `query` description pick it up with no edit.
 
 **Files affected**:
-- `internal/duck/views.go`: two builders and a helper, registered after `runMembershipView`.
+- `internal/duck/views.go`: one builder, registered after `runMembershipView`.
 - `internal/duck/run_views_test.go`: new.
-- `internal/guidance/src/core.md`: two Views entries and the freshness query.
-- `docs/researcher-guide.md`: two table rows.
+- `internal/guidance/src/core.md`: the `run_answers` entry, the learner count, and the freshness query.
+- `docs/researcher-guide.md`: one table row.
 
-**Estimated diff size**: ~230 lines
+**Estimated diff size**: ~170 lines
 
 ```diff
---- /tmp/o	2026-10-08 05:22:45.429149300 -0400
-+++ internal/duck/views.go	2026-10-07 17:23:24.424211223 -0400
-@@ -8,6 +8,7 @@
- 	"io"
- 	"os"
- 	"path/filepath"
-+	"regexp"
- 	"sort"
- 	"strings"
- 	"time"
-@@ -71,6 +72,8 @@
+--- /tmp/o	2026-10-08 09:00:24.920084911 -0400
++++ internal/duck/views.go	2026-10-08 09:00:14.224272861 -0400
+@@ -71,6 +71,7 @@
  	stmts = append(stmts, vs.storeView(store.TypeAnswers))
  	stmts = append(stmts, vs.storeView(store.TypeHistory))
  	stmts = append(stmts, vs.runMembershipView())
 +	stmts = append(stmts, vs.runAnswersView())
-+	stmts = append(stmts, vs.learnerEndpointsView())
  	stmts = append(stmts, vs.downloadsView())
  	stmts = append(stmts, vs.attachmentFilesView())
  	stmts = append(stmts, vs.attachmentStatesView())
-@@ -360,6 +363,88 @@
+@@ -360,6 +361,20 @@
  	return viewStmt{name: name, primary: primary, fallback: fallback, files: files}
  }
  
-+// runAnswersView is every answer once per Student Answers run whose membership holds it: the
++// runAnswersView is every answer once per run whose answers fetch holds it in membership: the
 +// type-qualified membership join, registered on every dataset so a run with no answers counts
 +// zero rather than failing to bind the way answers_<run> does. It must follow both views it
 +// reads, and it declares no files, so materializing reads it through theirs.
@@ -60,80 +51,12 @@ The package rules and applicability are report-server's (requirements, Dependenc
 +	return viewStmt{name: name, primary: primary, fallback: fallback}
 +}
 +
-+// resEndpointColumn is an answers report's per-assignment endpoint column; N is the
-+// assignment's position in that run's list.
-+var resEndpointColumn = regexp.MustCompile(`^res_([0-9]+)_remote_endpoint$`)
-+
-+// learnerEndpointsView is one row per learner per assignment of every answers-type report CSV:
-+// the Portal user, the assignment's offering and the endpoint that joins them to run_answers.
-+// A student has one endpoint per assignment, which is why learners are counted by user_id.
-+// Each CSV is scanned once, its assignment columns unnested as structs, because a real class
-+// carries eight to fourteen of them.
-+func (vs viewSet) learnerEndpointsView() viewStmt {
-+	name := vs.prefix + `"learner_endpoints"`
-+	standIn := fmt.Sprintf("CREATE VIEW %s AS SELECT CAST(NULL AS BIGINT) AS run_id, CAST(NULL AS BIGINT) AS user_id, CAST(NULL AS BIGINT) AS offering_id, CAST(NULL AS VARCHAR) AS remote_endpoint WHERE false", name)
-+	var members, files []string
-+	for _, dl := range vs.m.Downloads {
-+		if dl.Type != "report" || dl.ReportType != dataset.ReportTypeAnswers || len(dl.Files) == 0 || dl.Columns == nil {
-+			continue
-+		}
-+		structs := learnerStructs(dl)
-+		if _, ok := dl.Columns["user_id"]; !ok || len(structs) == 0 {
-+			continue
-+		}
-+		if fileMissing(filepath.Join(vs.canonDir, dl.Files[0])) {
-+			vs.warnf("report CSV %s is missing on disk; contributing zero rows to learner_endpoints (run cc-data dataset reindex)", dl.Files[0])
-+			continue
-+		}
-+		members = append(members, fmt.Sprintf(
-+			"SELECT CAST(run_id AS BIGINT) AS run_id, TRY_CAST(user_id AS BIGINT) AS user_id, unnest([%s]) AS a FROM (%s)",
-+			strings.Join(structs, ", "), vs.csvScan(dl, true, nil)))
-+		files = append(files, dl.Files...)
-+	}
-+	if len(members) == 0 {
-+		return viewStmt{name: name, primary: standIn, fallback: standIn}
-+	}
-+	// A bare endpoint ending in "/" is a learner with no secure key, shared by every such
-+	// learner, so it is withheld as in the dimension views rather than joined.
-+	primary := fmt.Sprintf("CREATE VIEW %s AS SELECT run_id, user_id, a.offering_id AS offering_id, "+
-+		"CASE WHEN a.remote_endpoint LIKE %s THEN NULL ELSE a.remote_endpoint END AS remote_endpoint FROM (\n%s\n) WHERE a.remote_endpoint IS NOT NULL",
-+		name, sqlStr("%/"), strings.Join(members, "\nUNION ALL\n"))
-+	return viewStmt{name: name, primary: primary, fallback: standIn, files: files}
-+}
-+
-+// learnerStructs is one {offering_id, remote_endpoint} struct per assignment the CSV records,
-+// in assignment order. A CSV without an assignment's offering_id gives that struct a NULL one.
-+func learnerStructs(dl dataset.Download) []string {
-+	type res struct {
-+		n   int
-+		col string
-+	}
-+	var found []res
-+	for col := range dl.Columns {
-+		if m := resEndpointColumn.FindStringSubmatch(col); m != nil {
-+			var n int
-+			fmt.Sscanf(m[1], "%d", &n)
-+			found = append(found, res{n, col})
-+		}
-+	}
-+	sort.Slice(found, func(i, j int) bool { return found[i].n < found[j].n })
-+	structs := make([]string, 0, len(found))
-+	for _, r := range found {
-+		offering := "CAST(NULL AS BIGINT)"
-+		if col := fmt.Sprintf("res_%d_offering_id", r.n); dl.Columns[col] != "" {
-+			offering = fmt.Sprintf("TRY_CAST(%s AS BIGINT)", sqlIdent(col))
-+		}
-+		structs = append(structs, fmt.Sprintf("{'offering_id': %s, 'remote_endpoint': CAST(%s AS VARCHAR)}", offering, sqlIdent(r.col)))
-+	}
-+	return structs
-+}
-+
  // downloadsView is a VALUES dimension table from the manifest.
  //
  // hide_names separates the two meanings of a name column: where a run hid names, student_name
 ```
 
-`learner_endpoints` scans each CSV once and unnests one `{offering_id, remote_endpoint}` struct per assignment. Scanning once per assignment column would read a real class's CSV eight to fourteen times. The view declares its CSVs as files, so `dataset materialize` writes it. `run_answers` declares none, so materializing reads it through the materialized `answers` and `run_membership`. Both behaviors were run against a copy of `staging-smoketest`.
+`run_answers` declares no files, so `dataset materialize` leaves it a join over the materialized `answers` and `run_membership` (checked against a copy of `staging-smoketest`). The learner count is tested here even though it adds no view, because the guidance presents it as the way to count, and a guidance query that silently stopped counting correctly is the failure this test exists to catch.
 
 ```go
 package duck
@@ -147,122 +70,106 @@ import (
 	"github.com/concord-consortium/cc-data-cli/internal/store"
 )
 
+// The documented learner count, run-scoped on both sides, as the guidance gives it.
+const learnersOfRun = "SELECT count(DISTINCT m.user_id) FROM student_id_mapping m JOIN run_answers a ON a.remote_endpoint = m.run_remote_endpoint WHERE a.run_id = %d AND m.run_id = %d"
+
 // Each wrong way to count gives a different number here: counting endpoints instead of users
-// (learner 1 answered in two assignments), joining the bare-endpoint learner (who would
-// borrow learner 4's answer), counting an answer once instead of once per run (e3/q1 is in
-// runs 584 and 585), leaking class 2's run into class 1's, and joining membership untyped
-// (run 584's history holds e1/q1 too).
-func TestRunAnswersAndLearnerEndpointsCountLikeLib(t *testing.T) {
+// (user 1 answered in two assignments), joining the bare-endpoint learner (who would borrow
+// another bare answer), counting an answer once instead of once per run (e3/q1 is in runs 700
+// and 800), and joining membership untyped (run 700's history holds e1a/q1 too).
+func TestRunAnswersAndTheDocumentedLearnerCount(t *testing.T) {
 	d := newDS(t, "ds")
-	buildStore(t, d, 584, [][]byte{
-		answerRec("s", "https://p/d/e1", "q1", "a"), answerRec("s", "https://p/d/e1b", "q1", "b"),
+	buildStore(t, d, 700, [][]byte{
+		answerRec("s", "https://p/d/e1a", "q1", "a"), answerRec("s", "https://p/d/e1b", "q1", "b"),
 		answerRec("s", "https://p/d/e3", "q1", "c"), answerRec("s", "https://p/d/", "q1", "bare"),
 	})
-	hist, _ := json.Marshal(map[string]any{"source_key": "s", "remote_endpoint": "https://p/d/e1", "question_id": "q1", "history_id": "h1"})
-	seg := store.OpenSegment(d.Dir, store.TypeHistory, 584)
-	if err := seg.AppendPage([][]byte{hist}, time.Unix(584, 0).UTC(), 584); err != nil {
+	hist, _ := json.Marshal(map[string]any{"source_key": "s", "remote_endpoint": "https://p/d/e1a", "question_id": "q1", "history_id": "h1"})
+	seg := store.OpenSegment(d.Dir, store.TypeHistory, 700)
+	if err := seg.AppendPage([][]byte{hist}, time.Unix(700, 0).UTC(), 700); err != nil {
 		t.Fatal(err)
 	}
 	seg.WriteCursor(&store.Cursor{Items: 1})
-	if _, err := d.MergeCompact(store.TypeHistory, 584, seg); err != nil {
+	if _, err := d.MergeCompact(store.TypeHistory, 700, seg); err != nil {
 		t.Fatal(err)
 	}
-	buildStore(t, d, 585, [][]byte{answerRec("s", "https://p/d/e3", "q1", "c"), answerRec("s", "https://p/d/e9", "q1", "z")})
-	addReportCSV(t, d, 584, "answers", "student_id,user_id,class_id,res_1_offering_id,res_1_remote_endpoint,res_2_offering_id,res_2_remote_endpoint\n"+
-		"Prompt,,,,,,\nCorrect answer,,,,,,\n"+
-		"10,1,1,7,https://p/d/e1,8,https://p/d/e1b\n"+
-		"30,3,1,7,https://p/d/e3,8,\n"+
-		"40,4,1,7,https://p/d/,8,\n")
-	addReportCSV(t, d, 585, "answers", "student_id,user_id,class_id,res_1_offering_id,res_1_remote_endpoint\n"+
-		"Prompt,,,,\nCorrect answer,,,,\n30,3,2,9,https://p/d/e3\n90,9,2,9,https://p/d/e9\n")
+	buildStore(t, d, 800, [][]byte{answerRec("s", "https://p/d/e3", "q1", "c"), answerRec("s", "https://p/d/e9", "q1", "z")})
+	row := func(learner, user, class, offering int, endpoint string) string {
+		return fmt.Sprintf("%d,%d,%d,s%d,%d,%d,https://act/1,%s", learner, user, user, user, class, offering, endpoint)
+	}
+	addDimensionCSV(t, d, dimFixture{run: 700, slug: "student-id-mapping", fetchedAt: at(1), filter: `{}`, csv: mappingCSV(
+		row(101, 1, 1, 70, "https://p/d/e1a"), row(102, 1, 1, 71, "https://p/d/e1b"),
+		row(103, 3, 1, 70, "https://p/d/e3"), row(104, 4, 1, 70, "https://p/d/"))})
+	addDimensionCSV(t, d, dimFixture{run: 800, slug: "student-id-mapping", fetchedAt: at(2), filter: `{}`, csv: mappingCSV(
+		row(109, 9, 2, 90, "https://p/d/e9"))})
 	e := openEngine(t, []DatasetSpec{{DS: d}}, nil)
 
-	if n := queryInt(t, e, "SELECT count(*) FROM run_answers WHERE run_id = 584"); n != 4 {
-		t.Errorf("run 584 answers = %d, want 4", n)
+	if n := queryInt(t, e, "SELECT count(*) FROM run_answers WHERE run_id = 700"); n != 4 {
+		t.Errorf("run 700 answers = %d, want 4", n)
 	}
-	if n := queryInt(t, e, "SELECT count(*) FROM run_answers WHERE run_id = 585"); n != 2 {
-		t.Errorf("run 585 answers = %d, want 2", n)
+	if n := queryInt(t, e, "SELECT count(*) FROM run_answers WHERE run_id = 800"); n != 2 {
+		t.Errorf("run 800 answers = %d, want 2", n)
 	}
-	learners := "SELECT count(DISTINCT e.user_id) FROM learner_endpoints e JOIN run_answers a USING (run_id, remote_endpoint) WHERE run_id = %d"
-	if n := queryInt(t, e, fmt.Sprintf(learners, 584)); n != 2 {
-		t.Errorf("run 584 learners = %d, want 2 (users 1 and 3; user 4's endpoint is bare)", n)
+	if n := queryInt(t, e, fmt.Sprintf(learnersOfRun, 700, 700)); n != 2 {
+		t.Errorf("run 700 learners = %d, want 2 (users 1 and 3; user 4's endpoint is bare)", n)
 	}
-	if n := queryInt(t, e, fmt.Sprintf(learners, 585)); n != 2 {
-		t.Errorf("run 585 learners = %d, want 2", n)
-	}
-	if n := queryInt(t, e, "SELECT count(*) FROM learner_endpoints WHERE remote_endpoint IS NULL AND user_id = 4"); n != 1 {
-		t.Errorf("the bare endpoint was not nulled")
-	}
-	if n := queryInt(t, e, "SELECT count(*) FROM learner_endpoints WHERE run_id = 584 AND offering_id = 8"); n != 1 {
-		t.Errorf("assignment 2's offering_id did not follow its endpoint")
-	}
-	var types string
-	rows, _ := e.Query(t.Context(), "SELECT string_agg(column_type, ',' ORDER BY column_name) FROM (DESCRIBE learner_endpoints)")
-	rows.Next()
-	rows.Scan(&types)
-	rows.Close()
-	if types != "BIGINT,VARCHAR,BIGINT,BIGINT" {
-		t.Errorf("learner_endpoints types (offering_id, remote_endpoint, run_id, user_id) = %s", types)
+	if n := queryInt(t, e, fmt.Sprintf(learnersOfRun, 800, 800)); n != 1 {
+		t.Errorf("run 800 learners = %d, want 1", n)
 	}
 }
 
-func TestRunViewsAreEmptyNotMissingOnAFreshDataset(t *testing.T) {
+func TestRunAnswersIsEmptyNotMissingOnAFreshDataset(t *testing.T) {
 	e := openEngine(t, []DatasetSpec{{DS: newDS(t, "ds")}}, nil)
-	for _, v := range []string{"run_answers", "learner_endpoints"} {
-		if n := queryInt(t, e, "SELECT count(*) FROM "+v); n != 0 {
-			t.Errorf("%s has %d rows", v, n)
-		}
+	if n := queryInt(t, e, "SELECT count(*) FROM run_answers"); n != 0 {
+		t.Errorf("run_answers has %d rows", n)
 	}
-	if n := queryInt(t, e, "SELECT count(*) FROM (DESCRIBE learner_endpoints)"); n != 4 {
-		t.Errorf("learner_endpoints stand-in has %d columns, want 4", n)
+	if n := queryInt(t, e, fmt.Sprintf(learnersOfRun, 1, 1)); n != 0 {
+		t.Errorf("the learner count binds to %d on a fresh dataset, want 0", n)
 	}
 }
 ```
 
 | Mutation | Test that fails |
 |---|---|
-| bare endpoints not nulled | learners for run 584 = 3 |
-| `m.type = 'answers'` dropped | run 584 answers = 5 (the history membership joins) |
-| offering taken from assignment 1 | "assignment 2's offering_id did not follow its endpoint" |
-| `run_id` left uncast | the DESCRIBE type check (INTEGER) |
+| `m.type = 'answers'` dropped | run 700 answers = 5 (the history membership joins) |
+| the documented count by endpoint instead of `user_id` | run 700 learners = 3 |
 
-Documentation (the two guards in `internal/guidance/guard_test.go` fail until both files carry the names; the dashes in `core.md` match that list's existing entries):
+Documentation (the two guards in `internal/guidance/guard_test.go` fail until both files carry the name; the dashes in `core.md` match that list's existing entries):
 
 ```diff
---- /tmp/o	2026-10-08 05:22:45.441149321 -0400
-+++ internal/guidance/src/core.md	2026-10-07 17:21:28.050911252 -0400
-@@ -122,6 +122,23 @@
+--- /tmp/o	2026-10-08 09:00:24.902084889 -0400
++++ internal/guidance/src/core.md	2026-10-08 09:00:14.224676445 -0400
+@@ -122,6 +122,24 @@
    **type-qualified**: `answers a JOIN run_membership m USING
    (source_key, remote_endpoint, question_id) WHERE m.run_id = 584 AND m.type =
    'answers'`. History joins add `history_id` to the USING list.
-+- `run_answers` — every `answers` row with `run_id`, once for each Student Answers
-+  run whose membership holds it, so one run's answers are `SELECT count(*) FROM
++- `run_answers` — every `answers` row with `run_id`, once for each run whose
++  answers fetch holds it (a Student Answers or a Student ID Mapping run), so one
++  run's answers are `SELECT count(*) FROM
 +  run_answers WHERE run_id = 584`. It is the type-qualified membership join above,
 +  always present, so a run with no answers counts zero rather than failing to bind
 +  as `answers_<run>` does. Its `run_id` is membership; the store's own `_run_id` is
 +  only the run that last fetched the record, so filtering `answers` by `_run_id`
 +  undercounts a run whose answers a later run re-fetched.
-+- `learner_endpoints` — one row per learner per assignment in each answers-type
-+  report CSV: `run_id`, `user_id` (the Portal user), `offering_id` and
-+  `remote_endpoint`, built from every `res_<N>_remote_endpoint` column. A bare
-+  endpoint ending in `/` (a learner with no secure key) is NULL, as in
-+  `student_id_mapping`. Count a run's learners with an answer by `user_id`, never by
-+  endpoint, since a student has one endpoint per assignment: `SELECT count(DISTINCT
-+  e.user_id) FROM learner_endpoints e JOIN run_answers a USING (run_id,
-+  remote_endpoint) WHERE run_id = 584`.
++- A run's learners with at least one answer come from its Student ID Mapping
++  report: `SELECT count(DISTINCT m.user_id) FROM student_id_mapping m JOIN
++  run_answers a ON a.remote_endpoint = m.run_remote_endpoint WHERE a.run_id = 584
++  AND m.run_id = 584`, where 584 is a Student ID Mapping run whose answers were
++  fetched. Count by `user_id`, never by endpoint, since a student has one endpoint
++  per assignment. A Student ID Mapping run is computed live, so re-reading it with
++  `--refresh` picks up learners who joined since; a Student Answers run is fixed
++  when its query ran, and a whole-class one fails above three or four assignments.
 +- A run's log freshness is `SELECT count(*) AS logs, max(event_time) AS
 +  log_freshness_at FROM logs WHERE run_id = <id>`.
  - Reports-to-stores join: `reports.res_<N>_remote_endpoint =
    answers.remote_endpoint`, with `res_<N>_<question_id>_*` pairing to
    `answers.question_id`.
---- /tmp/o	2026-10-08 05:22:45.444149326 -0400
-+++ docs/researcher-guide.md	2026-10-07 17:21:28.050652765 -0400
-@@ -346,6 +346,8 @@
+--- /tmp/o	2026-10-08 09:00:24.914084903 -0400
++++ docs/researcher-guide.md	2026-10-08 08:57:22.784965017 -0400
+@@ -346,6 +346,7 @@
  | `attachment_content` | The text/JSON content of every saved CODAP/SageModeler snapshot, queryable and diffable. |
  | `student_id_mapping` | One row per learner from Student ID Mapping runs, with the ids that join them to their answers and history. |
  | `student_metadata` | One row per learner from Student Metadata runs: name, username, class, school, teachers, permission forms. |
-+| `run_answers` | Every answer with the `run_id` of each run that holds it: `SELECT count(*) FROM run_answers WHERE run_id = 584` counts one run's answers. |
-+| `learner_endpoints` | One row per learner per assignment in each Student Answers report: `user_id`, `offering_id` and the `remote_endpoint` that joins them to `run_answers`. Count a run's learners by `user_id`, since one student has an endpoint per assignment. |
++| `run_answers` | Every answer with the `run_id` of each run that holds it: `SELECT count(*) FROM run_answers WHERE run_id = 584` counts one run's answers. Join it to `student_id_mapping` on `remote_endpoint = run_remote_endpoint` to count learners by `user_id`. |
  | `run_membership`, `downloads` | Provenance: which run's fetch covered which records, and what each download was, including whether its run hid names. |
  
  ### Speeding up a large dataset
@@ -478,8 +385,9 @@ func Collect(dir string) (Files, error) {
 	return files, err
 }
 
-// Zip writes the files as a reproducible archive: sorted entries, Deflate, a fixed time, each
-// file's ship mode, and no extra fields. The size limits are report-server's to apply.
+// Zip writes the files as a reproducible archive: sorted entries, Deflate, a fixed time, and
+// each file's ship mode. archive/zip also writes that time as an extended-timestamp extra
+// field, which is as fixed as the time itself. The size limits are report-server's to apply.
 func Zip(files Files) ([]byte, error) {
 	var buf bytes.Buffer
 	w := zip.NewWriter(&buf)
@@ -666,7 +574,7 @@ Tests (the link and mode tests skip on Windows, where links need privileges and 
 - **Layout.** Rebuilds `.cc-data-run/` (`pkg/`, `in/`, `out/`, `data/` and a `.gitignore` of `*`) and writes the runner's `scope.json`.
 - **Applicability.** Asks an injected `Applies` function, which the commands step wires to report-server.
 - **Environment and interpreter.** Builds the runner's environment plus the passthrough list, and picks the interpreter.
-- **Execution.** Runs the entrypoint from the staged copy in its own process group, and kills the group at the bound.
+- **Execution.** Runs the entrypoint from the staged copy in its own process group, kills the group at the bound or on an interrupt, and kills what is left of it once the entrypoint exits.
 - **Result.** Reads it with `ReadResult`.
 
 **Files affected**:
@@ -803,11 +711,14 @@ const TimeoutMargin = 10 * time.Minute
 const RunDirName = ".cc-data-run"
 
 // passthrough is what a laptop adds to the runner's environment so the package's own cc-data
-// calls find the researcher's stored credential (keychain or credentials file) and run at
-// all. The runner sets nothing beyond its own variables, so neither does this.
+// calls find the researcher's stored credential (keychain or credentials file), reach the
+// server, and run at all. The runner sets HTTPS_PROXY and HTTP_PROXY when it has a proxy, and
+// NO_PROXY keeps a laptop's exemptions with them. Matching is case-insensitive, so the
+// lower-case spellings pass too.
 var passthrough = []string{
 	"HOME", "PATH", "USER", "LOGNAME", "LANG", "TZ", "TMPDIR",
 	"DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR",
+	"HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY",
 	// Windows has no release, but CI builds and tests there.
 	"SYSTEMROOT", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "PATHEXT", "COMSPEC",
 }
@@ -912,9 +823,16 @@ func Run(ctx context.Context, o RunOptions) (Result, error) {
 	cmd.Stdout = o.Stderr
 	cmd.Stderr = o.Stderr
 	killGroup(cmd)
-	if err := cmd.Run(); err != nil {
-		if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
+	err = cmd.Run()
+	// The runner kills everything the package left behind before it reads the output, so a
+	// background process can neither outlive the run nor write a later run's files.
+	reapGroup(cmd)
+	if err != nil {
+		switch {
+		case errors.Is(runCtx.Err(), context.DeadlineExceeded):
 			return Result{}, &Failed{Reason: fmt.Sprintf("the package ran past its %ds bound", int(timeout.Seconds()))}
+		case ctx.Err() != nil:
+			return Result{}, &Failed{Reason: "the package was interrupted"}
 		}
 		return Result{}, &Failed{Reason: fmt.Sprintf("the package exited unsuccessfully: %v", err)}
 	}
@@ -1064,6 +982,14 @@ func killGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 }
+
+// reapGroup kills whatever is left of the package's process group once the entrypoint has
+// exited. The group outlives its leader while any member does, so the kill still finds it.
+func reapGroup(cmd *exec.Cmd) {
+	if cmd.Process != nil {
+		syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+}
 ```
 ```go
 //go:build windows
@@ -1072,20 +998,24 @@ package packages
 
 import "os/exec"
 
-// killGroup kills only the entrypoint on Windows, which has no release.
+// killGroup and reapGroup kill only the entrypoint on Windows, which has no release.
 func killGroup(cmd *exec.Cmd) {}
+
+func reapGroup(cmd *exec.Cmd) {}
 ```
 
 Tests (the entrypoint is a `/bin/sh` script, so these skip on Windows):
 - **`TestLocalScopeRefusesTheRunnersKeys`**: a scope file setting `dataset` is refused.
 - **`TestRunGivesThePackageTheRunnersLayout`**:
   - The package dumps its environment, copies `scope.json` and lists its working directory.
-  - The environment carries `RD_DATASET` (the full ref), `CC_DATA_PORTAL`, `RD_SCOPE_FILE` and a passed-through `LC_ALL`, and not an injected `AWS_SECRET_ACCESS_KEY`.
+  - The environment carries `RD_DATASET` (the full ref), `CC_DATA_PORTAL`, `RD_SCOPE_FILE` a passed-through `LC_ALL` and lower-case `https_proxy`, and not an injected `AWS_SECRET_ACCESS_KEY`.
   - `scope.json` has the bare `dataset`, `clue_source: "firebase"` and the absolute `output_dir`.
   - The working directory has no `local-data/`, and `.gitignore` is `*`.
 - **`TestRunRefusesBeforeStarting`**: when `Applies` says no, the error is the runner's prefix plus the reason, and the entrypoint never starts. A `clue_prepull` package is refused.
 - **`TestRunWarnsAndRunsWhenApplicabilityIsUnconfirmed`**: an unconfirmed verdict prints the warning and runs.
 - **`TestRunKillsAtTheBound`**: `sleep 30 & wait` under a 300 ms bound fails as "past its bound" within 5 seconds.
+- **`TestRunLeavesNothingBehind`**: a package that backgrounds `(sleep 1; echo late > "$RD_OUTPUT_DIR/late.txt")` and exits 0 succeeds, and 1.5 seconds later `late.txt` does not exist.
+- **`TestRunKillsTheGroupWhenInterrupted`**: the same package, with the parent context canceled after 300 ms, fails as "interrupted" within 5 seconds.
 - **`TestRunRefusesALinkedRunDirectory`**: `.cc-data-run` linked to another directory is refused, and a file in that directory survives.
 
 | Mutation | Test that fails |
@@ -1095,6 +1025,8 @@ Tests (the entrypoint is a `/bin/sh` script, so these skip on Windows):
 | the whole environment inherited | `TestRunGivesThePackageTheRunnersLayout` |
 | run from the source directory, not the staged copy | `TestRunGivesThePackageTheRunnersLayout` |
 | a "does not apply" verdict ignored | `TestRunRefusesBeforeStarting` |
+| a canceled context reported as an ordinary failure | `TestRunKillsTheGroupWhenInterrupted` |
+| no `reapGroup` after the entrypoint exits | `TestRunLeavesNothingBehind` (the background job writes `late.txt`) |
 | an unconfirmed verdict treated as a refusal | `TestRunWarnsAndRunsWhenApplicabilityIsUnconfirmed` |
 
 ---
@@ -1201,20 +1133,28 @@ func (c *Client) PublishPackage(ctx context.Context, archive []byte, origin stri
 }
 
 // ValidatedPackage is what a publish of the archive would record, as report-server's validate
-// route answers it without recording anything.
+// route answers it without recording anything. Neither of the last two is a refusal: both say
+// a publish of this zip would be refused right now (the version exists, or the portal cannot
+// store packages yet), while running it is fine. PublishingUnavailable is publish's own message.
 type ValidatedPackage struct {
-	Identity   string `json:"identity"`
-	Version    string `json:"version"`
-	Checksum   string `json:"checksum"`
-	Visibility string `json:"visibility"`
+	Identity              string  `json:"identity"`
+	Version               string  `json:"version"`
+	Checksum              string  `json:"checksum"`
+	Visibility            string  `json:"visibility"`
+	AlreadyPublished      bool    `json:"already_published"`
+	PublishingUnavailable *string `json:"publishing_unavailable"`
 }
 
 // ValidatePackage asks report-server to apply every publish check to the archive and stop
-// before storing it. A refusal is the same coded error a publish would answer.
-func (c *Client) ValidatePackage(ctx context.Context, archive []byte, origin string) (*ValidatedPackage, error) {
+// before storing it, with the same origin and official a publish would send. A refusal is the
+// same coded error a publish would answer.
+func (c *Client) ValidatePackage(ctx context.Context, archive []byte, origin string, official bool) (*ValidatedPackage, error) {
 	q := url.Values{}
 	if origin != "" {
 		q.Set("origin", origin)
+	}
+	if official {
+		q.Set("official", "true")
 	}
 	data, err := c.send(ctx, http.MethodPost, "/api/v1/packages/validate", q, archive, "application/zip")
 	if err != nil {
@@ -1270,7 +1210,7 @@ func RouteMissing(err error) bool {
 
 **Summary**: R9, R12, R16, R19 to R23.
 - **Wiring.** Adds the four subcommands to the root, and `Init` with the embedded stub.
-- **The report-server calls.** `validate` is shared by `build` and `run`. `appliesFor` gives `run` its `Applies` function, with a 5-minute timeout for the deriver.
+- **The report-server calls.** `validate` is shared by `build` and `run` and returns report-server's answer: `build` warns when `already_published` is true or `publishing_unavailable` names a reason, and `run` ignores both, since running a package needs neither a new version nor a bucket. `appliesFor` gives `run` its `Applies` function, with a 5-minute timeout for the deriver.
 - **Testability.** `build` and `publish` carry a `run(ctx, client, ...)` method, as `reportCreateFlags` does, so both are tested against `httptest` with no stored credential.
 
 **Files affected**:
@@ -1291,6 +1231,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"time"
@@ -1408,12 +1349,17 @@ func newPackageRunCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			ctx := context.Background()
+			// The package runs in its own process group, out of reach of the terminal's Ctrl-C,
+			// so an interrupt has to cancel the run for the group to be killed with it.
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+			defer stop()
 			archive, err := packages.Zip(files)
 			if err != nil {
 				return output.Internalf("%v", err)
 			}
-			if err := validate(ctx, client, archive, ""); err != nil {
+			// A version that is already published, or a portal that cannot store packages yet,
+			// still runs; only a publish is refused.
+			if _, err := validate(ctx, client, archive, "", false); err != nil {
 				return err
 			}
 			start := time.Now()
@@ -1440,19 +1386,19 @@ func newPackageRunCmd() *cobra.Command {
 // fetching a scope's activities; the client's 60-second default would cut it off.
 const derivationTimeout = 5 * time.Minute
 
-// validate asks report-server whether a publish of the archive would be accepted. A
-// report-server without the route is not a refusal: the archive is unchecked, and saying so
-// is the whole answer.
-func validate(ctx context.Context, client *api.Client, archive []byte, origin string) error {
-	_, err := client.ValidatePackage(ctx, archive, origin)
+// validate asks report-server whether a publish of the archive would be accepted, and returns
+// its answer. A report-server without the route is not a refusal: the archive is unchecked,
+// the answer is nil, and saying so is the whole result.
+func validate(ctx context.Context, client *api.Client, archive []byte, origin string, official bool) (*api.ValidatedPackage, error) {
+	ans, err := client.ValidatePackage(ctx, archive, origin, official)
 	switch {
 	case api.RouteMissing(err):
 		output.Warnf("report-server has no validate route yet, so this package is not checked against the catalog's rules until publish")
-		return nil
+		return nil, nil
 	case err != nil:
-		return api.AsCLIError(err)
+		return nil, api.AsCLIError(err)
 	}
-	return nil
+	return ans, nil
 }
 
 // appliesFor is package run's applicability check: report-server's one matcher, against the
@@ -1485,7 +1431,10 @@ func packageRunError(err error) error {
 	var refused *packages.Refused
 	var failed *packages.Failed
 	var out *packages.OutputRefused
+	var cliErr *output.CLIError
 	switch {
+	case errors.As(err, &cliErr):
+		return cliErr
 	case errors.As(err, &refused):
 		return &output.CLIError{ExitCode: output.ExitInternal, Code: "PACKAGE_REFUSED", Message: err.Error()}
 	case errors.As(err, &failed):
@@ -1498,6 +1447,7 @@ func packageRunError(err error) error {
 
 type packageBuildFlags struct {
 	out, portal, origin string
+	official            bool
 }
 
 // run builds, validates and writes; it takes the client so it can be exercised against a test
@@ -1509,7 +1459,13 @@ func (f packageBuildFlags) run(ctx context.Context, client *api.Client, dir stri
 	}
 	out := f.out
 	if out == "" {
-		out = filepath.Join(dir, packages.BuildDirName, fmt.Sprintf("%s-%s.zip", m.Name, m.Version))
+		// The manifest is unchecked until validate answers, and unchecked for good on a server
+		// without the route, so its name and version must not be able to steer the path.
+		name := fmt.Sprintf("%s-%s.zip", m.Name, m.Version)
+		if strings.ContainsAny(name, `/\`) {
+			return &output.CLIError{ExitCode: output.ExitUsage, Code: "INVALID_MANIFEST", Message: fmt.Sprintf("the manifest's name and version make %q, which is not a file name; fix them or pass --out", name)}
+		}
+		out = filepath.Join(dir, packages.BuildDirName, name)
 	} else if err := packages.CheckOutsidePackage(dir, out); err != nil {
 		return output.Usagef("%v", err)
 	}
@@ -1517,8 +1473,15 @@ func (f packageBuildFlags) run(ctx context.Context, client *api.Client, dir stri
 	if err != nil {
 		return output.Internalf("%v", err)
 	}
-	if err := validate(ctx, client, archive, f.origin); err != nil {
+	ans, err := validate(ctx, client, archive, f.origin, f.official)
+	if err != nil {
 		return err
+	}
+	if ans != nil && ans.AlreadyPublished {
+		output.Warnf("%s %s is already published; publish will refuse it until the version changes", ans.Identity, ans.Version)
+	}
+	if ans != nil && ans.PublishingUnavailable != nil {
+		output.Warnf("this package cannot be published yet: %s", *ans.PublishingUnavailable)
 	}
 	if err := packages.WriteBuild(out, archive); err != nil {
 		return output.Internalf("%v", err)
@@ -1545,6 +1508,7 @@ func newPackageBuildCmd() *cobra.Command {
 	cmd.Flags().StringVar(&f.out, "out", "", "where to write the zip (default: <dir>/.cc-data-build/<name>-<version>.zip)")
 	cmd.Flags().StringVar(&f.portal, "portal", "", "portal whose catalog rules to check against: an environment alias or a hostname")
 	cmd.Flags().StringVar(&f.origin, "origin", "", "projects/<id>, when the package will be published as a project's")
+	cmd.Flags().BoolVar(&f.official, "official", false, "check it as an official publish will be checked (publisher role only)")
 	return cmd
 }
 
@@ -1581,9 +1545,6 @@ func newPackagePublishCmd() *cobra.Command {
 			"--official needs the publisher role. The request is never retried.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if f.origin != "" && !strings.HasPrefix(f.origin, "projects/") {
-				return output.Usagef("--origin must be projects/<id>; your own packages need no origin")
-			}
 			archive, err := os.ReadFile(args[0])
 			if err != nil {
 				return output.Usagef("reading %s: %v", args[0], err)
@@ -1718,11 +1679,10 @@ reads the scope from RD_SCOPE_FILE, pulls its own data into RD_DATASET with cc-d
 through cc-data's views, and writes display.md, summary.txt and counts.json to the scope's
 output_dir. Stdlib only: the VM installs no Python packages.
 
-Two limits to know before building on it:
-- It creates a Student Answers run for the class the first time it meets one, on the server
-  the dataset's portal names. Later runs reuse that run and re-pull it.
-- It filters the whole class in one run. Athena fails a whole-class Student Answers run above
-  about four assignments; chunking by scope["assignments"] is the fix.
+It reads the class through a Student ID Mapping run, which the portal computes on every
+download, so re-reading it picks up learners who joined since, and which has no limit on how
+many assignments a class has. It reuses the researcher's own run for the class when there is
+one and otherwise creates one, on the server the dataset's portal names.
 """
 import json
 import os
@@ -1742,19 +1702,18 @@ def query(dataset, sql):
     return json.loads(cc_data("query", "--dataset", dataset, sql, "--format", "json"))
 
 
-def answers_run(dataset, class_id):
-    """The class's Student Answers run: one already in the dataset, else a new one."""
-    # downloads first: until a report is pulled, the reports view has no class_id to filter on.
-    pulled = query(dataset, "SELECT run_id FROM downloads WHERE type = 'report' AND slug = 'student-answers'")
-    if pulled:
-        ids = ", ".join(str(int(row["run_id"])) for row in pulled)
-        found = query(dataset, f"SELECT max(run_id) AS run_id FROM reports WHERE run_id IN ({ids}) AND class_id = {int(class_id)}")
-        if found and found[0]["run_id"] is not None:
-            return int(found[0]["run_id"])
+def mapping_run(portal, class_id):
+    """The newest Student ID Mapping run filtered to exactly this class, else a new one."""
+    runs = json.loads(cc_data("reports", "list", "--portal", portal, "--json"))["runs"]
+    mine = [r["run_id"] for r in runs
+            if r.get("slug") == "student-id-mapping"
+            and (r.get("report_filter") or {}).get("filters") == ["class"]
+            and (r.get("report_filter") or {}).get("class") == [class_id]]
+    if mine:
+        return max(int(run) for run in mine)
     created = json.loads(cc_data(
-        "reports", "create", "--portal", os.environ["CC_DATA_PORTAL"],
-        "--report-slug", "student-answers",
-        "--report-filter", json.dumps({"class": [int(class_id)]}), "--json"))
+        "reports", "create", "--portal", portal, "--report-slug", "student-id-mapping",
+        "--report-filter", json.dumps({"class": [class_id]}), "--json"))
     return int(created["run"]["run_id"])
 
 
@@ -1763,24 +1722,26 @@ def main():
         scope = json.load(handle)
     # RD_DATASET is the full <portal>/<name> ref; scope["dataset"] is the bare name.
     dataset = os.environ["RD_DATASET"]
-    class_id = scope["classes"][0]["class_id"]
+    class_id = int(scope["classes"][0]["class_id"])
 
     try:
         cc_data("dataset", "create", dataset)
     except RuntimeError as err:
         if "exists" not in str(err).lower():
             raise
-    run = answers_run(dataset, class_id)
+    run = mapping_run(os.environ["CC_DATA_PORTAL"], class_id)
     cc_data("get", "report", str(run), "--dataset", dataset, "--refresh")
     cc_data("get", "answers", str(run), "--dataset", dataset)
 
-    rows = query(dataset, f"SELECT count(*) AS n FROM report_{run}")[0]["n"]
+    rows = query(dataset, f"SELECT count(*) AS n FROM student_id_mapping WHERE run_id = {run}")[0]["n"]
     if rows == 0:
         raise RuntimeError("no report-service access to this class, or the class has no data")
     answers = query(dataset, f"SELECT count(*) AS n FROM run_answers WHERE run_id = {run}")[0]["n"]
+    # By user_id, never by endpoint: a student has one endpoint per assignment.
     learners = query(dataset, f"""
-        SELECT count(DISTINCT e.user_id) AS n FROM learner_endpoints e
-        JOIN run_answers a USING (run_id, remote_endpoint) WHERE run_id = {run}""")[0]["n"]
+        SELECT count(DISTINCT m.user_id) AS n FROM student_id_mapping m
+        JOIN run_answers a ON a.remote_endpoint = m.run_remote_endpoint
+        WHERE a.run_id = {run} AND m.run_id = {run}""")[0]["n"]
 
     out = scope["output_dir"]
     with open(os.path.join(out, "display.md"), "w", encoding="utf-8") as handle:
@@ -1799,10 +1760,10 @@ if __name__ == "__main__":
         sys.exit(1)
 ```
 
-The stub was run through `Run` against a copy of `staging-smoketest`, using a wrapper `cc-data` that forwards `dataset` and `query` to the scratch build and turns `get` into a no-op.
-- **The result.** It wrote "5 answers / 2 learners with at least one answer" and `counts.json` `{"answers": 5}`.
-- **On an empty dataset** it called `reports create --report-slug student-answers --report-filter {"class": [6]}`.
-- **Why it reads `downloads` first.** An earlier draft queried `reports.class_id` before any report existed, and the empty `reports` stand-in has no such column.
+The stub was run through `Run` against a synthetic dataset holding a Student ID Mapping run and its answers, with a wrapper `cc-data` that fakes `reports list`, `reports create` and `get`, and forwards `dataset` and `query` to the scratch build.
+- **The run it picks.** Out of a `reports list` holding a Student ID Mapping run filtered by class and school, one filtered by the class alone, a Student Answers run and another class's run, it took the class-only Student ID Mapping run.
+- **The result.** It wrote "3 answers / 2 learners with at least one answer" and `counts.json` `{"answers": 3}`: a learner in two assignments counted once, and a learner with no answers not at all.
+- **With no matching run** it called `reports create --report-slug student-id-mapping --report-filter {"class": [6]}`. With nothing pulled, it stopped at the empty-scope guard with its message.
 
 Tests (against an `httptest` server that answers 404 for any route it was not given):
 - **`TestPackageInitRefusesASecondInit`**.
@@ -1811,10 +1772,18 @@ Tests (against an `httptest` server that answers 404 for any route it was not gi
   - The zip is `wildfire-responses-0.1.0.zip` with two files, and the printed checksum is the archive's own.
   - A second build from inside the package gives the same checksum.
 - **`TestPackageBuildWritesNothingTheServerRefuses`**: a 422 `UNPROCESSABLE` keeps its code, exits 5, and no zip is written.
+- **`TestPackageBuildWarnsOnAPublishedVersionAndStillWrites`**: `already_published: true` prints "users/7/p 0.1.0 is already published; publish will refuse it until the version changes", and the zip is still written. **`TestPackageBuildIsQuietOnANewVersion`** checks the converse.
+- **`TestPackageBuildValidatesAsThePublishWillBe`**: `--origin projects/20 --official` reach validate's query, and `official` is absent without the flag.
+- **`TestValidateReturnsAPublishedVersionAsAnAnswerNotAnError`**: the shared `validate` returns the answer, so `run` proceeds on a published version.
+- **`TestPackageBuildWarnsWhenThePortalCannotPublishAndStillWrites`**: `publishing_unavailable: "publishing is not configured for x"` prints "this package cannot be published yet: publishing is not configured for x", and the zip is still written. **`TestPackageBuildIsQuietWhenPublishingIsAvailable`** checks `null`.
+- **`TestValidateReturnsAnUnavailablePortalAsAnAnswerNotAnError`**: so `run` proceeds on a portal with no bucket yet, such as staging before `PackageBuckets` is set.
 - **`TestPackageBuildOnAServerWithoutTheRouteStillBuilds`**: a 404 is a warning.
 - **`TestPackageBuildRefusesAnOutputItWouldCollect`**.
+- **`TestPackageBuildRefusesANameThatIsAPath`**: on a server without the validate route, a manifest named `../../escaped` is `INVALID_MANIFEST`, and no zip is written anywhere.
+- **`TestPackageRunKeepsTheServersCode`**: `packageRunError` given applies' 503 `SERVICE_UNAVAILABLE` returns that code with exit 5, and given `NOT_AUTHENTICATED` exit 3.
 - **`TestPackageRunAsksTheServersMatcher`**: the request carries the patterns and the assignment URLs, and a "does not apply" answer comes back as the verdict.
 - **`TestPackageRunOnAServerWithoutTheRouteIsUnconfirmed`**.
+- **`TestPackageRunAlwaysSendsURLs`**: the applies body always carries `urls`, which REPORT-167 requires (a missing or `null` `urls` is 400 there).
 - **`TestPackagePublishSendsTheZipAsTheBody`**: checks POST, `application/zip`, `Content-Length`, `origin=projects/20` present, `official` absent, and the bearer.
 - **`TestPackagePublishRefusesAChecksumItDidNotSend`**.
 - **`TestPackagePublishPassesTheServersCodeThrough`**: a 409 `ALREADY_EXISTS` keeps its code, exits 5, and is sent once.
@@ -1824,6 +1793,14 @@ Tests (against an `httptest` server that answers 404 for any route it was not gi
 | a 404 from validate treated as a refusal | `TestPackageBuildOnAServerWithoutTheRouteStillBuilds` |
 | `build` skips validate | `TestPackageBuildValidatesThenWrites`, `...WritesNothingTheServerRefuses` |
 | assignment URLs not sent to applies | `TestPackageRunAsksTheServersMatcher` |
+| no already-published warning | `TestPackageBuildWarnsOnAPublishedVersionAndStillWrites` |
+| no unavailable-portal warning | `TestPackageBuildWarnsWhenThePortalCannotPublishAndStillWrites` |
+| the warning printed when `publishing_unavailable` is `null` | `TestPackageBuildIsQuietWhenPublishingIsAvailable` |
+| `publishing_unavailable` read under the wrong name | `TestPackageBuildWarnsWhenThePortalCannotPublishAndStillWrites`, `TestValidateReturnsAnUnavailablePortalAsAnAnswerNotAnError` |
+| `official` not sent to validate | `TestPackageBuildValidatesAsThePublishWillBe` |
+| `packageRunError` without its `CLIError` case | `TestPackageRunKeepsTheServersCode` (exit 1, `INTERNAL`) |
+| the default output name not checked | `TestPackageBuildRefusesANameThatIsAPath` (the zip lands two directories up) |
+| `already_published` read under the wrong name | `TestPackageBuildWarnsOnAPublishedVersionAndStillWrites`, `TestValidateReturnsAPublishedVersionAsAnAnswerNotAnError` |
 
 ---
 
@@ -1845,6 +1822,77 @@ Tests (against an `httptest` server that answers 404 for any route it was not gi
 - `internal/guidance/src/skill_header.md`.
 
 **Estimated diff size**: ~90 lines
+
+---
+
+### Pre-release tags in the release workflow
+
+**Summary**: R25. `.github/workflows/release.yml` classifies the tag once, and the release and formula steps both read that answer: a pre-release tag (a `-` after the version, as in `v0.3.0-pre.1`) creates a GitHub pre-release with every archive and checksum, and skips the Homebrew formula. The archives upload inside `gh release create` itself, before the formula step, so skipping the formula cannot lose them. A test in `release_test.go`, beside the workflow's other guards, pins both uses.
+
+**Files affected**:
+- `.github/workflows/release.yml`: one step, one flag, one condition.
+- `release_test.go`: one test.
+- `README.md`: one sentence in the release paragraph.
+
+**Estimated diff size**: ~40 lines
+
+```diff
+       - name: Create GitHub release
+         env:
+           GH_TOKEN: ${{ github.token }}
+         run: |
+           # Attach the checksum manifests alongside the tarballs so consumers can
+           # verify downloads independently.
+           gh release create "${GITHUB_REF_NAME}" dist/*.tar.gz dist/*.sha256 \
+-            --title "${GITHUB_REF_NAME}" --generate-notes
++            --title "${GITHUB_REF_NAME}" --generate-notes \
++            --prerelease=${{ steps.tag.outputs.prerelease }}
+ 
+       - name: Render and push the Homebrew formula
++        if: steps.tag.outputs.prerelease == 'false'
+         env:
+```
+
+and, before "Create GitHub release":
+
+```yaml
+      # A tag with a semver pre-release suffix (v0.3.0-pre.1) is published for pinning,
+      # by the runner image and package workflows, and never offered as the current
+      # release: GitHub does not mark it latest and Homebrew never sees it.
+      - name: Classify the tag
+        id: tag
+        run: |
+          if [[ "${GITHUB_REF_NAME}" == *-* ]]; then
+            echo "prerelease=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "prerelease=false" >> "${GITHUB_OUTPUT}"
+          fi
+```
+
+```go
+// A pre-release tag exists to be pinned, so it must not become GitHub's latest release or
+// reach researchers through brew upgrade. Both steps read the one classification.
+func TestReleaseWorkflowKeepsPreReleasesBack(t *testing.T) {
+	rel := readFile(t, ".github/workflows/release.yml")
+	for _, want := range []string{
+		`if [[ "${GITHUB_REF_NAME}" == *-* ]]; then`,
+		"--prerelease=${{ steps.tag.outputs.prerelease }}",
+		"if: steps.tag.outputs.prerelease == 'false'",
+	} {
+		if !strings.Contains(rel, want) {
+			t.Fatalf("release workflow must hold a pre-release tag back from latest and from Homebrew; missing %q", want)
+		}
+	}
+}
+```
+
+README, after the sentence naming the Homebrew formula: "A tag with a pre-release suffix, such as `v0.3.0-pre.1`, publishes a GitHub pre-release with the same archives and no formula, for pinning by the runner image and package workflows."
+
+Checked in a scratch copy: the workflow still parses, with the new step between "Verify checksums" and "Create GitHub release"; the classification writes `prerelease=true` for `v0.3.0-pre.1` and `false` for `v0.3.0`; and `gh release create` (2.100.0) parses `--prerelease=false` as a boolean, where `--prerelease=bogus` is refused.
+
+| Mutation | Test that fails |
+|---|---|
+| the formula step's condition removed | `TestReleaseWorkflowKeepsPreReleasesBack` |
 
 ## Open Questions
 
@@ -1912,3 +1960,28 @@ An author naming the file `scope.json` in the package directory would publish a 
 
 #### RESOLVED: The applicability call would time out before the deriver finishes
 The deriver may spend up to 240 seconds on a scope's activities, and the client's per-attempt timeout for JSON calls is 60 seconds. `appliesFor` copies the client with a 5-minute `RequestTimeout`, which also keeps the shared client's default for every other call.
+
+### Second round
+
+Roles: senior engineer, package author, security engineer, operator, and a reviewer for one source of truth. Every finding was confirmed against `main`, against the plan's code extracted into a scratch copy, or against the runner and REPORT-167 sources, and each had one defensible fix, which has been applied above. The scratch copy built and passed `go test ./...` on Linux with the fixes, and `go vet` was clean for `internal/packages` under `GOOS=windows` and `GOOS=darwin`.
+
+#### RESOLVED: An applies failure lost its code and exit class (Senior Engineer)
+`Run` returns `appliesFor`'s `*output.CLIError` unchanged, and `packageRunError` matched only the three package error types, so it fell through to `Internalf`. A throwaway test fed it applies' 503 `SERVICE_UNAVAILABLE` and `NOT_AUTHENTICATED`, and both came back exit 1 `INTERNAL`, against R16. `packageRunError` now returns a `CLIError` as it is, and `TestPackageRunKeepsTheServersCode` pins it.
+
+#### RESOLVED: Ctrl-C left the package running (Package Author)
+`Setpgid` takes the package out of the terminal's foreground group, and cc-data had no interrupt handling outside `dataset materialize`. Sending `SIGINT` to cc-data's group, as a terminal does, ended cc-data while the package's `sleep 30` kept running. `package run` now cancels on `os.Interrupt` (the `materialize` idiom), which kills the group through the existing `cmd.Cancel`, and `Run` reports "the package was interrupted". Rerun with the fix, the package was gone a second after the signal.
+
+#### RESOLVED: `build`'s default path came from unchecked manifest fields (Security Engineer)
+On a server without the validate route, a manifest named `../../escaped` built to `escaped-1.0.0.zip` two directories above the package, outside `.cc-data-build` and its `.gitignore`. `build` now refuses a name and version that make a path. It is a path check, not a copy of report-server's name grammar.
+
+#### RESOLVED: The proxy variables were not passed through (Operator)
+cc-data's client uses Go's default transport, which reads `HTTPS_PROXY`, and the runner sets the proxy variables when it has a proxy (`package-env.js`). Behind a proxy, `package run`'s own requests would succeed while the package's `cc-data` calls failed. They are now on the passthrough list.
+
+#### RESOLVED: "No extra fields" in the zip was untrue (Senior Engineer)
+`archive/zip` writes `Modified` as an extended-timestamp extra field (`5554...` on every entry of a scratch build). It is as fixed as the time, so R18 holds; the comment and R18 now say so.
+
+#### RESOLVED: `publish` kept a local copy of the origin rule (One Source of Truth)
+`publish` refused an `--origin` without the `projects/` prefix, `build` did not, and report-server answers the same case with 422 "origin must be projects/<id>; a user origin is always your own". The local check is deleted, so both commands give report-server's answer.
+
+Checked and found sound: the R3 test (dropping `m.run_id = <run>` fails it at run 800, 2 learners against 1); a second `get answers` on a fetched run re-fetches and merges new answers, so the stub stays current; `reports list --json`'s `report_filter` carries `filters` and `class` as the stub reads them; `query --format json` answers an array of objects; report-server's 270-second wait sits between the deriver's 240 and cc-data's 300; an old report-server answers both new routes with a JSON 404 even without a token; and no publish check refuses an ordinary user's own origin, so `run`'s validate call cannot lock out a researcher who may use the API.
+
