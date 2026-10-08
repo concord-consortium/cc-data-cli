@@ -841,7 +841,7 @@ func prepare(run string, files Files) (runPaths, error) {
 	if err := ensureRealDir(run); err != nil {
 		return p, err
 	}
-	if err := os.WriteFile(filepath.Join(run, ".gitignore"), []byte("*\n"), 0o644); err != nil {
+	if err := ignoreAll(run); err != nil {
 		return p, err
 	}
 	for _, d := range []string{p.pkg, p.in, p.out} {
@@ -871,6 +871,12 @@ func prepare(run string, files Files) (runPaths, error) {
 		}
 	}
 	return p, nil
+}
+
+// ignoreAll keeps git out of a directory this tool makes inside a package, whose files can
+// hold student data.
+func ignoreAll(dir string) error {
+	return os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("*\n"), 0o644)
 }
 
 func ensureRealDir(d string) error {
@@ -1199,6 +1205,7 @@ func RouteMissing(err error) bool {
 - `cmd/package.go`: new.
 - `cmd/root.go`: `root.AddCommand(newPackageCmd())` after `newQueryCmd()`.
 - `internal/packages/init.go`: new.
+- `internal/packages/build.go`: new; the default build directory, the `--out` check, writing the zip, and the `.gitignore` both working directories carry.
 - `internal/packages/template/run.py`: new, embedded.
 - `cmd/package_test.go`: new.
 
@@ -1231,8 +1238,8 @@ executes the package against your own dataset under the runner's rules; build zi
 publish registers the zip in the catalog with your cc-data token.
 
 What run cannot reproduce from the VM: the package runs as you, with no network sandbox,
-and with HOME, PATH and the locale passed through so its own cc-data calls find your
-login. A .py entrypoint runs with python3.11 when it is on PATH, as on the VM, else
+and with HOME, PATH, the locale and any proxy settings passed through so its own cc-data
+calls find your login and reach the server. A .py entrypoint runs with python3.11 when it is on PATH, as on the VM, else
 python3.`
 
 func newPackageCmd() *cobra.Command {
@@ -1331,8 +1338,7 @@ func newPackageRunCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			// The package runs in its own process group, out of reach of the terminal's Ctrl-C,
-			// so an interrupt has to cancel the run for the group to be killed with it.
+			// The terminal's Ctrl-C cannot reach the package's own process group, so it cancels the run.
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 			defer stop()
 			archive, err := packages.Zip(files)
@@ -1499,8 +1505,8 @@ type packagePublishFlags struct {
 	official, asJSON bool
 }
 
-// run publishes an archive already read and checked; it takes the client so it can be
-// exercised against a test server without a stored credential.
+// run publishes the archive; it takes the client so it can be exercised against a test server
+// without a stored credential.
 func (f packagePublishFlags) run(ctx context.Context, client *api.Client, archive []byte) error {
 	got, err := client.PublishPackage(ctx, archive, f.origin, f.official)
 	if err != nil {
@@ -1555,12 +1561,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 )
-
-// BuildDirName is where build writes by default: inside the package, and skipped by
-// Collect like every dot path, so one build's zip never reaches the next.
-const BuildDirName = ".cc-data-build"
 
 //go:embed template/run.py
 var runStub []byte
@@ -1606,6 +1607,20 @@ func Init(dir, name string) ([]string, error) {
 	}
 	return []string{"manifest.json", "run.py"}, nil
 }
+```
+```go
+package packages
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+// BuildDirName is where build writes by default: inside the package, and skipped by
+// Collect like every dot path, so one build's zip never reaches the next.
+const BuildDirName = ".cc-data-build"
 
 // CheckOutsidePackage refuses an explicit build output that a later build would collect.
 func CheckOutsidePackage(dir, out string) error {
@@ -1637,15 +1652,15 @@ func excludedAncestor(rel string) bool {
 	return false
 }
 
-// WriteBuild writes the archive, creating its directory, with the .gitignore every working
-// directory this tool makes inside a package carries.
+// WriteBuild writes the archive, creating its directory, and ignores the default build
+// directory for git.
 func WriteBuild(out string, archive []byte) error {
 	dir := filepath.Dir(out)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
 	if filepath.Base(dir) == BuildDirName {
-		if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("*\n"), 0o644); err != nil {
+		if err := ignoreAll(dir); err != nil {
 			return err
 		}
 	}

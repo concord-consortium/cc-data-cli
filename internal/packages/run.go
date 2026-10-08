@@ -163,7 +163,7 @@ func prepare(run string, files Files) (runPaths, error) {
 	if err := ensureRealDir(run); err != nil {
 		return p, err
 	}
-	if err := os.WriteFile(filepath.Join(run, ".gitignore"), []byte("*\n"), 0o644); err != nil {
+	if err := ignoreAll(run); err != nil {
 		return p, err
 	}
 	for _, d := range []string{p.pkg, p.in, p.out} {
@@ -193,6 +193,12 @@ func prepare(run string, files Files) (runPaths, error) {
 		}
 	}
 	return p, nil
+}
+
+// ignoreAll keeps git out of a directory this tool makes inside a package, whose files can
+// hold student data.
+func ignoreAll(dir string) error {
+	return os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("*\n"), 0o644)
 }
 
 func ensureRealDir(d string) error {
