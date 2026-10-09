@@ -99,8 +99,9 @@ func packageQuery(origin string, official bool) url.Values {
 	return q
 }
 
-// RouteMissing reports a 404 from a route this cc-data expects and the server does not have
-// yet: a report-server older than the validate and applies routes.
+// RouteMissing reports a 404 from the validate or applies route: a report-server older than
+// those routes. Their contract is never to answer 404 themselves, refusing with 403 or 422 as
+// publish does, so a 404 cannot be a refusal.
 func RouteMissing(err error) bool {
 	var apiErr *APIError
 	return errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound

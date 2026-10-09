@@ -28,8 +28,12 @@ func Init(dir, name string) ([]string, error) {
 		return nil, fmt.Errorf("--name %q must match ^[a-z0-9][a-z0-9-]{0,62}$", name)
 	}
 	for _, f := range []string{"manifest.json", "run.py"} {
-		if _, err := os.Lstat(filepath.Join(dir, f)); !errors.Is(err, os.ErrNotExist) {
+		_, err := os.Lstat(filepath.Join(dir, f))
+		switch {
+		case err == nil:
 			return nil, fmt.Errorf("%s already exists in %s; init writes only into a package that has neither file", f, dir)
+		case !errors.Is(err, os.ErrNotExist):
+			return nil, err
 		}
 	}
 	manifest := Manifest{

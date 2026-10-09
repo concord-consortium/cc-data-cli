@@ -641,7 +641,9 @@ What it cannot reproduce:
   its own user behind an egress proxy.
 - **A few of your variables pass through.** `HOME`, `PATH`, your locale, the
   proxy settings and a handful of others reach the package, so its own `cc-data`
-  calls find your login. Nothing else from your environment does.
+  calls find your login. Nothing else from your environment does. The folder of
+  the `cc-data` running `package run` goes first on the package's `PATH`, so the
+  package calls that same version rather than an older one installed elsewhere.
 - **Python.** A `.py` entrypoint runs with `python3.11` when it is on your
   `PATH`, as on the VM, and otherwise with `python3` after a note saying so.
 - **CLUE.** A package with `clue_prepull: true` is refused locally, since
@@ -672,9 +674,9 @@ configured for <server>" even though the zip itself passed every check.
 
 `.cc-data-run/` (the last run's staged copy, inputs, outputs and the package's
 data directory) and `.cc-data-build/` (built zips) each carry a `.gitignore`
-of `*`, so git never commits them. **Both can hold student data**: `display.md`
-is drawn from it. `build` never ships either, nor any other path starting with a
-dot.
+of `*`, so git never commits them. **`.cc-data-run/` holds student data**
+(`display.md` is drawn from it), so it is readable only by you, as datasets are.
+`build` never ships either folder, nor any other path starting with a dot.
 
 ## 8. A few things to keep in mind
 

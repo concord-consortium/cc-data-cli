@@ -21,7 +21,8 @@ import (
 const runDifferences = `What run cannot reproduce from the VM: the package runs as you, with no network
 sandbox, and with HOME, PATH, the locale and any proxy settings passed through so its own
 cc-data calls find your login and reach the server. A .py entrypoint runs with python3.11
-when it is on PATH, as on the VM, else python3.`
+when it is on PATH, as on the VM, else python3. A clue_prepull package is refused, since
+cc-data cannot fetch CLUE data yet.`
 
 const packageLong = `Develop, test and publish a Researcher Dashboard package.
 
@@ -121,6 +122,11 @@ func (f packageRunFlags) load(dir string) (loadedPackage, error) {
 // run validates, runs and reports a loaded package; it takes the client so it can be exercised
 // against a test server without a stored credential.
 func (f packageRunFlags) run(ctx context.Context, client *api.Client, pkg loadedPackage, ref dataset.Ref, dataRoot string) error {
+	// The package runs from its staged copy, where a relative root would name another folder.
+	dataRoot, err := filepath.Abs(dataRoot)
+	if err != nil {
+		return output.Internalf("%v", err)
+	}
 	archive, err := packages.Zip(pkg.files)
 	if err != nil {
 		return output.Internalf("%v", err)
@@ -130,11 +136,16 @@ func (f packageRunFlags) run(ctx context.Context, client *api.Client, pkg loaded
 	if _, err := validate(ctx, client, archive, "", false); err != nil {
 		return err
 	}
+	exe, _ := os.Executable()
+	binDir, warning := packageCCData(exe, exec.LookPath)
+	if warning != "" {
+		output.Warnf("%s", warning)
+	}
 	start := time.Now()
 	res, err := packages.Run(ctx, packages.RunOptions{
 		Dir: pkg.dir, Manifest: pkg.manifest, Files: pkg.files, Scope: pkg.scope, Applies: appliesFor(client, pkg.scope),
 		Dataset: ref.String(), Name: ref.Name, Portal: ref.Portal.Host(), DataRoot: dataRoot,
-		ReportSrv: client.BaseURL, Stderr: output.Stderr(), Environ: f.environ, LookPath: exec.LookPath,
+		ReportSrv: client.BaseURL, BinDir: binDir, Stderr: output.Stderr(), Environ: f.environ, LookPath: exec.LookPath,
 	})
 	if err != nil {
 		return packageRunError(err)
@@ -145,11 +156,25 @@ func (f packageRunFlags) run(ctx context.Context, client *api.Client, pkg loaded
 	})
 }
 
+// packageCCData picks the cc-data a package's own calls reach: this binary, by putting its
+// folder first on the package's PATH, when it is named cc-data. A binary with another name (go
+// run, a test) cannot be reached by name, so the warning names the cc-data the package will call.
+func packageCCData(exe string, lookPath func(string) (string, error)) (binDir, warning string) {
+	if exe != "" && strings.TrimSuffix(filepath.Base(exe), ".exe") == "cc-data" {
+		return filepath.Dir(exe), ""
+	}
+	found, err := lookPath("cc-data")
+	if err != nil {
+		return "", "this binary is not named cc-data and no cc-data is on PATH, so the package's own cc-data calls will fail"
+	}
+	return "", fmt.Sprintf("this binary is not named cc-data, so the package's own cc-data calls reach %s", found)
+}
+
 func newPackageRunCmd() *cobra.Command {
 	f := packageRunFlags{environ: os.Environ}
 	cmd := &cobra.Command{
 		Use:   "run [dir] --dataset <ref> --scope <file>",
-		Short: "Run a package locally exactly as the dashboard's runner will",
+		Short: "Run a package locally under the dashboard runner's rules",
 		Long: "Run a package against your own dataset under the runner's rules: the same scope.json,\n" +
 			"environment variables, output files, display.md cap and applicability check.\n\n" +
 			"--scope names a file holding the scope's kind, id, classes and assignments.\n" +
@@ -269,7 +294,7 @@ func (f packageBuildFlags) run(ctx context.Context, client *api.Client, dir stri
 			return &output.CLIError{ExitCode: output.ExitUsage, Code: "INVALID_MANIFEST", Message: fmt.Sprintf("the manifest's name and version make %q, which is not a file name; fix them or pass --out", name)}
 		}
 		out = filepath.Join(dir, packages.BuildDirName, name)
-	} else if err := packages.CheckOutsidePackage(dir, out); err != nil {
+	} else if err := packages.CheckBuildOutput(dir, out); err != nil {
 		return output.Usagef("%v", err)
 	}
 	archive, err := packages.Zip(files)

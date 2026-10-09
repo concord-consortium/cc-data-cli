@@ -2,7 +2,10 @@ package main
 
 import (
 	"os"
+	"os/exec"
+	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -127,12 +130,37 @@ func readFile(t *testing.T, path string) string {
 func TestReleaseWorkflowKeepsPreReleasesBack(t *testing.T) {
 	rel := readFile(t, ".github/workflows/release.yml")
 	for _, want := range []string{
-		`if [[ "${GITHUB_REF_NAME}" == *-* ]]; then`,
+
 		"--prerelease=${{ steps.tag.outputs.prerelease }}",
 		"if: steps.tag.outputs.prerelease == 'false'",
 	} {
 		if !strings.Contains(rel, want) {
 			t.Fatalf("release workflow must hold a pre-release tag back from latest and from Homebrew; missing %q", want)
+		}
+	}
+}
+
+// The tag classification is shell, so it is run here against the tags that matter: a
+// pre-release, a release, and build metadata whose hyphen is not a pre-release.
+func TestReleaseWorkflowClassifiesTags(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the step is bash")
+	}
+	rel := readFile(t, ".github/workflows/release.yml")
+	_, after, ok := strings.Cut(rel, "id: tag\n        run: |\n")
+	if !ok {
+		t.Fatal("release workflow has no tag-classification step")
+	}
+	script, _, _ := strings.Cut(after, "\n\n")
+	for tag, want := range map[string]string{"v0.3.0-pre.1": "true", "v0.3.0": "false", "v1.2.3+ci-build": "false"} {
+		out := filepath.Join(t.TempDir(), "output")
+		cmd := exec.Command("bash", "-c", script)
+		cmd.Env = append(os.Environ(), "GITHUB_REF_NAME="+tag, "GITHUB_OUTPUT="+out)
+		if b, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%s: %v\n%s", tag, err, b)
+		}
+		if got := strings.TrimSpace(readFile(t, out)); got != "prerelease="+want {
+			t.Errorf("%s: %s, want prerelease=%s", tag, got, want)
 		}
 	}
 }

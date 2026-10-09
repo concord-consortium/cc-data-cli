@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -91,5 +93,24 @@ func TestRunAnswersRunIDIsBigint(t *testing.T) {
 		if typ != "BIGINT" {
 			t.Errorf("%s: run_id is %s, want BIGINT", name, typ)
 		}
+	}
+}
+
+// The guidance and the init stub each carry the learner count as text; both must stay the
+// query the test above checks.
+func TestTheDocumentedLearnerCountIsTheTestedOne(t *testing.T) {
+	flat := func(path string) string {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.Join(strings.Fields(string(raw)), " ")
+	}
+	if want := "`" + fmt.Sprintf(learnersOfRun, 584) + "`"; !strings.Contains(flat("../guidance/src/core.md"), want) {
+		t.Errorf("core.md no longer documents %q", want)
+	}
+	stub := strings.ReplaceAll(flat("../packages/template/run.py"), " AS n FROM", " FROM")
+	if want := strings.ReplaceAll(learnersOfRun, "%d", "{run}") + `"""`; !strings.Contains(stub, want) {
+		t.Errorf("the init stub no longer runs %q", want)
 	}
 }

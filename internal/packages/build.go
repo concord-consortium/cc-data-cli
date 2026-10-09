@@ -5,14 +5,20 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/concord-consortium/cc-data-cli/internal/fsutil"
 )
 
 // BuildDirName is where build writes by default: inside the package, and skipped by
 // Collect like every dot path, so one build's zip never reaches the next.
 const BuildDirName = ".cc-data-build"
 
-// CheckOutsidePackage refuses an explicit build output that a later build would collect.
-func CheckOutsidePackage(dir, out string) error {
+// CheckBuildOutput refuses an explicit build output that is a directory, that package run would
+// empty, or that a later build would collect.
+func CheckBuildOutput(dir, out string) error {
+	if info, err := os.Stat(out); err == nil && info.IsDir() {
+		return fmt.Errorf("--out %s is a directory; name the zip file to write", out)
+	}
 	absDir, err := filepath.Abs(dir)
 	if err != nil {
 		return err
@@ -24,6 +30,9 @@ func CheckOutsidePackage(dir, out string) error {
 	rel, err := filepath.Rel(absDir, absOut)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return nil
+	}
+	if strings.SplitN(filepath.ToSlash(rel), "/", 2)[0] == RunDirName {
+		return fmt.Errorf("--out %s is inside %s, which package run empties", out, RunDirName)
 	}
 	if excluded(filepath.ToSlash(rel), false) || excludedAncestor(filepath.ToSlash(rel)) {
 		return nil
@@ -78,5 +87,5 @@ func replaceFile(path string, data []byte) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp.Name(), path)
+	return fsutil.RenameAtomic(tmp.Name(), path)
 }

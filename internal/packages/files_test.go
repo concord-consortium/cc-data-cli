@@ -224,3 +224,20 @@ func TestResultRefusesALinkedDisplay(t *testing.T) {
 		t.Errorf("err = %v, want OutputRefused", err)
 	}
 }
+
+func TestCollectFollowsALinkedPackageDirectory(t *testing.T) {
+	skipOnWindows(t, "links need privileges on Windows")
+	real := t.TempDir()
+	writeTree(t, real, map[string]string{"manifest.json": goodManifest, "run.py": "print(1)"})
+	link := filepath.Join(t.TempDir(), "pkg")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	files, err := Collect(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(files.Paths, ","); got != "manifest.json,run.py" {
+		t.Errorf("collected %q through a linked package directory", got)
+	}
+}

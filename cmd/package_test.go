@@ -10,10 +10,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/concord-consortium/cc-data-cli/internal/api"
@@ -139,6 +141,13 @@ func TestPackageInitRefusesASecondInit(t *testing.T) {
 	}
 	if got, _ := os.ReadFile(filepath.Join(dir, "run.py")); string(got) != "mine" {
 		t.Errorf("the second init overwrote run.py: %q", got)
+	}
+	notADir := filepath.Join(t.TempDir(), "a-file")
+	if err := os.WriteFile(notADir, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := packages.Init(notADir, ""); err == nil || strings.Contains(err.Error(), "already exists") {
+		t.Errorf("init into a regular file: err = %v, want the real error", err)
 	}
 	if _, err := packages.Init(filepath.Join(t.TempDir(), "Not_A_Name"), ""); err == nil {
 		t.Error("init accepted a directory name outside the grammar without --name")
@@ -312,6 +321,12 @@ func TestPackageBuildRefusesAnOutputItWouldCollect(t *testing.T) {
 	if cliErr := asCLIError(t, err); cliErr.ExitCode != output.ExitUsage {
 		t.Errorf("err = %+v", cliErr)
 	}
+	for _, out := range []string{dir, filepath.Join(dir, packages.RunDirName, "pkg", "p.zip")} {
+		err := (packageBuildFlags{out: out}).run(context.Background(), api.New(srv.URL, "tok"), dir)
+		if cliErr := asCLIError(t, err); cliErr.ExitCode != output.ExitUsage {
+			t.Errorf("--out %s: err = %+v, want a usage error", out, cliErr)
+		}
+	}
 	if err := (packageBuildFlags{out: filepath.Join(dir, ".builds", "p.zip")}).run(context.Background(), api.New(srv.URL, "tok"), dir); err != nil {
 		t.Errorf("an --out under a dot directory was refused: %v", err)
 	}
@@ -347,15 +362,40 @@ func TestPackageBuildRefusesANameThatIsAPath(t *testing.T) {
 	}
 }
 
+const testScopeJSON = `{"kind": "class", "id": "h",
+  "classes": [{"class_hash": "0123456789abcdef0123456789abcdef0123456789abcdef", "class_id": 6}],
+  "assignments": [{"offering_id": 9, "runnable_id": 1234, "name": "Wildfire", "url": "https://activity-player.concord.org/?sequence=830"}]}`
+
 func testScope(t *testing.T) packages.LocalScope {
 	t.Helper()
-	scope, err := packages.ParseLocalScope([]byte(`{"kind": "class", "id": "h",
-	  "classes": [{"class_hash": "0123456789abcdef0123456789abcdef0123456789abcdef", "class_id": 6}],
-	  "assignments": [{"offering_id": 9, "runnable_id": 1234, "name": "Wildfire", "url": "https://activity-player.concord.org/?sequence=830"}]}`))
+	scope, err := packages.ParseLocalScope([]byte(testScopeJSON))
 	if err != nil {
 		t.Fatal(err)
 	}
 	return scope
+}
+
+// loadRunPackage writes a package of the given manifest and files and a scope file, and loads
+// them as package run does before it looks up a credential.
+func loadRunPackage(t *testing.T, manifest string, files map[string]string, environ func() []string) (packageRunFlags, loadedPackage) {
+	t.Helper()
+	dir := t.TempDir()
+	files["manifest.json"] = manifest
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	scopePath := filepath.Join(t.TempDir(), "scope.json")
+	if err := os.WriteFile(scopePath, []byte(testScopeJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f := packageRunFlags{scopePath: scopePath, environ: environ}
+	pkg, err := f.load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return f, pkg
 }
 
 func TestPackageRunAsksTheServersMatcher(t *testing.T) {
@@ -517,7 +557,9 @@ func TestPackagePublishMapsAuthAndUnansweredFailures(t *testing.T) {
 		t.Errorf("NOT_AUTHENTICATED: %+v", cliErr)
 	}
 
+	var attempts atomic.Int32
 	dropped := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
 		conn, _, _ := w.(http.Hijacker).Hijack()
 		conn.Close()
 	}))
@@ -526,35 +568,38 @@ func TestPackagePublishMapsAuthAndUnansweredFailures(t *testing.T) {
 	if cliErr := asCLIError(t, err); !strings.Contains(cliErr.Action, "Publishing again is safe") {
 		t.Errorf("unanswered: %+v", cliErr)
 	}
+	if n := attempts.Load(); n != 1 {
+		t.Errorf("an unanswered publish was sent %d times, want 1", n)
+	}
 }
 
 func TestPackageRunValidatesThenRunsWithTheRunnersNames(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the entrypoint is a shell script")
 	}
-	dir := t.TempDir()
 	manifest := strings.Replace(testManifest, `"entrypoint": "run.py"`, `"entrypoint": "run.sh"`, 1)
 	script := "#!/bin/sh\nenv > \"$RD_OUTPUT_DIR/../env.txt\"\ncp \"$RD_SCOPE_FILE\" \"$RD_OUTPUT_DIR/../scope.json\"\necho ok > \"$RD_OUTPUT_DIR/display.md\"\n"
-	for name, content := range map[string]string{"manifest.json": manifest, "run.sh": script} {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o755); err != nil {
-			t.Fatal(err)
+	f, pkg := loadRunPackage(t, manifest, map[string]string{"run.sh": script}, func() []string { return []string{"PATH=" + os.Getenv("PATH")} })
+	dir := pkg.dir
+	ranBeforeValidate := false
+	srv := newPackageServer(t, map[string]func(http.ResponseWriter, []byte){"/api/v1/packages/validate": func(w http.ResponseWriter, body []byte) {
+		if _, err := os.Stat(filepath.Join(dir, packages.RunDirName)); err == nil {
+			ranBeforeValidate = true
 		}
-	}
-	scopePath := filepath.Join(t.TempDir(), "scope.json")
-	if err := os.WriteFile(scopePath, []byte(`{"kind": "class", "id": "h",
-	  "classes": [{"class_hash": "0123456789abcdef0123456789abcdef0123456789abcdef", "class_id": 6}], "assignments": []}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	f := packageRunFlags{scopePath: scopePath, environ: func() []string { return []string{"PATH=" + os.Getenv("PATH")} }}
-	pkg, err := f.load(dir)
+		answer(http.StatusOK, validated)(w, body)
+	}})
+	out, _ := capture(t)
+	ref := dataset.Ref{Portal: config.MustPortal("learn.concord.org"), Name: "wildfire"}
+	t.Chdir(t.TempDir())
+	cwd, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := newPackageServer(t, validateAnswering(validated))
-	out, _ := capture(t)
-	ref := dataset.Ref{Portal: config.MustPortal("learn.concord.org"), Name: "wildfire"}
-	if err := f.run(context.Background(), api.New(srv.URL, "tok"), pkg, ref, "/data/root"); err != nil {
+	if err := f.run(context.Background(), api.New(srv.URL, "tok"), pkg, ref, "data-root"); err != nil {
 		t.Fatal(err)
+	}
+	if ranBeforeValidate {
+		t.Error("the run tree existed before validate answered")
 	}
 
 	reqs := srv.requests("/api/v1/packages/validate")
@@ -566,7 +611,7 @@ func TestPackageRunValidatesThenRunsWithTheRunnersNames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"RD_DATASET=learn.concord.org/wildfire\n", "CC_DATA_PORTAL=learn.concord.org\n", "CC_DATA_ROOT=/data/root\n", "RD_REPORT_SERVER_URL=" + srv.URL + "\n"} {
+	for _, want := range []string{"RD_DATASET=learn.concord.org/wildfire\n", "CC_DATA_PORTAL=learn.concord.org\n", "CC_DATA_ROOT=" + filepath.Join(cwd, "data-root") + "\n", "RD_REPORT_SERVER_URL=" + srv.URL + "\n"} {
 		if !strings.Contains(string(env), want) {
 			t.Errorf("environment lacks %q", strings.TrimSpace(want))
 		}
@@ -587,5 +632,53 @@ func TestPackageRunValidatesThenRunsWithTheRunnersNames(t *testing.T) {
 		if _, ok := line[key]; !ok {
 			t.Errorf("result line lacks %s: %v", key, line)
 		}
+	}
+}
+
+func TestPackageRunPassesAnAppliesFailureThrough(t *testing.T) {
+	manifest := strings.Replace(testManifest, `"all": []`, `"all": ["*//wildfire.concord.org/*"]`, 1)
+	f, pkg := loadRunPackage(t, manifest, map[string]string{"run.py": "print(1)\n"}, func() []string { return nil })
+	srv := newPackageServer(t, map[string]func(http.ResponseWriter, []byte){
+		"/api/v1/packages/validate": answer(http.StatusOK, validated),
+		"/api/v1/packages/applies":  answer(http.StatusServiceUnavailable, `{"error":"SERVICE_UNAVAILABLE","message":"the deriver is unavailable"}`),
+	})
+	capture(t)
+	ref := dataset.Ref{Portal: config.MustPortal("learn.concord.org"), Name: "wildfire"}
+	err := f.run(context.Background(), api.New(srv.URL, "tok"), pkg, ref, "/data/root")
+	if cliErr := asCLIError(t, err); cliErr.Code != "SERVICE_UNAVAILABLE" || cliErr.ExitCode != output.ExitContract {
+		t.Errorf("err = %+v", cliErr)
+	}
+}
+
+func TestPackageRunErrorsAreTheRunnersCodesAtExitOne(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		code string
+	}{
+		{&packages.Refused{Reason: "does not apply"}, "PACKAGE_REFUSED"},
+		{&packages.Failed{Reason: "exited 3"}, "PACKAGE_FAILED"},
+		{&packages.OutputRefused{Reason: "no display.md"}, "PACKAGE_OUTPUT_REFUSED"},
+	} {
+		got := asCLIError(t, packageRunError(tc.err))
+		if got.Code != tc.code || got.ExitCode != output.ExitInternal || got.Message != tc.err.Error() {
+			t.Errorf("%T: got %s exit %d %q", tc.err, got.Code, got.ExitCode, got.Message)
+		}
+	}
+}
+
+func TestPackageRunReachesThisCCData(t *testing.T) {
+	none := func(string) (string, error) { return "", exec.ErrNotFound }
+	other := func(string) (string, error) { return "/opt/homebrew/bin/cc-data", nil }
+	if dir, warning := packageCCData(filepath.Join("/build", "cc-data"), other); dir != "/build" || warning != "" {
+		t.Errorf("a binary named cc-data: %q, %q", dir, warning)
+	}
+	if dir, warning := packageCCData(filepath.Join("/build", "cc-data.exe"), other); dir != "/build" || warning != "" {
+		t.Errorf("cc-data.exe: %q, %q", dir, warning)
+	}
+	if dir, warning := packageCCData("/tmp/go-build/exe/main", other); dir != "" || !strings.Contains(warning, "/opt/homebrew/bin/cc-data") {
+		t.Errorf("go run: %q, %q", dir, warning)
+	}
+	if _, warning := packageCCData("/tmp/go-build/exe/main", none); !strings.Contains(warning, "will fail") {
+		t.Errorf("no cc-data on PATH: %q", warning)
 	}
 }

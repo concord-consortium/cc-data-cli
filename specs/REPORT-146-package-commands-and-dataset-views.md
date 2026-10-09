@@ -55,7 +55,7 @@ Researchers get four `cc-data package` commands (`init`, `run`, `build`, `publis
   - `--scope` names a local scope file. It holds the four keys rigse supplies on the VM: `kind`, `id`, `classes` (`[{class_hash, class_id}]`) and `assignments` (`[{offering_id, runnable_id, name, url}]`). The shape is checked; any other key is refused.
   - `package init` does not write a scope file, so the file comes from the author.
 - **R11. The package sees the runner's layout.** Before the entrypoint runs:
-  - **A fresh run directory** under `dir/.cc-data-run/`, with `in/` and `out/`, both emptied. `.cc-data-run` and everything `package run` empties or creates under it must be a real directory, never a link. A link is refused before anything is removed, so a stray link can never point the emptying at a directory outside the package, and a `.gitignore` that is a link is refused rather than written through.
+  - **A fresh run directory** under `dir/.cc-data-run/`, with `in/` and `out/`, both emptied. `.cc-data-run` and everything `package run` empties or creates under it must be a real directory, never a link. A link is refused before anything is removed, so a stray link can never point the emptying at a directory outside the package, and a `.gitignore` that is a link is refused rather than written through. Like every other folder cc-data writes student data into, `.cc-data-run` and the folders `package run` creates in it are 0700, tightened if an earlier run left them wider, and the files it writes there (`scope.json`, `.gitignore`) are 0600.
   - **A `.gitignore` containing `*`** written into `dir/.cc-data-run/`. A package directory is usually a git checkout (cc-data-studies ignores only `local-data/`, `__pycache__/` and `*.pyc`), and `out/display.md` holds counts or text drawn from student data.
   - **`in/scope.json`** in the runner's exact shape: the scope file's four keys; `clue_source` `"firebase"`; `dataset` as the ref's bare name, as the runner writes `pkg-<id>`; and `output_dir` as the absolute `out/` path.
   - **The runner's environment:**
@@ -63,10 +63,10 @@ Researchers get four `cc-data package` commands (`init`, `run`, `build`, `publis
     - `RD_SCOPE_FILE`.
     - `RD_OUTPUT_DIR`.
     - `RD_DATA_DIR` and `CC_DATA_LOCAL`: `dir/.cc-data-run/data/`.
-    - `CC_DATA_ROOT`: the data root `package run` itself resolved.
+    - `CC_DATA_ROOT`: the data root `package run` itself resolved, made absolute, since the package runs from its staged copy, where a relative root would name another folder.
     - `CC_DATA_PORTAL`: the ref's portal.
     - `RD_REPORT_SERVER_URL`: the portal's stored credential's server, when one is stored.
-  - **A short passthrough list a laptop needs.** It covers `HOME`, `PATH`, `USER`, `LOGNAME`, `LANG`, `LC_*`, `TZ`, `TMPDIR`, `DBUS_SESSION_BUS_ADDRESS`, `XDG_RUNTIME_DIR` and the proxy variables `HTTPS_PROXY`, `HTTP_PROXY` and `NO_PROXY` in either case (the runner sets the first two when it has a proxy, and `NO_PROXY` keeps a laptop's exemptions with them), plus Windows's `SYSTEMROOT`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `PATHEXT` and `COMSPEC`. There is no Windows release, but CI builds and tests on `windows-2022`, and these variables are absent on Linux and macOS. These are the variables the package's own `cc-data` calls need to find the researcher's stored credential (the keychain or the credentials file), to reach the server, and to run at all. Nothing else is inherited.
+  - **A short passthrough list a laptop needs.** It covers `HOME`, `PATH`, `USER`, `LOGNAME`, `LANG`, `LC_*`, `TZ`, `TMPDIR`, `DBUS_SESSION_BUS_ADDRESS`, `XDG_RUNTIME_DIR` and the proxy variables `HTTPS_PROXY`, `HTTP_PROXY` and `NO_PROXY` in either case (the runner sets the first two when it has a proxy, and `NO_PROXY` keeps a laptop's exemptions with them), plus Windows's `SYSTEMROOT`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `PATHEXT` and `COMSPEC`. There is no Windows release, but CI builds and tests on `windows-2022`, and these variables are absent on Linux and macOS. These are the variables the package's own `cc-data` calls need to find the researcher's stored credential (the keychain or the credentials file), to reach the server, and to run at all. Nothing else is inherited. When the running binary is named `cc-data`, its folder goes first on the package's `PATH`, so the package's own calls reach the same cc-data rather than an older install. Under any other name (`go run`, a test binary), `run` warns which `cc-data` the package will reach.
   - **No storage variables.** `RD_BUCKET` and `RD_STORAGE_PREFIX` are never set.
 - **R12. Applicability before the entrypoint.**
   - **The question asked.** When the manifest declares any pattern, `package run` sends the patterns and the scope's assignment URLs to `POST /api/v1/packages/applies`. report-server derives the interactive URLs inside those assignments, so the URLs matched are the ones the runner matches.
@@ -110,7 +110,7 @@ Researchers get four `cc-data package` commands (`init`, `run`, `build`, `publis
 - **R19. `build` refuses what `publish` would refuse,** by asking report-server (R6). It takes `--portal` (default: the configured portal), `--origin projects/<id>` and `--official` so the check is made as the publish will be. A refused archive is not written. When validate answers `already_published`, `build` still writes the zip and warns "<identity> <version> is already published; publish will refuse it until the version changes". When `publishing_unavailable` names a reason, `build` warns "this package cannot be published yet: <reason>" and still writes the zip. `run` ignores both, since running a package needs neither a new version nor a bucket.
 - **R20. Output.**
   - The default output path is `dir/.cc-data-build/<name>-<version>.zip`. It sits inside an excluded dot directory, which must be a real directory as R11's are, with the same `.gitignore` as R11's, so building from inside the package directory never feeds one build's zip into the next. A name or version holding a path separator is `INVALID_MANIFEST` rather than a path, since it is unchecked until validate answers, and for good on a server without the route.
-  - An explicit `--out` inside `dir` is refused unless R17 would exclude that path anyway.
+  - An explicit `--out` is refused when it is a directory (the package folder included), when it is inside `.cc-data-run`, which `package run` empties, or when it is inside `dir` where R17 would collect it.
   - stdout carries one JSON line: the path, `sha256:<hex>`, the size and the file count.
 
 ### `cc-data package publish`
@@ -469,4 +469,20 @@ R17 states the rule.
 **Context**: Raised in Copilot's review of PR #18.
 
 **Decision**: The default build zip is written to a temporary file and renamed into place, so a link already at that path is replaced rather than followed. The scope file must hold one JSON object and nothing after it. `summary.txt` and `counts.json` stay read under the display cap, since the runner reads them that way too, and the code now says so.
+
+---
+
+### The PR review's findings (Ethan McElroy, PR #18)
+**Context**: Raised in Ethan McElroy's review of PR #18, which requested changes for one blocker.
+
+**Decision**: All were fixed, each with a test that fails when the fix is reverted.
+- **Blocker, a private run folder.** `.cc-data-run` and everything `package run` creates in it are 0700, tightened if an earlier run left them wider, and `scope.json` and `.gitignore` are 0600, as every other student-data folder in cc-data is.
+- **A relative data root** is made absolute before it reaches the package.
+- **`--out`** refuses a directory, including the package folder, and any path inside `.cc-data-run`.
+- **A 404 from validate or applies** still means the route is not deployed. REPORT-167's contract already says neither route ever answers 404, and `RouteMissing`'s comment now states that agreement. Matching the catch-all's body would not help, since a real `not_found` sends the same body.
+- **A package folder that is itself a link** is resolved before it is walked. Links inside it are still refused.
+- **The package's own `cc-data`** is the running binary when that is named `cc-data`; otherwise `run` warns which one the package will reach.
+- **`init`** reports the real error when it cannot check the folder, and **`build`** renames its zip through `fsutil.RenameAtomic`, which retries on Windows.
+- **Tests added** for the three package error codes, a package that fails or writes no `display.md`, the request count when publish's connection drops, an applies 503 through `run`, validate running before the run, `HOME`, and the run folder's modes. The leftover-process test now checks that the process is dead rather than racing a timed write. A new test keeps the learner query identical in the test, the guidance and the stub. The release workflow's tag classification is now run against sample tags, and it ignores build metadata after `+`.
+- **Comments and help text** corrected where they overstated behavior. `Files.Bytes`, which nothing read, is removed, and the stub ignores only an "already exists" error from `dataset create`.
 

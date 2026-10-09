@@ -175,7 +175,7 @@ jobs:
       - name: Classify the tag
         id: tag
         run: |
-          if [[ "${GITHUB_REF_NAME}" == *-* ]]; then
+          if [[ "${GITHUB_REF_NAME%%+*}" == *-* ]]; then
             echo "prerelease=true" >> "${GITHUB_OUTPUT}"
           else
             echo "prerelease=false" >> "${GITHUB_OUTPUT}"

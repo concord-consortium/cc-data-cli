@@ -11,8 +11,8 @@ import (
 	"strings"
 )
 
-// DisplayLimitBytes is the runner's cap on display.md in UTF-8 bytes, decided only in
-// final-design.md section 10.
+// DisplayLimitBytes is the runner's cap on display.md in UTF-8 bytes, decided only in section 10
+// of the Researcher Dashboard design (final-design.md, kept outside this repository).
 const DisplayLimitBytes = 64 * 1024
 
 // countKeys are the counts.json keys the runner reads; anything else a package writes there
@@ -50,8 +50,8 @@ func ReadResult(outDir string) (Result, error) {
 		return res, &OutputRefused{Reason: fmt.Sprintf("the package's display.md is %d bytes, over the %d-byte limit", size, DisplayLimitBytes)}
 	}
 	res.DisplayPath = filepath.Join(outDir, "display.md")
-	// The runner reads summary.txt and counts.json under the display cap too, truncating them.
 	res.DisplayBytes = size
+	// The runner reads summary.txt and counts.json under the display cap too, truncating them.
 	if text, _, err := readOwnFile(outDir, "summary.txt", DisplayLimitBytes); err == nil {
 		line := strings.TrimSpace(strings.SplitN(strings.ReplaceAll(text, "\r\n", "\n"), "\n", 2)[0])
 		if line != "" {

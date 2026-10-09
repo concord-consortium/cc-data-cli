@@ -54,7 +54,7 @@ def main():
     try:
         cc_data("dataset", "create", dataset)
     except RuntimeError as err:
-        if "exists" not in str(err).lower():
+        if "already exists" not in str(err).lower():
             raise
     run = mapping_run(os.environ["CC_DATA_PORTAL"], class_id)
     cc_data("get", "report", str(run), "--dataset", dataset, "--refresh")

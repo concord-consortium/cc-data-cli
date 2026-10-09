@@ -137,9 +137,10 @@ like `wildfire_2026.answers`):
   fetched. Scope it by the answers' `run_id` only: `student_id_mapping` keeps each
   learner's row from whichever run was fetched last, so `m.run_id = 584` drops a
   learner another mapping run of the class also holds. Count by `user_id`, never
-  by endpoint, since a student has one endpoint per assignment. A Student ID Mapping run is computed live, so re-reading it with
-  `--refresh` picks up learners who joined since; a Student Answers run is fixed
-  when its query ran, and a whole-class one fails above three or four assignments.
+  by endpoint, since a student has one endpoint per assignment. A Student ID
+  Mapping run is computed live, so re-reading it with `--refresh` picks up
+  learners who joined since; a Student Answers run is fixed when its query ran,
+  and a whole-class one fails above three or four assignments.
 - A run's log freshness is `SELECT count(*) AS logs, max(event_time) AS
   log_freshness_at FROM logs WHERE run_id = <id>`.
 - Reports-to-stores join: `reports.res_<N>_remote_endpoint =

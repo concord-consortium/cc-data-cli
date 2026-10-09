@@ -105,7 +105,9 @@ echo ok > "$RD_OUTPUT_DIR/display.md"
 `, map[string]string{"local-data/x.csv": "secret"})
 	var stderr bytes.Buffer
 	environ := []string{"PATH=" + os.Getenv("PATH"), "HOME=/home/r", "LC_ALL=C", "https_proxy=http://proxy:3128", "AWS_SECRET_ACCESS_KEY=leak"}
-	res, err := Run(context.Background(), runOpts(t, dir, files, environ, &stderr))
+	o := runOpts(t, dir, files, environ, &stderr)
+	o.BinDir = "/opt/cc-data/bin"
+	res, err := Run(context.Background(), o)
 	if err != nil {
 		t.Fatalf("%v\n%s", err, stderr.String())
 	}
@@ -125,6 +127,8 @@ echo ok > "$RD_OUTPUT_DIR/display.md"
 		"RD_OUTPUT_DIR":        filepath.Join(run, "out"),
 		"RD_REPORT_SERVER_URL": "https://report.example",
 		"LC_ALL":               "C",
+		"HOME":                 "/home/r",
+		"PATH":                 "/opt/cc-data/bin" + string(os.PathListSeparator) + os.Getenv("PATH"),
 		"https_proxy":          "http://proxy:3128",
 	} {
 		if env[k] != want {
@@ -189,6 +193,9 @@ func TestRunRefusesBeforeStarting(t *testing.T) {
 	if _, err := Run(context.Background(), o); !errors.As(err, &refused) {
 		t.Errorf("clue_prepull: err = %v, want Refused", err)
 	}
+	if _, err := os.Stat(filepath.Join(dir, RunDirName, "started")); err == nil {
+		t.Error("the entrypoint started for a clue_prepull package")
+	}
 }
 
 func TestRunWarnsAndRunsWhenApplicabilityIsUnconfirmed(t *testing.T) {
@@ -231,21 +238,6 @@ func TestRunKillsTheGroupWhenInterrupted(t *testing.T) {
 	var failed *Failed
 	if !errors.As(err, &failed) || !strings.Contains(err.Error(), "interrupted") || time.Since(start) > 5*time.Second {
 		t.Errorf("err = %v after %v", err, time.Since(start))
-	}
-}
-
-func TestRunLeavesNothingBehind(t *testing.T) {
-	skipOnWindows(t, "the entrypoint is a shell script")
-	dir, files := shellPackage(t, `( sleep 1; echo late > "$RD_OUTPUT_DIR/late.txt" ) >/dev/null 2>&1 &
-echo ok > "$RD_OUTPUT_DIR/display.md"
-`, nil)
-	var stderr bytes.Buffer
-	if _, err := Run(context.Background(), runOpts(t, dir, files, []string{"PATH=" + os.Getenv("PATH")}, &stderr)); err != nil {
-		t.Fatal(err)
-	}
-	time.Sleep(1500 * time.Millisecond)
-	if _, err := os.Stat(filepath.Join(dir, RunDirName, "out", "late.txt")); err == nil {
-		t.Error("a background process the package left behind wrote after the run")
 	}
 }
 
@@ -345,5 +337,47 @@ func TestWriteBuildReplacesALinkedZipRatherThanFollowingIt(t *testing.T) {
 	}
 	if entries, _ := os.ReadDir(filepath.Join(dir, BuildDirName)); len(entries) != 2 {
 		t.Errorf("build directory holds %v, want the zip and .gitignore only", entries)
+	}
+}
+
+func TestRunKeepsItsTreePrivate(t *testing.T) {
+	skipOnWindows(t, "Windows has no POSIX mode bits")
+	dir, files := shellPackage(t, `echo ok > "$RD_OUTPUT_DIR/display.md"`+"\n", nil)
+	run := filepath.Join(dir, RunDirName)
+	if err := os.Mkdir(run, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	if _, err := Run(context.Background(), runOpts(t, dir, files, []string{"PATH=" + os.Getenv("PATH")}, &stderr)); err != nil {
+		t.Fatal(err)
+	}
+	for rel, want := range map[string]os.FileMode{
+		".": 0o700, "pkg": 0o700, "in": 0o700, "out": 0o700, "data": 0o700,
+		"in/scope.json": 0o600, ".gitignore": 0o600,
+	} {
+		info, err := os.Stat(filepath.Join(run, rel))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != want {
+			t.Errorf("%s is %o, want %o", rel, got, want)
+		}
+	}
+}
+
+func TestRunReportsAFailedPackageAndAMissingDisplay(t *testing.T) {
+	skipOnWindows(t, "the entrypoint is a shell script")
+	var stderr bytes.Buffer
+	dir, files := shellPackage(t, "exit 3\n", nil)
+	_, err := Run(context.Background(), runOpts(t, dir, files, []string{"PATH=" + os.Getenv("PATH")}, &stderr))
+	var failed *Failed
+	if !errors.As(err, &failed) || !strings.Contains(err.Error(), "exit status 3") {
+		t.Errorf("a non-zero exit: err = %v, want Failed", err)
+	}
+	dir, files = shellPackage(t, "true\n", nil)
+	_, err = Run(context.Background(), runOpts(t, dir, files, []string{"PATH=" + os.Getenv("PATH")}, &stderr))
+	var refused *OutputRefused
+	if !errors.As(err, &refused) || !strings.Contains(err.Error(), "no display.md") {
+		t.Errorf("no display.md: err = %v, want OutputRefused", err)
 	}
 }

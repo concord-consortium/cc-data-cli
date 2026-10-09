@@ -4,7 +4,8 @@ package packages
 
 import "os/exec"
 
-// killGroup and reapGroup kill only the entrypoint on Windows, which has no release.
+// On Windows, which has no release, exec.CommandContext kills only the entrypoint, and nothing
+// is killed after it exits.
 func killGroup(cmd *exec.Cmd) {}
 
 func reapGroup(cmd *exec.Cmd) {}

@@ -13,6 +13,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/concord-consortium/cc-data-cli/internal/fsutil"
 )
 
 // TimeoutMargin is what the runner adds to expected_duration_seconds before it kills a run.
@@ -23,7 +25,8 @@ const TimeoutMargin = 10 * time.Minute
 const RunDirName = ".cc-data-run"
 
 // passthrough is what a laptop adds so the package's own cc-data calls find the stored
-// credential, reach the server through any proxy, and run at all. Matching is case-insensitive.
+// credential, reach the server through any proxy, and run at all. These names match in any
+// case, so the lower-case proxy spellings pass; the LC_ prefix matches as written.
 var passthrough = []string{
 	"HOME", "PATH", "USER", "LOGNAME", "LANG", "TZ", "TMPDIR",
 	"DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR",
@@ -61,8 +64,9 @@ type RunOptions struct {
 	Dataset   string                                       // the full ref, <portal>/<name>
 	Name      string                                       // the ref's bare name
 	Portal    string                                       // the ref's portal host
-	DataRoot  string                                       // CC_DATA_ROOT as package run resolved it
+	DataRoot  string                                       // CC_DATA_ROOT, absolute
 	ReportSrv string                                       // the stored credential's server, or ""
+	BinDir    string                                       // put first on PATH, so the package calls this cc-data
 	Stderr    io.Writer                                    // where the package's own output goes
 	Environ   func() []string
 	LookPath  func(string) (string, error)
@@ -96,7 +100,7 @@ func Run(ctx context.Context, o RunOptions) (Result, error) {
 		return Result{}, err
 	}
 	scopePath := filepath.Join(paths.in, "scope.json")
-	if err := os.WriteFile(scopePath, b, 0o644); err != nil {
+	if err := fsutil.WriteFileAtomic0600(scopePath, b); err != nil {
 		return Result{}, err
 	}
 
@@ -128,12 +132,12 @@ func Run(ctx context.Context, o RunOptions) (Result, error) {
 	defer cancel()
 	cmd := exec.CommandContext(runCtx, command, args...)
 	cmd.Dir = paths.pkg
-	cmd.Env = environment(o.Environ(), env)
+	cmd.Env = environment(o.Environ(), env, o.BinDir)
 	cmd.Stdout = o.Stderr
 	cmd.Stderr = o.Stderr
 	killGroup(cmd)
 	err = cmd.Run()
-	// As on the VM, nothing the package started outlives it or writes after it.
+	// On Unix, whatever is left in the package's process group dies before its output is read.
 	reapGroup(cmd)
 	if err != nil {
 		switch {
@@ -149,8 +153,9 @@ func Run(ctx context.Context, o RunOptions) (Result, error) {
 
 type runPaths struct{ pkg, in, out, data string }
 
-// prepare empties and rebuilds the run tree. Every directory it removes or creates under the
-// package must be a real directory, so a link left there can never aim the removal outside.
+// prepare empties and rebuilds the run tree, keeping only data/ from one run to the next. Every
+// directory it removes or creates under the package must be a real directory, so a link left
+// there can never aim the removal outside.
 func prepare(run string, files Files) (runPaths, error) {
 	p := runPaths{
 		pkg:  filepath.Join(run, "pkg"),
@@ -173,7 +178,7 @@ func prepare(run string, files Files) (runPaths, error) {
 				return p, err
 			}
 		}
-		if err := os.Mkdir(d, 0o755); err != nil {
+		if err := os.Mkdir(d, 0o700); err != nil {
 			return p, err
 		}
 	}
@@ -200,23 +205,25 @@ func ignoreAll(dir string) error {
 	if info, err := os.Lstat(p); err == nil && !info.Mode().IsRegular() {
 		return fmt.Errorf("refusing to write %s: it is a link or not a file", p)
 	}
-	return os.WriteFile(p, []byte("*\n"), 0o644)
+	return fsutil.WriteFileAtomic0600(p, []byte("*\n"))
 }
 
+// ensureRealDir creates d, or checks that it is a real directory, and keeps it private: what
+// this tool writes inside a package can hold student data.
 func ensureRealDir(d string) error {
 	if _, err := os.Lstat(d); errors.Is(err, os.ErrNotExist) {
-		return os.Mkdir(d, 0o755)
+		return os.Mkdir(d, 0o700)
 	}
 	if err := RealDir(d); err != nil {
 		return fmt.Errorf("refusing to use %s: it is a link or not a directory", d)
 	}
-	return nil
+	return os.Chmod(d, 0o700)
 }
 
 // copyFile stages one file with the mode build gives it, so the staged package is the one
 // unzip produces on the VM.
 func copyFile(src, dst string, mode os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
 		return err
 	}
 	in, err := os.Open(src)
@@ -253,7 +260,7 @@ func entrypointCommand(pkgDir, entrypoint string, lookPath func(string) (string,
 
 // environment is the passthrough taken from the caller's environment (LC_* included), then
 // the runner's variables over it; nothing else is inherited.
-func environment(from []string, set map[string]string) []string {
+func environment(from []string, set map[string]string, binDir string) []string {
 	keep := map[string]string{}
 	for _, kv := range from {
 		k, v, ok := strings.Cut(kv, "=")
@@ -266,6 +273,19 @@ func environment(from []string, set map[string]string) []string {
 	}
 	for k, v := range set {
 		keep[k] = v
+	}
+	if binDir != "" {
+		pathKey := "PATH"
+		for k := range keep {
+			if strings.EqualFold(k, "PATH") {
+				pathKey = k
+			}
+		}
+		if keep[pathKey] == "" {
+			keep[pathKey] = binDir
+		} else {
+			keep[pathKey] = binDir + string(os.PathListSeparator) + keep[pathKey]
+		}
 	}
 	out := make([]string, 0, len(keep))
 	for k, v := range keep {

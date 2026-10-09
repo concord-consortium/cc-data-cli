@@ -27,7 +27,6 @@ type Files struct {
 	Dir   string
 	Paths []string
 	Modes map[string]os.FileMode
-	Bytes int64
 }
 
 // shipMode is the one mode a file keeps through build and unzip: 0755 when any execute bit is
@@ -58,11 +57,17 @@ func excluded(rel string, isDir bool) bool {
 	return !isDir && strings.HasSuffix(base, ".pyc")
 }
 
-// Collect walks dir for the files a package is made of. A link or other non-regular file is
-// refused rather than skipped, since the runner refuses an archive holding one.
+// Collect walks dir for the files a package is made of. A link or other non-regular file that
+// build would ship is refused rather than skipped, since the runner refuses an archive holding
+// one; under an excluded name it is skipped like any other file.
 func Collect(dir string) (Files, error) {
+	// The package directory itself may be a link; only what is inside it may not.
+	dir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return Files{}, err
+	}
 	files := Files{Dir: dir, Modes: map[string]os.FileMode{}}
-	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+	err = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -94,7 +99,6 @@ func Collect(dir string) (Files, error) {
 		}
 		files.Paths = append(files.Paths, rel)
 		files.Modes[rel] = shipMode(info.Mode())
-		files.Bytes += info.Size()
 		return nil
 	})
 	sort.Strings(files.Paths)
