@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -581,10 +580,10 @@ func TestPackageRunValidatesThenRunsWithTheRunnersNames(t *testing.T) {
 	script := "#!/bin/sh\nenv > \"$RD_OUTPUT_DIR/../env.txt\"\ncp \"$RD_SCOPE_FILE\" \"$RD_OUTPUT_DIR/../scope.json\"\necho ok > \"$RD_OUTPUT_DIR/display.md\"\n"
 	f, pkg := loadRunPackage(t, manifest, map[string]string{"run.sh": script}, func() []string { return []string{"PATH=" + os.Getenv("PATH")} })
 	dir := pkg.dir
-	ranBeforeValidate := false
+	var ranBeforeValidate atomic.Bool
 	srv := newPackageServer(t, map[string]func(http.ResponseWriter, []byte){"/api/v1/packages/validate": func(w http.ResponseWriter, body []byte) {
 		if _, err := os.Stat(filepath.Join(dir, packages.RunDirName)); err == nil {
-			ranBeforeValidate = true
+			ranBeforeValidate.Store(true)
 		}
 		answer(http.StatusOK, validated)(w, body)
 	}})
@@ -598,7 +597,7 @@ func TestPackageRunValidatesThenRunsWithTheRunnersNames(t *testing.T) {
 	if err := f.run(context.Background(), api.New(srv.URL, "tok"), pkg, ref, "data-root"); err != nil {
 		t.Fatal(err)
 	}
-	if ranBeforeValidate {
+	if ranBeforeValidate.Load() {
 		t.Error("the run tree existed before validate answered")
 	}
 
@@ -663,23 +662,5 @@ func TestPackageRunErrorsAreTheRunnersCodesAtExitOne(t *testing.T) {
 		if got.Code != tc.code || got.ExitCode != output.ExitInternal || got.Message != tc.err.Error() {
 			t.Errorf("%T: got %s exit %d %q", tc.err, got.Code, got.ExitCode, got.Message)
 		}
-	}
-}
-
-func TestPackageRunReachesThisCCData(t *testing.T) {
-	none := func(string) (string, error) { return "", exec.ErrNotFound }
-	other := func(string) (string, error) { return "/opt/homebrew/bin/cc-data", nil }
-	build := filepath.Join(string(filepath.Separator), "build")
-	if dir, warning := packageCCData(filepath.Join(build, "cc-data"), other); dir != build || warning != "" {
-		t.Errorf("a binary named cc-data: %q, %q", dir, warning)
-	}
-	if dir, warning := packageCCData(filepath.Join(build, "cc-data.exe"), other); dir != build || warning != "" {
-		t.Errorf("cc-data.exe: %q, %q", dir, warning)
-	}
-	if dir, warning := packageCCData("/tmp/go-build/exe/main", other); dir != "" || !strings.Contains(warning, "/opt/homebrew/bin/cc-data") {
-		t.Errorf("go run: %q, %q", dir, warning)
-	}
-	if _, warning := packageCCData("/tmp/go-build/exe/main", none); !strings.Contains(warning, "will fail") {
-		t.Errorf("no cc-data on PATH: %q", warning)
 	}
 }

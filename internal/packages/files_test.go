@@ -241,3 +241,24 @@ func TestCollectFollowsALinkedPackageDirectory(t *testing.T) {
 		t.Errorf("collected %q through a linked package directory", got)
 	}
 }
+
+func TestCheckBuildOutputSeesThroughLinks(t *testing.T) {
+	skipOnWindows(t, "links need privileges on Windows")
+	real := t.TempDir()
+	link := filepath.Join(t.TempDir(), "pkg")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ dir, out string }{
+		{link, filepath.Join(real, RunDirName, "x.zip")},
+		{real, filepath.Join(link, RunDirName, "x.zip")},
+		{link, filepath.Join(real, "p.zip")},
+	} {
+		if err := CheckBuildOutput(tc.dir, tc.out); err == nil {
+			t.Errorf("--out %s for package %s was accepted", tc.out, tc.dir)
+		}
+	}
+	if err := CheckBuildOutput(link, filepath.Join(t.TempDir(), "p.zip")); err != nil {
+		t.Errorf("an --out outside the package was refused: %v", err)
+	}
+}

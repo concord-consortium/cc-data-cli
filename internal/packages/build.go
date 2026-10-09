@@ -19,11 +19,11 @@ func CheckBuildOutput(dir, out string) error {
 	if info, err := os.Stat(out); err == nil && info.IsDir() {
 		return fmt.Errorf("--out %s is a directory; name the zip file to write", out)
 	}
-	absDir, err := filepath.Abs(dir)
+	absDir, err := resolvedPath(dir)
 	if err != nil {
 		return err
 	}
-	absOut, err := filepath.Abs(out)
+	absOut, err := resolvedPath(out)
 	if err != nil {
 		return err
 	}
@@ -39,6 +39,27 @@ func CheckBuildOutput(dir, out string) error {
 		return nil
 	}
 	return fmt.Errorf("--out %s is inside the package, where the next build would include it", out)
+}
+
+// resolvedPath is p made absolute with every link in its existing part resolved, so the same
+// place reached through a link and by its real path compares equal.
+func resolvedPath(p string) (string, error) {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return "", err
+	}
+	rest := ""
+	for cur := abs; ; {
+		if real, err := filepath.EvalSymlinks(cur); err == nil {
+			return filepath.Join(real, rest), nil
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return abs, nil
+		}
+		rest = filepath.Join(filepath.Base(cur), rest)
+		cur = parent
+	}
 }
 
 func excludedAncestor(rel string) bool {

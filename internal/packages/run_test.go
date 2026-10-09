@@ -106,7 +106,7 @@ echo ok > "$RD_OUTPUT_DIR/display.md"
 	var stderr bytes.Buffer
 	environ := []string{"PATH=" + os.Getenv("PATH"), "HOME=/home/r", "LC_ALL=C", "https_proxy=http://proxy:3128", "AWS_SECRET_ACCESS_KEY=leak"}
 	o := runOpts(t, dir, files, environ, &stderr)
-	o.BinDir = "/opt/cc-data/bin"
+	o.CCData = "/opt/shared/bin/cc-data"
 	res, err := Run(context.Background(), o)
 	if err != nil {
 		t.Fatalf("%v\n%s", err, stderr.String())
@@ -128,12 +128,18 @@ echo ok > "$RD_OUTPUT_DIR/display.md"
 		"RD_REPORT_SERVER_URL": "https://report.example",
 		"LC_ALL":               "C",
 		"HOME":                 "/home/r",
-		"PATH":                 "/opt/cc-data/bin" + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"PATH":                 filepath.Join(run, "bin") + string(os.PathListSeparator) + os.Getenv("PATH"),
 		"https_proxy":          "http://proxy:3128",
 	} {
 		if env[k] != want {
 			t.Errorf("%s = %q, want %q", k, env[k], want)
 		}
+	}
+	if target, err := os.Readlink(filepath.Join(run, "bin", "cc-data")); err != nil || target != "/opt/shared/bin/cc-data" {
+		t.Errorf("bin/cc-data links to %q (%v), want the running binary", target, err)
+	}
+	if entries, _ := os.ReadDir(filepath.Join(run, "bin")); len(entries) != 1 {
+		t.Errorf("bin holds %v, want only the cc-data link", entries)
 	}
 	if _, ok := env["AWS_SECRET_ACCESS_KEY"]; ok {
 		t.Error("a variable outside the passthrough reached the package")
@@ -352,7 +358,7 @@ func TestRunKeepsItsTreePrivate(t *testing.T) {
 		t.Fatal(err)
 	}
 	for rel, want := range map[string]os.FileMode{
-		".": 0o700, "pkg": 0o700, "in": 0o700, "out": 0o700, "data": 0o700,
+		".": 0o700, "pkg": 0o700, "in": 0o700, "out": 0o700, "bin": 0o700, "data": 0o700,
 		"in/scope.json": 0o600, ".gitignore": 0o600,
 	} {
 		info, err := os.Stat(filepath.Join(run, rel))

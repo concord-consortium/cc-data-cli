@@ -130,7 +130,6 @@ func readFile(t *testing.T, path string) string {
 func TestReleaseWorkflowKeepsPreReleasesBack(t *testing.T) {
 	rel := readFile(t, ".github/workflows/release.yml")
 	for _, want := range []string{
-
 		"--prerelease=${{ steps.tag.outputs.prerelease }}",
 		"if: steps.tag.outputs.prerelease == 'false'",
 	} {

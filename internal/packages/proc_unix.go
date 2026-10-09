@@ -3,7 +3,9 @@
 package packages
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
 	"syscall"
 )
 
@@ -20,4 +22,17 @@ func reapGroup(cmd *exec.Cmd) {
 	if cmd.Process != nil {
 		syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	}
+}
+
+// exposeCCData links bin/cc-data to the running binary, whatever its name, and returns bin to put
+// first on the package's PATH. Unlike the binary's own folder, which may be a shared bin, it puts
+// nothing else ahead of the user's PATH.
+func exposeCCData(bin, exe string, _ func(string) (string, error)) (string, string, error) {
+	if exe == "" {
+		return "", "", nil
+	}
+	if err := os.Symlink(exe, filepath.Join(bin, "cc-data")); err != nil {
+		return "", "", err
+	}
+	return bin, "", nil
 }

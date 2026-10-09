@@ -641,9 +641,10 @@ What it cannot reproduce:
   its own user behind an egress proxy.
 - **A few of your variables pass through.** `HOME`, `PATH`, your locale, the
   proxy settings and a handful of others reach the package, so its own `cc-data`
-  calls find your login. Nothing else from your environment does. The folder of
-  the `cc-data` running `package run` goes first on the package's `PATH`, so the
-  package calls that same version rather than an older one installed elsewhere.
+  calls find your login. Nothing else from your environment does. A private folder
+  holding only a link to the `cc-data` running `package run` goes first on the
+  package's `PATH`, so the package calls that same version rather than an older
+  one installed elsewhere, and nothing else moves ahead of your `PATH`.
 - **Python.** A `.py` entrypoint runs with `python3.11` when it is on your
   `PATH`, as on the VM, and otherwise with `python3` after a note saying so.
 - **CLUE.** A package with `clue_prepull: true` is refused locally, since

@@ -66,7 +66,7 @@ type RunOptions struct {
 	Portal    string                                       // the ref's portal host
 	DataRoot  string                                       // CC_DATA_ROOT, absolute
 	ReportSrv string                                       // the stored credential's server, or ""
-	BinDir    string                                       // put first on PATH, so the package calls this cc-data
+	CCData    string                                       // the running cc-data, which the package's own cc-data calls reach
 	Stderr    io.Writer                                    // where the package's own output goes
 	Environ   func() []string
 	LookPath  func(string) (string, error)
@@ -93,6 +93,13 @@ func Run(ctx context.Context, o RunOptions) (Result, error) {
 	paths, err := prepare(run, o.Files)
 	if err != nil {
 		return Result{}, err
+	}
+	binDir, warning, err := exposeCCData(paths.bin, o.CCData, o.LookPath)
+	if err != nil {
+		return Result{}, err
+	}
+	if warning != "" {
+		fmt.Fprintln(o.Stderr, "warning: "+warning)
 	}
 	scope := ScopeFile{LocalScope: o.Scope, ClueSource: "firebase", Dataset: o.Name, OutputDir: paths.out}
 	b, err := json.MarshalIndent(scope, "", "  ")
@@ -132,7 +139,7 @@ func Run(ctx context.Context, o RunOptions) (Result, error) {
 	defer cancel()
 	cmd := exec.CommandContext(runCtx, command, args...)
 	cmd.Dir = paths.pkg
-	cmd.Env = environment(o.Environ(), env, o.BinDir)
+	cmd.Env = environment(o.Environ(), env, binDir)
 	cmd.Stdout = o.Stderr
 	cmd.Stderr = o.Stderr
 	killGroup(cmd)
@@ -151,7 +158,7 @@ func Run(ctx context.Context, o RunOptions) (Result, error) {
 	return ReadResult(paths.out)
 }
 
-type runPaths struct{ pkg, in, out, data string }
+type runPaths struct{ pkg, in, out, bin, data string }
 
 // prepare empties and rebuilds the run tree, keeping only data/ from one run to the next. Every
 // directory it removes or creates under the package must be a real directory, so a link left
@@ -161,6 +168,7 @@ func prepare(run string, files Files) (runPaths, error) {
 		pkg:  filepath.Join(run, "pkg"),
 		in:   filepath.Join(run, "in"),
 		out:  filepath.Join(run, "out"),
+		bin:  filepath.Join(run, "bin"),
 		data: filepath.Join(run, "data"),
 	}
 	if err := ensureRealDir(run); err != nil {
@@ -169,7 +177,7 @@ func prepare(run string, files Files) (runPaths, error) {
 	if err := ignoreAll(run); err != nil {
 		return p, err
 	}
-	for _, d := range []string{p.pkg, p.in, p.out} {
+	for _, d := range []string{p.pkg, p.in, p.out, p.bin} {
 		if _, err := os.Lstat(d); err == nil {
 			if err := RealDir(d); err != nil {
 				return p, fmt.Errorf("refusing to empty %s: it is a link or not a directory", d)
@@ -189,7 +197,7 @@ func prepare(run string, files Files) (runPaths, error) {
 	if err != nil {
 		return p, err
 	}
-	p = runPaths{filepath.Join(abs, "pkg"), filepath.Join(abs, "in"), filepath.Join(abs, "out"), filepath.Join(abs, "data")}
+	p = runPaths{filepath.Join(abs, "pkg"), filepath.Join(abs, "in"), filepath.Join(abs, "out"), filepath.Join(abs, "bin"), filepath.Join(abs, "data")}
 	for _, rel := range files.Paths {
 		if err := copyFile(filepath.Join(files.Dir, filepath.FromSlash(rel)), filepath.Join(p.pkg, filepath.FromSlash(rel)), files.Modes[rel]); err != nil {
 			return p, err

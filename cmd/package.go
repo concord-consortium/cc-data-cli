@@ -137,15 +137,11 @@ func (f packageRunFlags) run(ctx context.Context, client *api.Client, pkg loaded
 		return err
 	}
 	exe, _ := os.Executable()
-	binDir, warning := packageCCData(exe, exec.LookPath)
-	if warning != "" {
-		output.Warnf("%s", warning)
-	}
 	start := time.Now()
 	res, err := packages.Run(ctx, packages.RunOptions{
 		Dir: pkg.dir, Manifest: pkg.manifest, Files: pkg.files, Scope: pkg.scope, Applies: appliesFor(client, pkg.scope),
 		Dataset: ref.String(), Name: ref.Name, Portal: ref.Portal.Host(), DataRoot: dataRoot,
-		ReportSrv: client.BaseURL, BinDir: binDir, Stderr: output.Stderr(), Environ: f.environ, LookPath: exec.LookPath,
+		ReportSrv: client.BaseURL, CCData: exe, Stderr: output.Stderr(), Environ: f.environ, LookPath: exec.LookPath,
 	})
 	if err != nil {
 		return packageRunError(err)
@@ -154,20 +150,6 @@ func (f packageRunFlags) run(ctx context.Context, client *api.Client, pkg loaded
 		"display": res.DisplayPath, "display_bytes": res.DisplayBytes, "summary": res.Summary,
 		"counts": res.Counts, "elapsed_seconds": int(time.Since(start).Seconds()),
 	})
-}
-
-// packageCCData picks the cc-data a package's own calls reach: this binary, by putting its
-// folder first on the package's PATH, when it is named cc-data. A binary with another name (go
-// run, a test) cannot be reached by name, so the warning names the cc-data the package will call.
-func packageCCData(exe string, lookPath func(string) (string, error)) (binDir, warning string) {
-	if exe != "" && strings.TrimSuffix(filepath.Base(exe), ".exe") == "cc-data" {
-		return filepath.Dir(exe), ""
-	}
-	found, err := lookPath("cc-data")
-	if err != nil {
-		return "", "this binary is not named cc-data and no cc-data is on PATH, so the package's own cc-data calls will fail"
-	}
-	return "", fmt.Sprintf("this binary is not named cc-data, so the package's own cc-data calls reach %s", found)
 }
 
 func newPackageRunCmd() *cobra.Command {
