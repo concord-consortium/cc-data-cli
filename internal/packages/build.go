@@ -31,7 +31,8 @@ func CheckBuildOutput(dir, out string) error {
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return nil
 	}
-	if strings.SplitN(filepath.ToSlash(rel), "/", 2)[0] == RunDirName {
+	// Compared without case, since macOS and Windows file systems ignore it by default.
+	if strings.EqualFold(strings.SplitN(filepath.ToSlash(rel), "/", 2)[0], RunDirName) {
 		return fmt.Errorf("--out %s is inside %s, which package run empties", out, RunDirName)
 	}
 	if excluded(filepath.ToSlash(rel), false) || excludedAncestor(filepath.ToSlash(rel)) {

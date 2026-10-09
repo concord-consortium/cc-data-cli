@@ -321,7 +321,7 @@ func TestPackageBuildRefusesAnOutputItWouldCollect(t *testing.T) {
 	if cliErr := asCLIError(t, err); cliErr.ExitCode != output.ExitUsage {
 		t.Errorf("err = %+v", cliErr)
 	}
-	for _, out := range []string{dir, filepath.Join(dir, packages.RunDirName, "pkg", "p.zip")} {
+	for _, out := range []string{dir, filepath.Join(dir, packages.RunDirName, "pkg", "p.zip"), filepath.Join(dir, strings.ToUpper(packages.RunDirName), "p.zip")} {
 		err := (packageBuildFlags{out: out}).run(context.Background(), api.New(srv.URL, "tok"), dir)
 		if cliErr := asCLIError(t, err); cliErr.ExitCode != output.ExitUsage {
 			t.Errorf("--out %s: err = %+v, want a usage error", out, cliErr)
