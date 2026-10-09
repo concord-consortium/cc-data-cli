@@ -170,6 +170,17 @@ jobs:
             echo "ok: ${tarball}"
           done
 
+      # A pre-release tag (v0.3.0-pre.1) exists to be pinned: it is never marked latest
+      # and never reaches Homebrew.
+      - name: Classify the tag
+        id: tag
+        run: |
+          if [[ "${GITHUB_REF_NAME%%+*}" == *-* ]]; then
+            echo "prerelease=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "prerelease=false" >> "${GITHUB_OUTPUT}"
+          fi
+
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -177,9 +188,11 @@ jobs:
           # Attach the checksum manifests alongside the tarballs so consumers can
           # verify downloads independently.
           gh release create "${GITHUB_REF_NAME}" dist/*.tar.gz dist/*.sha256 \
-            --title "${GITHUB_REF_NAME}" --generate-notes
+            --title "${GITHUB_REF_NAME}" --generate-notes \
+            --prerelease=${{ steps.tag.outputs.prerelease }}
 
       - name: Render and push the Homebrew formula
+        if: steps.tag.outputs.prerelease == 'false'
         env:
           TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: scripts/render-formula.sh "${GITHUB_REF_NAME}"

@@ -51,6 +51,19 @@ guessing flags.
 
 These take `--portal` when no default portal is configured.
 
+## Packages
+
+Researcher Dashboard packages are developed and published with `cc-data package`:
+
+- `cc-data package init [dir]` writes a `manifest.json` skeleton and a `run.py` stub.
+- `cc-data package run [dir] --dataset <ref> --scope <file>` runs it locally the
+  way the dashboard's runner will, with the scope file holding the class's
+  `kind`, `id`, `classes` and `assignments`.
+- `cc-data package build [dir]` zips it reproducibly and checks it against the
+  catalog's rules.
+- `cc-data package publish <zip>` registers it in the catalog with the cc-data
+  token.
+
 ## Fetching data
 
 - `cc-data get report <run-id> --dataset <ref>` — the report CSV. A Portal report

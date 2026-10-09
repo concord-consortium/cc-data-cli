@@ -95,6 +95,11 @@ const maxBodyBytes = 64 << 20
 // do runs a request under the retry policy and returns the 2xx body, or a typed
 // *APIError (contract) / *TransientError (budget exhausted).
 func (c *Client) do(ctx context.Context, method, path string, query url.Values, body []byte) ([]byte, error) {
+	return c.send(ctx, method, path, query, body, "application/json")
+}
+
+// send is do with the body's media type named, for the routes that take raw bytes.
+func (c *Client) send(ctx context.Context, method, path string, query url.Values, body []byte, contentType string) ([]byte, error) {
 	u := c.BaseURL + path
 	if len(query) > 0 {
 		u += "?" + query.Encode()
@@ -110,7 +115,7 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 			return nil, err
 		}
 
-		data, status, err := c.attempt(ctx, method, u, body)
+		data, status, err := c.attempt(ctx, method, u, body, contentType)
 		if err != nil {
 			last = err
 			// A non-idempotent request (POST) may have reached the server, so
@@ -139,7 +144,7 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 
 // attempt performs one HTTP request under a per-attempt deadline and returns the
 // body and status; a transport error (including deadline) is returned as err.
-func (c *Client) attempt(ctx context.Context, method, u string, body []byte) ([]byte, int, error) {
+func (c *Client) attempt(ctx context.Context, method, u string, body []byte, contentType string) ([]byte, int, error) {
 	reqCtx := ctx
 	var cancel context.CancelFunc
 	if c.RequestTimeout > 0 {
@@ -160,7 +165,7 @@ func (c *Client) attempt(ctx context.Context, method, u string, body []byte) ([]
 	}
 	req.Header.Set("Accept", "application/json")
 	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Content-Type", contentType)
 	}
 
 	resp, err := c.HTTP.Do(req)

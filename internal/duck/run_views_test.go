@@ -1,0 +1,116 @@
+package duck
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/concord-consortium/cc-data-cli/internal/store"
+)
+
+// The documented learner count, scoped by the answers' run as the guidance gives it.
+const learnersOfRun = "SELECT count(DISTINCT m.user_id) FROM student_id_mapping m JOIN run_answers a ON a.remote_endpoint = m.run_remote_endpoint WHERE a.run_id = %d"
+
+// Each wrong way to count gives a different number here: counting endpoints instead of users
+// (user 1 answered in two assignments), joining the bare-endpoint learner (who would borrow
+// another bare answer), counting an answer once instead of once per run (e3/q1 is in runs 700
+// and 900), joining membership untyped (run 700's history holds e1a/q1 too), leaving the
+// answers unscoped (run 800 is another class), and scoping the mapping by run (run 900, a later
+// mapping run of the same class, holds user 3's row in the deduplicated view).
+func TestRunAnswersAndTheDocumentedLearnerCount(t *testing.T) {
+	d := newDS(t, "ds")
+	buildStore(t, d, 700, [][]byte{
+		answerRec("s", "https://p/d/e1a", "q1", "a"), answerRec("s", "https://p/d/e1b", "q1", "b"),
+		answerRec("s", "https://p/d/e3", "q1", "c"), answerRec("s", "https://p/d/", "q1", "bare"),
+	})
+	hist, _ := json.Marshal(map[string]any{"source_key": "s", "remote_endpoint": "https://p/d/e1a", "question_id": "q1", "history_id": "h1"})
+	seg := store.OpenSegment(d.Dir, store.TypeHistory, 700)
+	if err := seg.AppendPage([][]byte{hist}, time.Unix(700, 0).UTC(), 700); err != nil {
+		t.Fatal(err)
+	}
+	seg.WriteCursor(&store.Cursor{Items: 1})
+	if _, err := d.MergeCompact(store.TypeHistory, 700, seg); err != nil {
+		t.Fatal(err)
+	}
+	buildStore(t, d, 800, [][]byte{answerRec("s", "https://p/d/e9", "q1", "z")})
+	buildStore(t, d, 900, [][]byte{answerRec("s", "https://p/d/e3", "q1", "c")})
+	row := func(learner, user, class, offering int, endpoint string) string {
+		return fmt.Sprintf("%d,%d,%d,s%d,%d,%d,https://act/1,%s", learner, user, user, user, class, offering, endpoint)
+	}
+	addDimensionCSV(t, d, dimFixture{run: 700, slug: "student-id-mapping", fetchedAt: at(1), filter: `{}`, csv: mappingCSV(
+		row(101, 1, 1, 70, "https://p/d/e1a"), row(102, 1, 1, 71, "https://p/d/e1b"),
+		row(103, 3, 1, 70, "https://p/d/e3"), row(104, 4, 1, 70, "https://p/d/"))})
+	addDimensionCSV(t, d, dimFixture{run: 800, slug: "student-id-mapping", fetchedAt: at(2), filter: `{}`, csv: mappingCSV(
+		row(109, 9, 2, 90, "https://p/d/e9"))})
+	addDimensionCSV(t, d, dimFixture{run: 900, slug: "student-id-mapping", fetchedAt: at(3), filter: `{}`, csv: mappingCSV(
+		row(103, 3, 1, 70, "https://p/d/e3"))})
+	e := openEngine(t, []DatasetSpec{{DS: d}}, nil)
+
+	if n := queryInt(t, e, "SELECT count(*) FROM run_answers WHERE run_id = 700"); n != 4 {
+		t.Errorf("run 700 answers = %d, want 4", n)
+	}
+	if n := queryInt(t, e, "SELECT count(*) FROM run_answers WHERE run_id = 900"); n != 1 {
+		t.Errorf("run 900 answers = %d, want 1", n)
+	}
+	if n := queryInt(t, e, fmt.Sprintf(learnersOfRun, 700)); n != 2 {
+		t.Errorf("run 700 learners = %d, want 2 (users 1 and 3; user 4's endpoint is bare)", n)
+	}
+	if n := queryInt(t, e, fmt.Sprintf(learnersOfRun, 800)); n != 1 {
+		t.Errorf("run 800 learners = %d, want 1", n)
+	}
+}
+
+func TestRunAnswersIsEmptyNotMissingOnAFreshDataset(t *testing.T) {
+	e := openEngine(t, []DatasetSpec{{DS: newDS(t, "ds")}}, nil)
+	if n := queryInt(t, e, "SELECT count(*) FROM run_answers"); n != 0 {
+		t.Errorf("run_answers has %d rows", n)
+	}
+	if n := queryInt(t, e, fmt.Sprintf(learnersOfRun, 1)); n != 0 {
+		t.Errorf("the learner count binds to %d on a fresh dataset, want 0", n)
+	}
+}
+
+func TestRunAnswersRunIDIsBigint(t *testing.T) {
+	d := newDS(t, "ds")
+	buildStore(t, d, 700, [][]byte{answerRec("s", "https://p/d/e1", "q1", "a")})
+	for name, e := range map[string]*Engine{
+		"with membership": openEngine(t, []DatasetSpec{{DS: d}}, nil),
+		"fresh":           openEngine(t, []DatasetSpec{{DS: newDS(t, "fresh")}}, nil),
+	} {
+		rows, err := e.Query(context.Background(), "SELECT data_type FROM information_schema.columns WHERE table_name = 'run_answers' AND column_name = 'run_id'")
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		var typ string
+		if rows.Next() {
+			rows.Scan(&typ)
+		}
+		rows.Close()
+		if typ != "BIGINT" {
+			t.Errorf("%s: run_id is %s, want BIGINT", name, typ)
+		}
+	}
+}
+
+// The guidance and the init stub each carry the learner count as text; both must stay the
+// query the test above checks.
+func TestTheDocumentedLearnerCountIsTheTestedOne(t *testing.T) {
+	flat := func(path string) string {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.Join(strings.Fields(string(raw)), " ")
+	}
+	if want := "`" + fmt.Sprintf(learnersOfRun, 584) + "`"; !strings.Contains(flat("../guidance/src/core.md"), want) {
+		t.Errorf("core.md no longer documents %q", want)
+	}
+	stub := strings.ReplaceAll(flat("../packages/template/run.py"), " AS n FROM", " FROM")
+	if want := strings.ReplaceAll(learnersOfRun, "%d", "{run}") + `"""`; !strings.Contains(stub, want) {
+		t.Errorf("the init stub no longer runs %q", want)
+	}
+}

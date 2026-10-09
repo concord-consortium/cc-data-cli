@@ -20,7 +20,7 @@ A command-line tool for [Concord Consortium](https://concord.org) researchers to
   - `get history <run-id>`: the interactive state history series (full series by default), as JSONL.
   - `get attachments <run-id>`: S3 file attachments referenced by answers/history (open-response audio, offloaded CODAP/SageModeler state).
 - **See what's in a dataset**: `cc-data dataset list` and `dataset show` render instant summaries from the manifest (downloads by type, answer/history/attachment counts, coverage, size, age). `--json` emits the same summary for Claude and scripts, and every `get` ends with a machine-readable result line so tooling can confirm what happened.
-- **Query everything with SQL** (`cc-data query`, `cc-data repl`): an ephemeral in-memory DuckDB exposes unified `reports`, `answers`, and `history` views across everything in the dataset, plus `run_membership` (which runs' fetches covered which records), `attachment_files` (per-attachment metadata and local paths), `attachment_states` (queryable offloaded CODAP/SageModeler state), `student_id_mapping` and `student_metadata` (the Portal student reports as deduplicated join dimensions, one row per learner), and a `downloads` provenance dimension table. Audio attachment content itself isn't SQL-queryable; `attachment_files` gives you its local path instead.
+- **Query everything with SQL** (`cc-data query`, `cc-data repl`): an ephemeral in-memory DuckDB exposes unified `reports`, `answers`, and `history` views across everything in the dataset, plus `run_membership` (which runs' fetches covered which records), `run_answers` (every answer with the `run_id` of each run whose answers fetch holds it), `attachment_files` (per-attachment metadata and local paths), `attachment_states` (queryable offloaded CODAP/SageModeler state), `student_id_mapping` and `student_metadata` (the Portal student reports as deduplicated join dimensions, one row per learner), and a `downloads` provenance dimension table. Audio attachment content itself isn't SQL-queryable; `attachment_files` gives you its local path instead.
 - **Teach Claude about itself**: on install, `cc-data` writes a Claude Code skill (and a one-line `~/.claude/CLAUDE.md` pointer) so Claude can download and query data for you, and ships `cc-data mcp`, an MCP stdio server for Claude Desktop using the same stored credential.
 
 ## Datasets
@@ -68,6 +68,10 @@ cc-data get history     <run-id> --dataset <portal>/<name>
 cc-data get attachments <run-id> --dataset <portal>/<name> [--answer <id>] [--url] [--inline]
 cc-data query --dataset <portal>/<name> "SELECT ..." [--format table|csv|json|jsonl]
 cc-data repl  --dataset <portal>/<name>
+cc-data package init [dir] [--name <name>]    # manifest.json skeleton + run.py stub for a dashboard package
+cc-data package run [dir] --dataset <portal>/<name> --scope <file>   # run it locally under the runner's rules
+cc-data package build [dir] [--out <file>]    # reproducible zip, checked against the catalog's rules
+cc-data package publish <zip> [--portal <portal|env>] [--origin projects/<id>] [--official] [--json]
 cc-data mcp                                   # MCP stdio server for Claude Desktop
 ```
 
@@ -94,7 +98,7 @@ The CLI is written in Go. DuckDB is embedded via [`duckdb-go`](https://github.co
 go build ./...
 ```
 
-Releases are built with goreleaser on native GitHub Actions runners per platform, with a Homebrew formula for install (`brew install concord-consortium/tap/cc-data`). Note that `brew uninstall` removes only the binary; run `cc-data uninstall` first to remove the Claude skill, the `~/.claude/CLAUDE.md` pointer, and (optionally) your stored credentials. Your datasets are never removed automatically — `cc-data uninstall` prints where they remain.
+Releases are built with goreleaser on native GitHub Actions runners per platform, with a Homebrew formula for install (`brew install concord-consortium/tap/cc-data`). A tag with a pre-release suffix, such as `v0.3.0-pre.1`, publishes a GitHub pre-release with the same archives and no formula, for pinning by the runner image and package workflows. Note that `brew uninstall` removes only the binary; run `cc-data uninstall` first to remove the Claude skill, the `~/.claude/CLAUDE.md` pointer, and (optionally) your stored credentials. Your datasets are never removed automatically — `cc-data uninstall` prints where they remain.
 
 The macOS signing/notarization and Homebrew-tap credentials the release needs live in this repo's GitHub Actions secrets. Maintainers can re-create those secrets from `cc-data-release-secrets.zip` in the **Developer Admin** 1Password vault, which bundles the credentials and a script that sets them. It exists so the release secrets can be restored, rotated, or handed to a new maintainer without redoing the Apple and GitHub setup from scratch (the tap push token in particular is a fine-grained GitHub PAT that must be rotated at least yearly).
 

@@ -122,6 +122,27 @@ like `wildfire_2026.answers`):
   **type-qualified**: `answers a JOIN run_membership m USING
   (source_key, remote_endpoint, question_id) WHERE m.run_id = 584 AND m.type =
   'answers'`. History joins add `history_id` to the USING list.
+- `run_answers` — every `answers` row with `run_id`, once for each run whose
+  answers fetch holds it (a Student Answers or a Student ID Mapping run), so one
+  run's answers are `SELECT count(*) FROM
+  run_answers WHERE run_id = 584`. It is the type-qualified membership join above,
+  always present, so a run with no answers counts zero rather than failing to bind
+  as `answers_<run>` does. Its `run_id` is membership; the store's own `_run_id` is
+  only the run that last fetched the record, so filtering `answers` by `_run_id`
+  undercounts a run whose answers a later run re-fetched.
+- A run's learners with at least one answer come from its Student ID Mapping
+  report: `SELECT count(DISTINCT m.user_id) FROM student_id_mapping m JOIN
+  run_answers a ON a.remote_endpoint = m.run_remote_endpoint WHERE a.run_id =
+  584`, where 584 is a Student ID Mapping run whose answers and report were
+  fetched. Scope it by the answers' `run_id` only: `student_id_mapping` keeps each
+  learner's row from whichever run was fetched last, so `m.run_id = 584` drops a
+  learner another mapping run of the class also holds. Count by `user_id`, never
+  by endpoint, since a student has one endpoint per assignment. A Student ID
+  Mapping run is computed live, so re-reading it with `--refresh` picks up
+  learners who joined since; a Student Answers run is fixed when its query ran,
+  and a whole-class one fails above three or four assignments.
+- A run's log freshness is `SELECT count(*) AS logs, max(event_time) AS
+  log_freshness_at FROM logs WHERE run_id = <id>`.
 - Reports-to-stores join: `reports.res_<N>_remote_endpoint =
   answers.remote_endpoint`, with `res_<N>_<question_id>_*` pairing to
   `answers.question_id`.
