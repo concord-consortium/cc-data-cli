@@ -669,10 +669,11 @@ func TestPackageRunErrorsAreTheRunnersCodesAtExitOne(t *testing.T) {
 func TestPackageRunReachesThisCCData(t *testing.T) {
 	none := func(string) (string, error) { return "", exec.ErrNotFound }
 	other := func(string) (string, error) { return "/opt/homebrew/bin/cc-data", nil }
-	if dir, warning := packageCCData(filepath.Join("/build", "cc-data"), other); dir != "/build" || warning != "" {
+	build := filepath.Join(string(filepath.Separator), "build")
+	if dir, warning := packageCCData(filepath.Join(build, "cc-data"), other); dir != build || warning != "" {
 		t.Errorf("a binary named cc-data: %q, %q", dir, warning)
 	}
-	if dir, warning := packageCCData(filepath.Join("/build", "cc-data.exe"), other); dir != "/build" || warning != "" {
+	if dir, warning := packageCCData(filepath.Join(build, "cc-data.exe"), other); dir != build || warning != "" {
 		t.Errorf("cc-data.exe: %q, %q", dir, warning)
 	}
 	if dir, warning := packageCCData("/tmp/go-build/exe/main", other); dir != "" || !strings.Contains(warning, "/opt/homebrew/bin/cc-data") {
