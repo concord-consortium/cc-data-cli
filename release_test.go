@@ -122,7 +122,18 @@ func readFile(t *testing.T, path string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return string(data)
+	return strings.ReplaceAll(string(data), "\r\n", "\n")
+}
+
+// A Windows checkout writes these files with CRLF endings, which a line-anchored (?m)$ never matches.
+func TestReadFileNormalizesLineEndings(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "go.mod")
+	if err := os.WriteFile(path, []byte("go 1.25.0\r\n\r\ntoolchain go1.27.2\r\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := readFile(t, path), "go 1.25.0\n\ntoolchain go1.27.2\n"; got != want {
+		t.Errorf("readFile returned %q, want %q", got, want)
+	}
 }
 
 func pinnedToolchain(t *testing.T) string {
