@@ -125,6 +125,15 @@ func readFile(t *testing.T, path string) string {
 	return string(data)
 }
 
+func pinnedToolchain(t *testing.T) string {
+	t.Helper()
+	m := regexp.MustCompile(`(?m)^toolchain (go\d+\.\d+\.\d+)$`).FindStringSubmatch(readFile(t, "go.mod"))
+	if m == nil {
+		t.Fatal("go.mod has no exact toolchain line")
+	}
+	return m[1]
+}
+
 // A pre-release tag exists to be pinned, so it must not become GitHub's latest release or
 // reach researchers through brew upgrade. Both steps read the one classification.
 func TestReleaseWorkflowKeepsPreReleasesBack(t *testing.T) {
@@ -161,5 +170,71 @@ func TestReleaseWorkflowClassifiesTags(t *testing.T) {
 		if got := strings.TrimSpace(readFile(t, out)); got != "prerelease="+want {
 			t.Errorf("%s: %s, want prerelease=%s", tag, got, want)
 		}
+	}
+}
+
+// A package zip's checksum depends on the Go that built cc-data, so go.mod pins the toolchain,
+// the README names the same one, and goreleaser is pinned so building it cannot switch Go.
+func TestGoToolchainIsPinned(t *testing.T) {
+	pinned := pinnedToolchain(t)
+	named := regexp.MustCompile(`go1\.\d+\.\d+`).FindAllString(readFile(t, "README.md"), -1)
+	if len(named) == 0 {
+		t.Error("the README does not name the pinned toolchain")
+	}
+	for _, v := range named {
+		if v != pinned {
+			t.Errorf("the README names %s, but go.mod pins %s", v, pinned)
+		}
+	}
+	rel := readFile(t, ".github/workflows/release.yml")
+	if strings.Contains(rel, "goreleaser/v2@latest") {
+		t.Error("the release workflow runs goreleaser@latest")
+	}
+	if !regexp.MustCompile(`goreleaser/v2@v\d+\.\d+\.\d+`).MatchString(rel) {
+		t.Error("the release workflow does not pin goreleaser to an exact version")
+	}
+}
+
+// The check runs before notarize.sh so a binary built with the wrong Go is never signed.
+func TestGoreleaserChecksTheGoVersion(t *testing.T) {
+	base := readFile(t, ".goreleaser.base.yaml")
+	check := strings.Index(base, `scripts/check-go-version.sh "{{ .Path }}"`)
+	if check < 0 {
+		t.Fatal("goreleaser does not run check-go-version.sh on each binary")
+	}
+	if notarize := strings.Index(base, "scripts/notarize.sh"); notarize >= 0 && notarize < check {
+		t.Error("check-go-version.sh runs after notarize.sh")
+	}
+}
+
+func TestCheckGoVersionScript(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the script is bash")
+	}
+	bin, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := func(args ...string) (string, error) {
+		out, err := exec.Command("bash", append([]string{"scripts/check-go-version.sh", bin}, args...)...).CombinedOutput()
+		return string(out), err
+	}
+	if out, err := run(runtime.Version()); err != nil {
+		t.Errorf("a binary built with %s failed the check for it: %v\n%s", runtime.Version(), err, out)
+	}
+	out, err := run("go0.0.0")
+	if err == nil {
+		t.Error("a binary built with another Go passed the check")
+	} else if !strings.Contains(out, runtime.Version()) || !strings.Contains(out, "go0.0.0") {
+		t.Errorf("the failure does not name both versions: %s", out)
+	}
+
+	pinned := pinnedToolchain(t)
+	out, err = run()
+	switch {
+	case runtime.Version() == pinned && err != nil:
+		t.Errorf("a binary built with go.mod's %s failed the check: %v\n%s", pinned, err, out)
+	case runtime.Version() != pinned && (err == nil || !strings.Contains(out, pinned)):
+		t.Errorf("a binary built with %s passed, or did not name go.mod's %s: %v\n%s", runtime.Version(), pinned, err, out)
 	}
 }

@@ -107,8 +107,14 @@ jobs:
           MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
           AC_API_KEY_ID: ${{ secrets.AC_API_KEY_ID }}
           AC_API_ISSUER: ${{ secrets.AC_API_ISSUER }}
+        # Pinned, not @latest: `go run` builds goreleaser with go.mod's toolchain line, unless
+        # goreleaser's own go line is newer, in which case Go picks the newest patch release of
+        # that line. Either way it hands that toolchain to every build goreleaser runs, so a
+        # goreleaser needing a newer Go than the toolchain line builds the release with another Go.
+        # check-go-version.sh catches that; a goreleaser that needs a newer Go means raising the
+        # toolchain line too, which changes the checksum every package zips to.
         run: |
-          go run github.com/goreleaser/goreleaser/v2@latest release \
+          go run github.com/goreleaser/goreleaser/v2@v2.18.3 release \
             --clean --skip=publish -f .goreleaser.${{ matrix.target }}.yaml
 
       - name: Fail the tag if a macOS artifact was left unsigned

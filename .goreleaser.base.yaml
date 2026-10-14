@@ -25,6 +25,7 @@ builds:
     # a signed-looking release). notarize.sh no-ops on non-Mach-O binaries.
     hooks:
       post:
+        - cmd: scripts/check-go-version.sh "{{ .Path }}"
         - cmd: scripts/notarize.sh "{{ .Path }}"
 
 archives:
