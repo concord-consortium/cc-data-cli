@@ -561,16 +561,22 @@ func TestGetReportStopsWhenRunNeverStarts(t *testing.T) {
 func TestGetReportStopsWhenRunNeverStartsNewerServer(t *testing.T) {
 	d := newTestDataset(t)
 	rt := "answers"
-	srv := newReportServer(t, &reportServer{slug: "student-answers", reportType: &rt, notReadyStates: nulls(10), notReadyBody: stateless11})
+	// A key this client doesn't know reaches the envelope, as it does for a terminal failure.
+	body := strings.TrimSuffix(stateless11, "}") + `,"server_note":"later field"}`
+	srv := newReportServer(t, &reportServer{slug: "student-answers", reportType: &rt, notReadyStates: nulls(10), notReadyBody: body})
 	defer srv.Close()
 	_, _, cliErr := runFetch(t, d, srv, fetch1{})
 	if cliErr == nil || cliErr.ExitCode != output.ExitContract || !strings.Contains(cliErr.Message, "hasn't started") {
 		t.Fatalf("a run that never starts should exit 5, got %+v", cliErr)
 	}
-	for k := range cliErr.Envelope() {
+	env := cliErr.Envelope()
+	for k := range env {
 		if strings.HasPrefix(k, "athena_query_") {
 			t.Errorf("a null the server sent reached the envelope as %q", k)
 		}
+	}
+	if env["server_note"] != "later field" {
+		t.Errorf("the body's other keys were not forwarded: %v", env)
 	}
 	assertPolls(t, srv, 4)
 }
