@@ -89,7 +89,6 @@ The toolchain fix was found during the staging publish: the `v0.3.0-pre.1` binar
 ## Not Yet Implemented
 
 - The release half of the checksum check: that the release binary reports go1.27.2 and its `cc-data package build` of `wildfire-responses` at `297219d` gives `sha256:94353fd5…`. It can only be checked on the next tag.
-- Windows CI on go1.27.2 has only the PR's CI run as its first check (see the decision below).
 
 ## Decisions
 
@@ -140,7 +139,7 @@ The toolchain fix was found during the staging publish: the `v0.3.0-pre.1` binar
 - A) Let the PR's CI answer it, and fall back to a different pin only if Windows fails.
 - B) Check it before implementation.
 
-**Decision**: A. There was no Windows machine to check on, and nothing in the change is Windows-specific.
+**Decision**: A. There was no Windows machine to check on, and nothing in the change is Windows-specific. windows-2022 passes on go1.27.2; its one failure was a release test reading `go.mod` with CRLF endings, fixed by converting them in the tests' `readFile`.
 
 ---
 
