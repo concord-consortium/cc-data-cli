@@ -3,7 +3,9 @@
 package fetch
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -78,7 +80,7 @@ func FetchReport(ctx context.Context, opts ReportOptions) (any, error) {
 			return nil, api.AsCLIError(err)
 		}
 	} else {
-		env, notReady, cliErr := pollUntilReady(ctx, opts)
+		env, notReady, cliErr := pollUntilReady(ctx, opts, run)
 		if cliErr != nil {
 			return notReady, cliErr
 		}
@@ -171,11 +173,11 @@ func resolveReportType(run *api.ReportRun, progress io.Writer) string {
 // pollUntilReady polls the download endpoint until it is ready or a terminal
 // condition applies. On not-ready-with-no-wait or budget expiry it returns a
 // result-line value plus a silent exit-4 error.
-func pollUntilReady(ctx context.Context, opts ReportOptions) (*api.DownloadEnvelope, any, *output.CLIError) {
+func pollUntilReady(ctx context.Context, opts ReportOptions, run *api.ReportRun) (*api.DownloadEnvelope, any, *output.CLIError) {
 	isJob := opts.JobID != nil
 	deadline := time.Now().Add(opts.PollTimeout)
 	backoff := 2 * time.Second
-	var osc oscillation
+	var starts startFailures
 
 	for {
 		env, err := opts.Client.ReportDownloadEnvelope(ctx, opts.RunID, opts.JobID)
@@ -204,18 +206,18 @@ func pollUntilReady(ctx context.Context, opts ReportOptions) (*api.DownloadEnvel
 		if opts.NoWait {
 			return nil, notReadyResult(opts, state), &output.CLIError{ExitCode: output.ExitNotReady, Silent: true}
 		}
-		if osc.observe(state) {
-			return nil, nil, &output.CLIError{
-				ExitCode: output.ExitContract,
-				Code:     api.CodeNotReady,
-				Message:  fmt.Sprintf("the server repeatedly failed to start the query for run %d", opts.RunID),
-			}
+		if !isJob && starts.observe(apiErr.Extra) {
+			return nil, nil, notStartedError(opts, run, apiErr.Extra)
 		}
 		if time.Now().After(deadline) {
 			fmt.Fprintf(opts.Progress, "run %d still not ready after %s (last state %q)\n", opts.RunID, opts.PollTimeout, state)
 			return nil, notReadyResult(opts, state), &output.CLIError{ExitCode: output.ExitNotReady, Silent: true}
 		}
-		fmt.Fprintf(opts.Progress, "run %d state=%q; waiting...\n", opts.RunID, state)
+		if reason := retryReason(apiErr.Extra); reason != "" {
+			fmt.Fprintf(opts.Progress, "run %d state=%q; waiting (report-server: %s)...\n", opts.RunID, state, reason)
+		} else {
+			fmt.Fprintf(opts.Progress, "run %d state=%q; waiting...\n", opts.RunID, state)
+		}
 		// Cap the sleep so a long backoff cannot overshoot the poll deadline.
 		sleep := jitter(backoff)
 		if remaining := time.Until(deadline); sleep > remaining {
@@ -243,18 +245,53 @@ func streamReady(ctx context.Context, opts ReportOptions, env *api.DownloadEnvel
 	return err
 }
 
-// oscillation detects the server's null->queued->null self-start-failure cycle.
-type oscillation struct {
-	prev            string
-	nullAfterQueued int
+// startFailureLimit is how many failed start attempts stop the poll. On the download route a null
+// state with no query id answers an attempt that just failed: a start that works replies with its
+// query id, and one still in flight replies queued.
+const startFailureLimit = 4
+
+// startFailures counts the null, query-less answers report-server gives while it fails to start a
+// run's query; a server before 1.11.0 sends no athena_query_id key, which counts the same. An
+// answer carrying an error comes from a server that retries the start itself and fails the run
+// when it gives up, so it is not counted.
+type startFailures int
+
+func (s *startFailures) observe(extra map[string]any) bool {
+	state, _ := extra["athena_query_state"].(string)
+	id, _ := extra["athena_query_id"].(string)
+	if state == "" && id == "" && retryReason(extra) == "" {
+		*s++
+	}
+	return int(*s) >= startFailureLimit
 }
 
-func (o *oscillation) observe(state string) bool {
-	if o.prev == "queued" && state == "" {
-		o.nullAfterQueued++
+// retryReason is the error an unstarted run carries while the server retries its start.
+func retryReason(extra map[string]any) string {
+	reason, _ := extra["athena_query_error"].(string)
+	return reason
+}
+
+// notStartedError stops the poll on a run report-server keeps failing to start. The likeliest
+// cause is a filter that reaches nothing in the researcher's projects, which the filter options
+// show: they take a run's filter back as the run reports it and narrow a dimension by the others.
+func notStartedError(opts ReportOptions, run *api.ReportRun, extra map[string]any) *output.CLIError {
+	check := fmt.Sprintf("cc-data reports filter-options --portal %s --dimension assignment --report-slug %s",
+		opts.DS.Ref.Portal, run.ReportSlug)
+	var filter bytes.Buffer
+	if json.Compact(&filter, run.ReportFilter) == nil && filter.String() != "null" {
+		check += " --report-filter '" + filter.String() + "'"
 	}
-	o.prev = state
-	return o.nullAfterQueued >= 2
+	// The envelope's JSON escapes the filter's quotes, so this line gives a person the command as is.
+	fmt.Fprintf(opts.Progress, "run %d hasn't started; check with: %s\n", opts.RunID, check)
+	return &output.CLIError{
+		ExitCode: output.ExitContract,
+		Code:     api.CodeNotReady,
+		Message:  fmt.Sprintf("run %d hasn't started: report-server failed to start its query %d times", opts.RunID, startFailureLimit),
+		Action: "The likeliest cause is that the run's filters match nothing your projects reach, most often because its " +
+			"assignments are in none of your projects. List the assignments the run's filters reach with: " + check +
+			". An assignment the run covers that is missing there is outside your projects.",
+		Extra: extra,
+	}
 }
 
 func extractState(apiErr *api.APIError, isJob bool) string {

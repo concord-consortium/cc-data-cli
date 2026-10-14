@@ -26,4 +26,7 @@ func TestGetReportHelpCoversBothExecutions(t *testing.T) {
 			t.Errorf("the help does not say %q", want)
 		}
 	}
+	if !strings.Contains(long, "keeps failing to start") {
+		t.Error("the help does not say a run that never starts exits 5")
+	}
 }

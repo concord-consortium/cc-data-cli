@@ -513,9 +513,183 @@ func TestGetReportOscillation(t *testing.T) {
 	if cliErr == nil || cliErr.ExitCode != output.ExitContract {
 		t.Fatalf("oscillation should exit 5, got %+v (stderr %s)", cliErr, stderr)
 	}
-	if !strings.Contains(cliErr.Message, "repeatedly failed to start") {
+	if !strings.Contains(cliErr.Message, "hasn't started") {
 		t.Fatalf("wrong oscillation message: %q", cliErr.Message)
 	}
+	assertPolls(t, srv, 7)
+}
+
+func assertPolls(t *testing.T, srv *reportServer, want int32) {
+	t.Helper()
+	if got := atomic.LoadInt32(&srv.pollCount); got != want {
+		t.Errorf("polls = %d, want %d", got, want)
+	}
+}
+
+// stateless11 is the not-started body of a report-server from 1.11.0 on, which sends every
+// athena_query_* key; the fixture's default null body is the older shape, with the state alone.
+const stateless11 = `{"error":"NOT_READY","athena_query_state":null,"athena_query_id":null,"athena_query_error":null,"athena_query_guidance":null}`
+
+func nulls(n int) []string { return make([]string, n) }
+
+func TestGetReportStopsWhenRunNeverStarts(t *testing.T) {
+	d := newTestDataset(t)
+	rt := "answers"
+	srv := newReportServer(t, &reportServer{slug: "student-answers", reportType: &rt, notReadyStates: nulls(10)})
+	defer srv.Close()
+	_, stderr, cliErr := runFetch(t, d, srv, fetch1{})
+	if cliErr == nil || cliErr.ExitCode != output.ExitContract || cliErr.Code != api.CodeNotReady {
+		t.Fatalf("a run that never starts should exit 5 NOT_READY, got %+v", cliErr)
+	}
+	if !strings.Contains(cliErr.Message, "hasn't started") {
+		t.Errorf("message = %q", cliErr.Message)
+	}
+	check := "cc-data reports filter-options --portal learn.concord.org --dimension assignment --report-slug student-answers"
+	if !strings.Contains(cliErr.Action, check) {
+		t.Errorf("action %q lacks %q", cliErr.Action, check)
+	}
+	if strings.Contains(cliErr.Action, "--report-filter") {
+		t.Errorf("a run with no filter got one: %q", cliErr.Action)
+	}
+	lines := strings.Split(strings.TrimSpace(stderr), "\n")
+	if last := lines[len(lines)-1]; last != "run 584 hasn't started; check with: "+check {
+		t.Errorf("stderr's last line = %q", last)
+	}
+	assertPolls(t, srv, 4)
+}
+
+func TestGetReportStopsWhenRunNeverStartsNewerServer(t *testing.T) {
+	d := newTestDataset(t)
+	rt := "answers"
+	srv := newReportServer(t, &reportServer{slug: "student-answers", reportType: &rt, notReadyStates: nulls(10), notReadyBody: stateless11})
+	defer srv.Close()
+	_, _, cliErr := runFetch(t, d, srv, fetch1{})
+	if cliErr == nil || cliErr.ExitCode != output.ExitContract || !strings.Contains(cliErr.Message, "hasn't started") {
+		t.Fatalf("a run that never starts should exit 5, got %+v", cliErr)
+	}
+	for k := range cliErr.Envelope() {
+		if strings.HasPrefix(k, "athena_query_") {
+			t.Errorf("a null the server sent reached the envelope as %q", k)
+		}
+	}
+	assertPolls(t, srv, 4)
+}
+
+func TestGetReportNotStartedSendsTheRunsFilter(t *testing.T) {
+	d := newTestDataset(t)
+	rt := "answers"
+	srv := newReportServer(t, &reportServer{
+		slug:           "teacher-actions",
+		reportType:     &rt,
+		notReadyStates: nulls(10),
+		reportFilter:   `{"filters": ["cohort"], "cohort": [12], "class": null}`,
+	})
+	defer srv.Close()
+	_, stderr, cliErr := runFetch(t, d, srv, fetch1{})
+	if cliErr == nil {
+		t.Fatal("a run that never starts should error")
+	}
+	want := `--report-filter '{"filters":["cohort"],"cohort":[12],"class":null}'`
+	if !strings.Contains(cliErr.Action, want) {
+		t.Errorf("action %q lacks %s", cliErr.Action, want)
+	}
+	if !strings.Contains(stderr, want) || strings.Contains(stderr, `\`) {
+		t.Errorf("stderr should carry the filter unescaped: %q", stderr)
+	}
+	assertPolls(t, srv, 4)
+}
+
+func TestGetReportWaitsOutTransientStartFailures(t *testing.T) {
+	d := newTestDataset(t)
+	rt := "answers"
+	srv := newReportServer(t, &reportServer{slug: "student-answers", reportType: &rt, notReadyStates: nulls(3), csv: "student_id,x\n1,a\n"})
+	defer srv.Close()
+	if _, _, cliErr := runFetch(t, d, srv, fetch1{}); cliErr != nil {
+		t.Fatal(cliErr)
+	}
+	assertPolls(t, srv, 4)
+}
+
+func TestGetReportWaitsForASlowStart(t *testing.T) {
+	d := newTestDataset(t)
+	rt := "answers"
+	srv := newReportServer(t, &reportServer{
+		slug:           "student-answers",
+		reportType:     &rt,
+		notReadyStates: []string{"", "queued", "running", "running", "running"},
+		csv:            "student_id,x\n1,a\n",
+	})
+	defer srv.Close()
+	if _, _, cliErr := runFetch(t, d, srv, fetch1{}); cliErr != nil {
+		t.Fatal(cliErr)
+	}
+	assertPolls(t, srv, 6)
+}
+
+func TestGetReportUnstartableRunFailsFromServer(t *testing.T) {
+	d := newTestDataset(t)
+	rt := "answers"
+	const guidance = "Check that the run's filters match students in your projects."
+	srv := newReportServer(t, &reportServer{
+		slug:           "student-answers",
+		reportType:     &rt,
+		notReadyStates: []string{"failed"},
+		notReadyBody: `{"error":"NOT_READY","athena_query_state":"failed","athena_query_id":null,` +
+			`"athena_query_error":"No learners were found matching the filters you selected.","athena_query_guidance":"` + guidance + `"}`,
+	})
+	defer srv.Close()
+	_, _, cliErr := runFetch(t, d, srv, fetch1{})
+	if cliErr == nil || cliErr.ExitCode != output.ExitContract || !strings.Contains(cliErr.Message, "terminal state") {
+		t.Fatalf("a run the server failed should exit 5 as terminal, got %+v", cliErr)
+	}
+	env := cliErr.Envelope()
+	if env["athena_query_error"] != "No learners were found matching the filters you selected." {
+		t.Errorf("athena_query_error = %v", env["athena_query_error"])
+	}
+	if env["action"] != guidance {
+		t.Errorf("action = %v, want the server's guidance", env["action"])
+	}
+	assertPolls(t, srv, 1)
+}
+
+func TestGetReportWaitsWhileServerRetries(t *testing.T) {
+	d := newTestDataset(t)
+	rt := "answers"
+	const retrying = "The report could not be started because of a temporary error; it will be retried."
+	srv := newReportServer(t, &reportServer{
+		slug:           "student-answers",
+		reportType:     &rt,
+		notReadyStates: nulls(6),
+		notReadyBody:   `{"error":"NOT_READY","athena_query_state":null,"athena_query_id":null,"athena_query_error":"` + retrying + `","athena_query_guidance":null}`,
+		csv:            "student_id,x\n1,a\n",
+	})
+	defer srv.Close()
+	_, stderr, cliErr := runFetch(t, d, srv, fetch1{})
+	if cliErr != nil {
+		t.Fatal(cliErr)
+	}
+	if !strings.Contains(stderr, "waiting (report-server: "+retrying+")") {
+		t.Errorf("stderr should name the retry: %q", stderr)
+	}
+	assertPolls(t, srv, 7)
+}
+
+func TestGetReportJobIsNotCountedAsUnstarted(t *testing.T) {
+	d := newTestDataset(t)
+	rt := "answers"
+	srv := newReportServer(t, &reportServer{
+		slug:           "student-answers",
+		reportType:     &rt,
+		notReadyStates: nulls(6),
+		notReadyBody:   `{"error":"NOT_READY","status":"running"}`,
+		csv:            "student_id,x\n1,a\n",
+	})
+	defer srv.Close()
+	jobID := 3
+	if _, _, cliErr := runFetch(t, d, srv, fetch1{jobID: &jobID}); cliErr != nil {
+		t.Fatal(cliErr)
+	}
+	assertPolls(t, srv, 7)
 }
 
 func TestGetReportRepullGuard(t *testing.T) {

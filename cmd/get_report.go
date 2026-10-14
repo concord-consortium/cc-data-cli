@@ -27,6 +27,8 @@ An async run is an Athena report. It is polled until its query succeeds and then
 streamed from a presigned URL. --no-wait reports the current state and exits 4
 without waiting; --poll-timeout bounds the wait (default 30m); --job downloads a
 post-processing job's CSV instead. A terminal failure (failed/cancelled) exits 5.
+A run report-server keeps failing to start (four answers with no query) also
+exits 5, with the likeliest cause and how to check it.
 
 A sync run is a Portal report, computed live and streamed when it is asked for.
 It has no query to poll, so --no-wait and --poll-timeout do nothing, and no
