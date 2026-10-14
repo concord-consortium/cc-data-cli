@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"runtime"
 	"slices"
 	"strings"
@@ -70,8 +71,9 @@ type reportServer struct {
 	csv            string
 	reportFilter   string // the run's filter and its resolved labels, as the server emits them
 	filterValues   string
-	portalRefusal  string // a 422 error envelope the Portal download answers with instead
-	notReadyBody   string // the exact 409 body for every not-ready poll; notReadyStates then only sets how many
+	portalRefusal  string   // a 422 error envelope the Portal download answers with instead
+	notReadyBody   string   // the exact 409 body for every not-ready poll; notReadyStates then only sets how many
+	notReadyBodies []string // one exact 409 body per not-ready poll, in place of notReadyBody
 	pollCount      int32
 	stateIndex     int32
 }
@@ -134,6 +136,10 @@ func (s *reportServer) handleDownload(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&s.stateIndex, 1)
 		state := s.notReadyStates[i]
 		w.WriteHeader(http.StatusConflict)
+		if int(i) < len(s.notReadyBodies) {
+			fmt.Fprint(w, s.notReadyBodies[i])
+			return
+		}
 		if s.notReadyBody != "" {
 			fmt.Fprint(w, s.notReadyBody)
 			return
@@ -500,7 +506,7 @@ func TestGetReportPollsThenSucceeds(t *testing.T) {
 	}
 }
 
-func TestGetReportOscillation(t *testing.T) {
+func TestGetReportStopsOnAlternatingQueuedAndNull(t *testing.T) {
 	d := newTestDataset(t)
 	rt := "answers"
 	srv := newReportServer(t, &reportServer{
@@ -511,10 +517,10 @@ func TestGetReportOscillation(t *testing.T) {
 	defer srv.Close()
 	_, stderr, cliErr := runFetch(t, d, srv, fetch1{})
 	if cliErr == nil || cliErr.ExitCode != output.ExitContract {
-		t.Fatalf("oscillation should exit 5, got %+v (stderr %s)", cliErr, stderr)
+		t.Fatalf("alternating queued and null answers should exit 5, got %+v (stderr %s)", cliErr, stderr)
 	}
 	if !strings.Contains(cliErr.Message, "hasn't started") {
-		t.Fatalf("wrong oscillation message: %q", cliErr.Message)
+		t.Fatalf("wrong message for alternating queued and null answers: %q", cliErr.Message)
 	}
 	assertPolls(t, srv, 7)
 }
@@ -561,7 +567,7 @@ func TestGetReportStopsWhenRunNeverStarts(t *testing.T) {
 func TestGetReportStopsWhenRunNeverStartsNewerServer(t *testing.T) {
 	d := newTestDataset(t)
 	rt := "answers"
-	// A key this client doesn't know reaches the envelope, as it does for a terminal failure.
+	// A key this client doesn't know reaches the envelope, as a terminal failure's keys do.
 	body := strings.TrimSuffix(stateless11, "}") + `,"server_note":"later field"}`
 	srv := newReportServer(t, &reportServer{slug: "student-answers", reportType: &rt, notReadyStates: nulls(10), notReadyBody: body})
 	defer srv.Close()
@@ -603,6 +609,107 @@ func TestGetReportNotStartedSendsTheRunsFilter(t *testing.T) {
 		t.Errorf("stderr should carry the filter unescaped: %q", stderr)
 	}
 	assertPolls(t, srv, 4)
+}
+
+// A value from the server goes into the pasteable command shell-quoted, so a single quote in it
+// can neither break the command nor end the quoting early.
+func TestGetReportNotStartedQuotesTheServersValues(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("checks the command with a POSIX shell")
+	}
+	d := newTestDataset(t)
+	rt := "answers"
+	const filter = `{"state":["it's; touch pwned"]}`
+	srv := newReportServer(t, &reportServer{
+		slug:           "odd slug's",
+		reportType:     &rt,
+		notReadyStates: nulls(10),
+		reportFilter:   filter,
+	})
+	defer srv.Close()
+	_, stderr, cliErr := runFetch(t, d, srv, fetch1{})
+	if cliErr == nil {
+		t.Fatal("a run that never starts should error")
+	}
+	_, fromStderr, ok := strings.Cut(strings.TrimSpace(stderr), "check with: ")
+	if !ok {
+		t.Fatalf("stderr has no check line: %q", stderr)
+	}
+	_, fromAction, _ := strings.Cut(cliErr.Action, "reach with: ")
+	fromAction, _, ok = strings.Cut(fromAction, ". An assignment")
+	if !ok {
+		t.Fatalf("the action has no check command: %q", cliErr.Action)
+	}
+	for name, command := range map[string]string{"stderr": fromStderr, "action": fromAction} {
+		// The shell splits the command into words; each word is printed on its own line.
+		words, ok := strings.CutPrefix(command, "cc-data ")
+		if !ok {
+			t.Fatalf("%s's command does not start with cc-data: %q", name, command)
+		}
+		script := `show() { for a in "$@"; do printf '%s\n' "$a"; done; }; show ` + words
+		cmd := exec.Command("sh", "-c", script)
+		cmd.Dir = t.TempDir()
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("%s's command does not run in sh: %v (%s)", name, err, command)
+		}
+		args := strings.Split(strings.TrimSuffix(string(out), "\n"), "\n")
+		got := map[string]string{}
+		for i := 0; i+1 < len(args); i++ {
+			got[args[i]] = args[i+1]
+		}
+		if got["--report-slug"] != "odd slug's" || got["--report-filter"] != filter {
+			t.Errorf("%s's command gives the shell slug %q and filter %q", name, got["--report-slug"], got["--report-filter"])
+		}
+	}
+	assertPolls(t, srv, 4)
+}
+
+// Under the contract an answer that counts carries no guidance; if one does, the client's own
+// action, which names the check, wins, and the server's guidance still reaches the envelope.
+func TestGetReportNotStartedKeepsItsActionOverGuidance(t *testing.T) {
+	d := newTestDataset(t)
+	rt := "answers"
+	body := `{"error":"NOT_READY","athena_query_state":null,"athena_query_id":null,"athena_query_error":null,"athena_query_guidance":"server says"}`
+	srv := newReportServer(t, &reportServer{slug: "student-answers", reportType: &rt, notReadyStates: nulls(10), notReadyBody: body})
+	defer srv.Close()
+	_, _, cliErr := runFetch(t, d, srv, fetch1{})
+	if cliErr == nil || !strings.Contains(cliErr.Message, "hasn't started") {
+		t.Fatalf("a run that never starts should exit 5, got %+v", cliErr)
+	}
+	env := cliErr.Envelope()
+	if !strings.Contains(cliErr.Action, "--dimension assignment") {
+		t.Errorf("action = %q, want the client's check", cliErr.Action)
+	}
+	if env["athena_query_guidance"] != "server says" {
+		t.Errorf("the server's guidance did not reach the envelope: %v", env)
+	}
+	assertPolls(t, srv, 4)
+}
+
+// Retrying answers neither count nor reset the count, so the fourth plain null answer stops
+// the poll however many retrying answers come between.
+func TestGetReportCountsPlainNullsAcrossRetries(t *testing.T) {
+	d := newTestDataset(t)
+	rt := "answers"
+	retrying := `{"error":"NOT_READY","athena_query_state":null,"athena_query_id":null,"athena_query_error":"retrying","athena_query_guidance":null}`
+	var bodies []string
+	for range 6 {
+		bodies = append(bodies, stateless11, retrying)
+	}
+	srv := newReportServer(t, &reportServer{
+		slug:           "student-answers",
+		reportType:     &rt,
+		notReadyStates: nulls(len(bodies)),
+		notReadyBodies: bodies,
+		csv:            "student_id,x\n1,a\n",
+	})
+	defer srv.Close()
+	_, _, cliErr := runFetch(t, d, srv, fetch1{})
+	if cliErr == nil || !strings.Contains(cliErr.Message, "hasn't started") {
+		t.Fatalf("four plain null answers among retries should exit 5, got %+v", cliErr)
+	}
+	assertPolls(t, srv, 7)
 }
 
 func TestGetReportWaitsOutTransientStartFailures(t *testing.T) {

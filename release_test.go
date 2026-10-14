@@ -185,7 +185,7 @@ func TestReleaseWorkflowClassifiesTags(t *testing.T) {
 }
 
 // A package zip's checksum depends on the Go that built cc-data, so go.mod pins the toolchain,
-// the README names the same one, and goreleaser is pinned so building it cannot switch Go.
+// the README names the same one, and goreleaser is pinned so every build switches to the same Go.
 func TestGoToolchainIsPinned(t *testing.T) {
 	pinned := pinnedToolchain(t)
 	named := regexp.MustCompile(`go1\.\d+\.\d+`).FindAllString(readFile(t, "README.md"), -1)
@@ -247,5 +247,41 @@ func TestCheckGoVersionScript(t *testing.T) {
 		t.Errorf("a binary built with go.mod's %s failed the check: %v\n%s", pinned, err, out)
 	case runtime.Version() != pinned && (err == nil || !strings.Contains(out, pinned)):
 		t.Errorf("a binary built with %s passed, or did not name go.mod's %s: %v\n%s", runtime.Version(), pinned, err, out)
+	}
+}
+
+// A GOEXPERIMENT build's go version line ends in " X:<experiments>", and goreleaser's dist path
+// can hold a space, so the script must read the version field itself, not the line's last word.
+func TestCheckGoVersionScriptReadsTheVersionField(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the script is bash")
+	}
+	dir := t.TempDir()
+	fakeGo := "#!/bin/sh\nprintf '%s: go1.27.2 X:boringcrypto\\n' \"$2\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "go"), []byte(fakeGo), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("bash", "scripts/check-go-version.sh", filepath.Join(dir, "dist dir", "cc-data"), "go1.27.2")
+	cmd.Env = append(os.Environ(), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Errorf("a go1.27.2 GOEXPERIMENT build failed the check: %v\n%s", err, out)
+	}
+}
+
+// goreleaser runs its hook scripts directly, so one that loses its executable bit fails only on a
+// tag. Git records the mode, so the check holds on any checkout.
+func TestHookScriptsAreExecutable(t *testing.T) {
+	out, err := exec.Command("git", "ls-files", "-s", "--", "scripts/check-go-version.sh", "scripts/notarize.sh").Output()
+	if err != nil {
+		t.Skipf("git cannot list the scripts: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("git lists %d hook scripts, want 2: %q", len(lines), out)
+	}
+	for _, line := range lines {
+		if !strings.HasPrefix(line, "100755 ") {
+			t.Errorf("a hook script is not executable in git: %s", line)
+		}
 	}
 }

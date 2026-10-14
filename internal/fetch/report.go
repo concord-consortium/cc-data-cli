@@ -11,6 +11,8 @@ import (
 	"io"
 	"math/rand/v2"
 	"os"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/concord-consortium/cc-data-cli/internal/api"
@@ -172,7 +174,8 @@ func resolveReportType(run *api.ReportRun, progress io.Writer) string {
 
 // pollUntilReady polls the download endpoint until it is ready or a terminal
 // condition applies. On not-ready-with-no-wait or budget expiry it returns a
-// result-line value plus a silent exit-4 error.
+// result-line value plus a silent exit-4 error. A terminal failure, or a run
+// report-server keeps failing to start, returns an exit-5 error.
 func pollUntilReady(ctx context.Context, opts ReportOptions, run *api.ReportRun) (*api.DownloadEnvelope, any, *output.CLIError) {
 	isJob := opts.JobID != nil
 	deadline := time.Now().Add(opts.PollTimeout)
@@ -213,11 +216,11 @@ func pollUntilReady(ctx context.Context, opts ReportOptions, run *api.ReportRun)
 			fmt.Fprintf(opts.Progress, "run %d still not ready after %s (last state %q)\n", opts.RunID, opts.PollTimeout, state)
 			return nil, notReadyResult(opts, state), &output.CLIError{ExitCode: output.ExitNotReady, Silent: true}
 		}
+		why := ""
 		if reason := retryReason(apiErr.Extra); reason != "" {
-			fmt.Fprintf(opts.Progress, "run %d state=%q; waiting (report-server: %s)...\n", opts.RunID, state, reason)
-		} else {
-			fmt.Fprintf(opts.Progress, "run %d state=%q; waiting...\n", opts.RunID, state)
+			why = " (report-server: " + reason + ")"
 		}
+		fmt.Fprintf(opts.Progress, "run %d state=%q; waiting%s...\n", opts.RunID, state, why)
 		// Cap the sleep so a long backoff cannot overshoot the poll deadline.
 		sleep := jitter(backoff)
 		if remaining := time.Until(deadline); sleep > remaining {
@@ -245,15 +248,17 @@ func streamReady(ctx context.Context, opts ReportOptions, env *api.DownloadEnvel
 	return err
 }
 
-// StartFailureLimit is how many failed start attempts stop the poll. On the download route a null
-// state with no query id answers an attempt that just failed: a start that works replies with its
-// query id, and one still in flight replies queued.
+// StartFailureLimit is how many failed start attempts stop the poll. Only an answer with a null
+// state, no query id and no error counts: on the download route it answers an attempt that just
+// failed, since a start that works replies with its query id, one still in flight replies queued,
+// and a server retrying the start itself says so in the error.
 const StartFailureLimit = 4
 
-// startFailures counts the null, query-less answers report-server gives while it fails to start a
-// run's query; a server before 1.11.0 sends no athena_query_id key, which counts the same. An
-// answer carrying an error comes from a server that retries the start itself and fails the run
-// when it gives up, so it is not counted.
+// startFailures counts the null, query-less, error-less answers report-server gives while it fails
+// to start a run's query, and never resets, so the answers need not come in a row. A server before
+// 1.11.0 sends no athena_query_id key, which counts the same. An answer carrying an error comes
+// from a server that retries the start itself and fails the run when it gives up, so it is not
+// counted.
 type startFailures int
 
 func (s *startFailures) observe(extra map[string]any) bool {
@@ -265,7 +270,8 @@ func (s *startFailures) observe(extra map[string]any) bool {
 	return int(*s) >= StartFailureLimit
 }
 
-// retryReason is the error an unstarted run carries while the server retries its start.
+// retryReason is the error a not-ready answer carries. With a null state and no query id, it
+// means the server is retrying the run's start.
 func retryReason(extra map[string]any) string {
 	reason, _ := extra["athena_query_error"].(string)
 	return reason
@@ -276,10 +282,10 @@ func retryReason(extra map[string]any) string {
 // show: they take a run's filter back as the run reports it and narrow a dimension by the others.
 func notStartedError(opts ReportOptions, run *api.ReportRun, extra map[string]any) *output.CLIError {
 	check := fmt.Sprintf("cc-data reports filter-options --portal %s --dimension assignment --report-slug %s",
-		opts.DS.Ref.Portal, run.ReportSlug)
+		opts.DS.Ref.Portal, shellQuote(run.ReportSlug))
 	var filter bytes.Buffer
 	if json.Compact(&filter, run.ReportFilter) == nil && filter.String() != "null" {
-		check += " --report-filter '" + filter.String() + "'"
+		check += " --report-filter " + shellQuote(filter.String())
 	}
 	// The envelope's JSON escapes the filter's quotes, so this line gives a person the command as is.
 	fmt.Fprintf(opts.Progress, "run %d hasn't started; check with: %s\n", opts.RunID, check)
@@ -292,6 +298,18 @@ func notStartedError(opts ReportOptions, run *api.ReportRun, extra map[string]an
 			". An assignment the run covers that is missing there is outside your projects.",
 		Extra: extra,
 	}
+}
+
+var shellSafe = regexp.MustCompile(`^[A-Za-z0-9._/:@%+=,-]+$`)
+
+// shellQuote makes a value from the server safe to paste into a POSIX shell: a value of only safe
+// characters is left bare, and anything else is single-quoted, each single quote inside it closing
+// the quoting, escaped, and reopening it.
+func shellQuote(s string) string {
+	if shellSafe.MatchString(s) {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 func extractState(apiErr *api.APIError, isJob bool) string {

@@ -17,12 +17,12 @@ The toolchain fix was found during the staging publish: the `v0.3.0-pre.1` binar
 ### Not-started detection
 
 - **R1.** While polling an Athena run, `get report` counts the `NOT_READY` answers whose `athena_query_state`, `athena_query_id` and `athena_query_error` are all null or absent. When that count reaches **4** (`fetch.StartFailureLimit`), it stops polling. Job polls (`--job`) are never counted.
-- **R2.** It then exits 5 with code `NOT_READY` and a message that names the run and says it hasn't started because report-server failed to start its query. The envelope's `action` gives the likeliest cause (the run's filters match nothing the researcher's projects reach, most often because its assignments are in none of their projects) and how to check it: a `cc-data reports filter-options` command with the dataset's portal, `--dimension assignment`, the run's `--report-slug`, and the run's own `report_filter` as `--report-filter` (left off when the run has none). The same command is also printed as one plain line on the progress stream (stderr, or MCP progress) just before the error, because the envelope's JSON escapes the filter's quotes. The last `NOT_READY` body's other keys are forwarded in the envelope as for a terminal failure. `get report --help` says a run report-server keeps failing to start exits 5.
+- **R2.** It then exits 5 with code `NOT_READY` and a message that names the run and says it hasn't started because report-server failed to start its query. The envelope's `action` gives the likeliest cause (the run's filters match nothing the researcher's projects reach, most often because its assignments are in none of their projects) and how to check it: a `cc-data reports filter-options` command with the dataset's portal, `--dimension assignment`, the run's `--report-slug`, and the run's own `report_filter` as `--report-filter` (left off when the run has none). The slug and the filter come from the server, so each is shell-quoted. The same command is also printed as one plain line on the progress stream (stderr, or MCP progress) just before the error, because the envelope's JSON escapes the filter's quotes. The last `NOT_READY` body's other keys are forwarded in the envelope as for a terminal failure. `get report --help` says a run report-server keeps failing to start exits 5, and which answers count, with the count taken from `StartFailureLimit`. If a counted answer ever carries `athena_query_guidance`, the client's `action` wins and the guidance stays in the envelope under its own key.
 - **R3.** The not-started stop replaces the `oscillation` detector: a server that answers `queued` and null alternately also reaches four null answers with no query id, so one rule covers both patterns.
 - **R4.** Only null answers with no query id and no error count. `queued` answers, and any answer carrying a query id, don't count, and nothing resets the count. (A started run never returns to null: the server's reset only touches a run with no query id.)
 - **R5.** A run that is queued or running keeps being polled under `--poll-timeout`, and the timeout's "still not ready" line is unchanged.
 - **R6.** `--no-wait` is unchanged: it polls once and reports the state, since one null answer can't tell a persistent failure from a transient one.
-- **R7.** Post-processing jobs (`--job`) are unchanged: their `NOT_READY` body is `{status}`, with no self-start.
+- **R7.** Post-processing jobs (`--job`) are never counted. The old oscillation detector did run for jobs, and no longer does: a job's `NOT_READY` body is `{status}` and a job has no self-start, so the null and `queued` cycle it caught cannot happen for one.
 - **R8.** The MCP `get_report` tool gets the same behavior through the shared code path.
 
 ### Failure state from report-server (REPORT-168)
@@ -172,6 +172,16 @@ The toolchain fix was found during the staging publish: the `v0.3.0-pre.1` binar
 - B) A plain rendering of every error in `internal/output`.
 
 **Decision**: A (Doug, 2026-10-11). B changes the CLI-wide error output, so it is out of scope.
+
+---
+
+### Which `action` wins when a counted answer carries guidance?
+**Context**: Under the contract a null answer with no query id and no error carries no guidance, but a server could send one. The terminal path promotes guidance to `action`, which here would replace the client's check.
+**Options considered**:
+- A) The client's `action`, which names the check; the server's guidance stays in the envelope as `athena_query_guidance`.
+- B) The server's guidance, as on the terminal path.
+
+**Decision**: A. The client's check is the actionable part of this stop, and keeping the guidance under its own key loses nothing.
 
 ---
 

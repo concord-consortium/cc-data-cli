@@ -10,7 +10,10 @@ if [[ -z "${WANT}" ]]; then
   echo "go.mod has no toolchain line" >&2
   exit 1
 fi
-GOT="$(go version "${BIN}" | awk '{ print $NF }')"
+# go version prints "<path>: <version>", followed by " X:<experiments>" for a GOEXPERIMENT build.
+OUT="$(go version "${BIN}")"
+OUT="${OUT#"${BIN}": }"
+GOT="${OUT%% *}"
 if [[ "${GOT}" != "${WANT}" ]]; then
   echo "${BIN} was built with ${GOT}, but go.mod pins ${WANT}" >&2
   exit 1

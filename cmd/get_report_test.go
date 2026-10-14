@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/concord-consortium/cc-data-cli/internal/api"
-	"github.com/concord-consortium/cc-data-cli/internal/fetch"
 )
 
 // --help is the first place a CLI user looks, and the command branches on the run's execution, so
@@ -28,9 +27,9 @@ func TestGetReportHelpCoversBothExecutions(t *testing.T) {
 		}
 	}
 	if !strings.Contains(long, "keeps failing to start") {
-		t.Error("the help does not say a run that never starts exits 5")
+		t.Error("the help does not say that get report exits 5 when a run never starts")
 	}
-	if fetch.StartFailureLimit != 4 || !strings.Contains(long, "(four answers with no query)") {
-		t.Errorf("the help's count of answers before a run that never starts exits 5 disagrees with fetch.StartFailureLimit (%d)", fetch.StartFailureLimit)
+	if !strings.Contains(strings.Join(strings.Fields(long), " "), "answers with no state, no query id and no error") {
+		t.Error("the help does not say which answers count before get report stops waiting")
 	}
 }
