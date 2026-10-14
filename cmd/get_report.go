@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"time"
 
@@ -18,7 +19,7 @@ func newGetReportCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "report <run-id> --dataset <ref>",
 		Short: "Download a report CSV into a dataset",
-		Long: `Download a report CSV into a dataset.
+		Long: fmt.Sprintf(`Download a report CSV into a dataset.
 
 How the CSV is produced depends on the run, which "reports list" shows as its
 EXECUTION. Either way the file is written atomically, never partially.
@@ -27,6 +28,9 @@ An async run is an Athena report. It is polled until its query succeeds and then
 streamed from a presigned URL. --no-wait reports the current state and exits 4
 without waiting; --poll-timeout bounds the wait (default 30m); --job downloads a
 post-processing job's CSV instead. A terminal failure (failed/cancelled) exits 5.
+A run report-server keeps failing to start (%d answers with no state, no query id
+and no error, not necessarily in a row) also exits 5, with the likeliest cause and
+how to check it.
 
 A sync run is a Portal report, computed live and streamed when it is asked for.
 It has no query to poll, so --no-wait and --poll-timeout do nothing, and no
@@ -34,7 +38,7 @@ post-processing jobs, so --job is refused. The download is bounded by the
 server's own budget; a run with no filters is refused by the server.
 
 An existing CSV requires --refresh to re-download. For a Portal report that is
-the normal way to get current data, since it is recomputed on every request.`,
+the normal way to get current data, since it is recomputed on every request.`, fetch.StartFailureLimit),
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			runID, err := strconv.Atoi(args[0])

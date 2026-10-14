@@ -107,8 +107,11 @@ jobs:
           MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
           AC_API_KEY_ID: ${{ secrets.AC_API_KEY_ID }}
           AC_API_ISSUER: ${{ secrets.AC_API_ISSUER }}
+        # Pinned: a goreleaser whose go line is newer than go.mod's toolchain line builds the release
+        # with that newer Go, which check-go-version.sh refuses. Moving to such a goreleaser means
+        # raising the toolchain line too, which can change the checksum every package zips to.
         run: |
-          go run github.com/goreleaser/goreleaser/v2@latest release \
+          go run github.com/goreleaser/goreleaser/v2@v2.18.3 release \
             --clean --skip=publish -f .goreleaser.${{ matrix.target }}.yaml
 
       - name: Fail the tag if a macOS artifact was left unsigned

@@ -2,6 +2,8 @@ module github.com/concord-consortium/cc-data-cli
 
 go 1.25.0
 
+toolchain go1.27.2
+
 require (
 	github.com/duckdb/duckdb-go/v2 v2.10504.0
 	github.com/ergochat/readline v0.1.3

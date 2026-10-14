@@ -194,9 +194,6 @@ Researchers get four `cc-data package` commands (`init`, `run`, `build`, `publis
 
 ## Not Yet Implemented
 
-- Tagging `main` as `v0.3.0-pre.1` after this story merges, and checking that its GitHub release is marked as a pre-release with the linux/amd64 archive and its `.sha256` and no Homebrew formula (R25, Done when). It is a release step after the merge, not code on the branch.
-- Publishing a private package and a version row on staging with `cc-data package publish` (Done when). It runs against staging once the branch is released.
-- `build` and `run` refusing what report-server refuses, and `run` refusing a package that does not apply, as observed against a live server (Done when): both wait on REPORT-167's routes being deployed, and until then both warn and proceed.
 - A package built on a laptop producing the same output on the VM: moved to REPORT-147 (Doug, 2026-10-08).
 
 ## Decisions
