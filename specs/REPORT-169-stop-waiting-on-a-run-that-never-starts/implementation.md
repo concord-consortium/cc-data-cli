@@ -20,11 +20,11 @@
 `report.go`, replacing `oscillation` and its `observe`:
 
 ```go
-// startFailureLimit is how many failed start attempts stop the poll. On the download route a null
+// StartFailureLimit is how many failed start attempts stop the poll. On the download route a null
 // state with no query id is always the answer to an attempt that just failed: a start that works
 // replies with its query id, and one still in flight replies queued. So the count only rides out
 // transient start failures.
-const startFailureLimit = 4
+const StartFailureLimit = 4
 
 // startFailures counts the null, query-less answers report-server gives while it fails to start a
 // run's query. A server before 1.11.0 sends no athena_query_id key at all, which counts the same.
@@ -38,7 +38,7 @@ func (s *startFailures) observe(extra map[string]any) bool {
 	if state == "" && id == "" && retryReason(extra) == "" {
 		*s++
 	}
-	return int(*s) >= startFailureLimit
+	return int(*s) >= StartFailureLimit
 }
 
 // retryReason is the error an unstarted run carries while the server retries its start.
@@ -62,7 +62,7 @@ func notStartedError(opts ReportOptions, run *api.ReportRun, extra map[string]an
 	return &output.CLIError{
 		ExitCode: output.ExitContract,
 		Code:     api.CodeNotReady,
-		Message:  fmt.Sprintf("run %d hasn't started: report-server failed to start its query %d times", opts.RunID, startFailureLimit),
+		Message:  fmt.Sprintf("run %d hasn't started: report-server failed to start its query %d times", opts.RunID, StartFailureLimit),
 		Action: "The likeliest cause is that the run's filters match nothing your projects reach, most often because its " +
 			"assignments are in none of your projects. List the assignments the run's filters reach with: " + check +
 			". An assignment the run covers that is missing there is outside your projects.",
@@ -97,7 +97,7 @@ The terminal check stays first, so a REPORT-168 `failed` answer is reported befo
 A run report-server keeps failing to start (four answers with no query) also exits 5, with the likeliest cause and how to check it.
 ```
 
-and `cmd/get_report_test.go`'s list of required phrases gains `"keeps failing to start"`.
+and `cmd/get_report_test.go` checks for `"keeps failing to start"`, and that the help's "four" agrees with `fetch.StartFailureLimit` (exported for that check).
 
 **Tests** (`report_test.go`). A helper `assertPolls(t, srv, n)` compares `atomic.LoadInt32(&srv.pollCount)` with `n`. A `stateless11` body constant, `{"error":"NOT_READY","athena_query_state":null,"athena_query_id":null,"athena_query_error":null,"athena_query_guidance":null}`, is the 1.11.0-and-later shape; the fixture's default null body is the older one.
 

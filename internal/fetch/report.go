@@ -245,10 +245,10 @@ func streamReady(ctx context.Context, opts ReportOptions, env *api.DownloadEnvel
 	return err
 }
 
-// startFailureLimit is how many failed start attempts stop the poll. On the download route a null
+// StartFailureLimit is how many failed start attempts stop the poll. On the download route a null
 // state with no query id answers an attempt that just failed: a start that works replies with its
 // query id, and one still in flight replies queued.
-const startFailureLimit = 4
+const StartFailureLimit = 4
 
 // startFailures counts the null, query-less answers report-server gives while it fails to start a
 // run's query; a server before 1.11.0 sends no athena_query_id key, which counts the same. An
@@ -262,7 +262,7 @@ func (s *startFailures) observe(extra map[string]any) bool {
 	if state == "" && id == "" && retryReason(extra) == "" {
 		*s++
 	}
-	return int(*s) >= startFailureLimit
+	return int(*s) >= StartFailureLimit
 }
 
 // retryReason is the error an unstarted run carries while the server retries its start.
@@ -286,7 +286,7 @@ func notStartedError(opts ReportOptions, run *api.ReportRun, extra map[string]an
 	return &output.CLIError{
 		ExitCode: output.ExitContract,
 		Code:     api.CodeNotReady,
-		Message:  fmt.Sprintf("run %d hasn't started: report-server failed to start its query %d times", opts.RunID, startFailureLimit),
+		Message:  fmt.Sprintf("run %d hasn't started: report-server failed to start its query %d times", opts.RunID, StartFailureLimit),
 		Action: "The likeliest cause is that the run's filters match nothing your projects reach, most often because its " +
 			"assignments are in none of your projects. List the assignments the run's filters reach with: " + check +
 			". An assignment the run covers that is missing there is outside your projects.",
