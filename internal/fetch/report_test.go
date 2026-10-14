@@ -680,6 +680,23 @@ func TestGetReportWaitsWhileServerRetries(t *testing.T) {
 	assertPolls(t, srv, 7)
 }
 
+func TestGetReportCountsNoAnswerWithAQueryID(t *testing.T) {
+	d := newTestDataset(t)
+	rt := "answers"
+	srv := newReportServer(t, &reportServer{
+		slug:           "student-answers",
+		reportType:     &rt,
+		notReadyStates: nulls(5),
+		notReadyBody:   `{"error":"NOT_READY","athena_query_state":null,"athena_query_id":"q-1","athena_query_error":null,"athena_query_guidance":null}`,
+		csv:            "student_id,x\n1,a\n",
+	})
+	defer srv.Close()
+	if _, _, cliErr := runFetch(t, d, srv, fetch1{}); cliErr != nil {
+		t.Fatal(cliErr)
+	}
+	assertPolls(t, srv, 6)
+}
+
 func TestGetReportJobIsNotCountedAsUnstarted(t *testing.T) {
 	d := newTestDataset(t)
 	rt := "answers"

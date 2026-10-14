@@ -109,6 +109,7 @@ and `cmd/get_report_test.go`'s list of required phrases gains `"keeps failing to
 - `TestGetReportOscillation` (existing): message now contains `hasn't started`; seven polls.
 - `TestGetReportUnstartableRunFailsFromServer`: one poll answering REPORT-168's failed-to-start body (R8 of its spec), `{"error":"NOT_READY","athena_query_state":"failed","athena_query_id":null,"athena_query_error":"No learners were found matching the filters you selected.","athena_query_guidance":"<a guidance sentence>"}`. The test needs only that the guidance comes back as `action`, so it does not copy `AthenaFailure`'s wording. Exit 5 with the terminal message, `athena_query_error` in the envelope, the guidance as `action`; one poll.
 - `TestGetReportWaitsWhileServerRetries`: `notReadyBody` is REPORT-168's retrying body, `{"error":"NOT_READY","athena_query_state":null,"athena_query_id":null,"athena_query_error":"The report could not be started because of a temporary error; it will be retried.","athena_query_guidance":null}`, for six polls, then the CSV. Completes on poll 7, and stderr contains the retry message. Fails if `observe` counts errored answers or the progress line drops the reason.
+- `TestGetReportCountsNoAnswerWithAQueryID`: a null state carrying `athena_query_id` `"q-1"` for five polls, then the CSV. Completes; six polls. Fails if `observe` drops its id check (R4).
 - `TestGetReportJobIsNotCountedAsUnstarted`: `--job 3` with `notReadyBody: {"error":"NOT_READY","status":"running"}` for six polls, then the CSV. Completes; seven polls. Fails if the `!isJob` guard goes.
 
 Each test names its mutation: deleting the counter (or raising the limit) fails the first two and the oscillation test; lowering it fails the transient test; counting `queued` or `running` answers fails the slow-start test; dropping the `!isJob` guard fails the job test; dropping the `--report-filter` branch, the compaction or the stderr line fails the filter test.
@@ -140,12 +141,9 @@ toolchain go1.27.2
 `release.yml`'s build step:
 
 ```yaml
-        # Pinned, not @latest: `go run` builds goreleaser with go.mod's toolchain line, unless
-        # goreleaser's own go line is newer, in which case Go picks the newest patch release of
-        # that line. Either way it hands that toolchain to every build goreleaser runs, so a
-        # goreleaser needing a newer Go than the toolchain line builds the release with another Go.
-        # check-go-version.sh catches that; a goreleaser that needs a newer Go means raising the
-        # toolchain line too, which changes the checksum every package zips to.
+        # Pinned: a goreleaser whose go line is newer than go.mod's toolchain line builds the release
+        # with that newer Go, which check-go-version.sh refuses. Bumping it past the toolchain line
+        # means raising that line too, which changes the checksum every package zips to.
         run: |
           go run github.com/goreleaser/goreleaser/v2@v2.18.3 release \
             --clean --skip=publish -f .goreleaser.${{ matrix.target }}.yaml
@@ -261,7 +259,7 @@ With the hook in place, a goreleaser needing a newer Go than the pin fails every
 ### Release Engineer (second pass)
 
 #### RESOLVED: The plan misdescribed which Go builds goreleaser
-It said `go run` builds v2.18.3 with go1.27.1 and the toolchain line then lifts the cc-data build. A throwaway local module proxy showed otherwise: in the module root the toolchain line selects go1.27.2 first, and a go-line requirement switches to the newest patch of that line (`go 1.27.1` gave go1.27.2), never the exact version. The outcome and R12's rule stand; the paragraph and the workflow comment now say this.
+It said `go run` builds v2.18.3 with go1.27.1 and the toolchain line then lifts the cc-data build. A throwaway local module proxy showed otherwise: in the module root the toolchain line selects go1.27.2 first, and a go-line requirement switches to the newest patch of that line (`go 1.27.1` gave go1.27.2), never the exact version. The outcome and R12's rule stand; the paragraph below the workflow snippet now says this.
 
 ### Test Writer (second pass)
 
