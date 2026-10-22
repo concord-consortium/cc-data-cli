@@ -4,7 +4,7 @@
 **Requirements Spec**: [requirements.md](requirements.md)
 **Status**: **In Development**
 
-The branch stacks on REPORT-111's, which stacks on REPORT-110's. Steps that touch the store machinery are written against REPORT-110's per-type store declaration (requirements A1 to A5); where this plan names a field of that declaration (`Identity`, `Pinned`, `StampColumn`, `Accumulate`, `RunViews`), it is the shape this plan needs, and stage 8 reconciles it with REPORT-110's spec. Line numbers are `main` at `7981060`.
+The branch stacks on REPORT-111's, which stacks on REPORT-110's. The store and view steps are written against REPORT-110's spec at `70ff4ad` (its `store.Kind` registry, its streamed membership and `Covered` walk) and REPORT-111's `derivedStoreViews`; those stories' implementations are the reference where a name here drifts from them. Line numbers are `main` at `7981060`.
 
 The cleanup steps come first: they touch none of the files the recent-logs steps do, so they review and revert on their own.
 
@@ -46,39 +46,23 @@ The cleanup steps come first: they touch none of the files the recent-logs steps
 **Summary**: R7 to R9 and R11's merge half. Declares the store, makes its merge keep every row, gives its download entry a class, and teaches reindex, purge, show and materialize about it. No network code yet; tests drive it with segments written directly, as `merge_test.go` does.
 
 **Files affected**:
-- `internal/store/` (REPORT-110's type registry): add `TypeRecentLogs = "recent_logs"` with:
-  - `Identity: []string{"id"}`;
-  - `Pinned`: `id`, `session`, `application`, `activity`, `event`, `event_value`, `parameters`, `extras`, `run_remote_endpoint` VARCHAR; `time`, `timestamp`, `user_id`, `primary_user_id`, `_class_id` BIGINT; `_fetched_at` TIMESTAMP (R8);
-  - `StampColumn: "_class_id"`, so `Segment.AppendPage` stamps the class rather than `_run_id` (the integer passed is the class id);
-  - `Accumulate: true` and `RunViews: false` (below, and the views step).
-- `internal/dataset/merge.go` `mergeUnderLock`: after `idsByRun` is built (primary plus swept) and before `membershipUnionMulti`, for an accumulating type, replace each entry with the union of that key's current membership file and the segment's identities. A missing membership file named by the manifest fails closed, as `membershipUnionMulti` does. Prototyped on 2026-10-22 by patching this exact spot: a second pull of the same key gave `New: 1, Updated: 1, Removed: 0` with the store at 3, a third pull that swept another key's segment kept both keys' rows, and a reindex afterward adopted the same store.
+- `internal/store/kind.go` (REPORT-110's registry, `70ff4ad`): two fields on `Kind`, each false by default so `answers`, `history` and the CLUE kinds keep their behavior with no edit:
+  - `ClassKeyed bool`: the integer in the kind's segment and membership names is a class id, not a run id. `Segment.AppendPage` stamps it as `_class_id` instead of `_run_id`; `run_membership`'s rows and identity columns and the per-run views leave the kind out (REPORT-110's R14 already words its inventory as "every kind that has per-run membership"); `Download.Key()` reads `ClassID`; `isStoreType`'s incomplete-run caveat skips it.
+  - `Accumulate bool`: a merge adds to a key's membership instead of replacing it (below).
 
-  ```go
-  if store.Accumulates(typ) {
-      for key, ids := range idsByRun {
-          ref, ok := m.Membership[MembershipKey(typ, key)]
-          if !ok {
-              continue
-          }
-          prev, err := store.ReadMembershipFile(d.Path(ref.File))
-          if err != nil {
-              closeAll(byRun)
-              releaseSwept(swept)
-              return store.MergeCounts{}, err
-          }
-          idsByRun[key] = store.UnionIdentities(typ, prev, ids)
-      }
-  }
-  ```
+  and the kind itself, `recentLogsKind`, appended to `kinds`: `Name: "recent_logs"`, `Identity: []string{"id"}`, `Strict: true` (an absent, null, non-string or empty `id` is an error, which is R6's rule), `DoubleDecode: false`, `Route: ""` (it is not fetched through `FetchPaged`), `ClassKeyed: true`, `Accumulate: true`, and `Pinned`: `id`, `session`, `application`, `activity`, `event`, `event_value`, `parameters`, `extras`, `run_remote_endpoint` VARCHAR; `time`, `timestamp`, `user_id`, `primary_user_id`, `_class_id` BIGINT; `_fetched_at` TIMESTAMP (R8).
+- `internal/dataset/merge.go` (on REPORT-110's streamed merge): two changes, both only for an accumulating kind.
+  - `openCovered` opens a `MembershipReader` on each key being merged's current membership file too, not only on the other keys'. REPORT-110's walk asks whether anything other than the merging keys holds an old key, because a merging key's membership is about to be replaced; an accumulating key's is not, so its previous file is one more source. Without it, every earlier row of the class fails `Covered.Has` and is removed, which is what the stage 1 throwaway showed on today's engine (`Removed: 2`).
+  - The new membership file for each merging key is written by walking the previous file's `MembershipReader` and the segment index's keys together, both in key order, emitting each key once, into REPORT-110's `MembershipWriter`. The output is in key order by construction, so its reader's order check holds, and nothing is held in memory beyond the two cursors.
 
-  `store.UnionIdentities` keeps first occurrence by `Key(typ)`, previous ids first. This is the shape on today's merge, which already holds identities in memory. REPORT-110's R11 (open there) would make membership a sorted stream; if it lands, the union becomes a merge-walk of the previous membership file and the segment index's sorted keys, written straight to the new membership file, with the same result and no in-memory set, and the test below is unchanged.
+  A missing membership file named by the manifest fails closed in both places, as REPORT-110's `openCovered` does. The behavior was prototyped on 2026-10-22 on today's engine (the in-memory union in the place `membershipUnionMulti` now runs): a second pull of the same key gave `New: 1, Updated: 1, Removed: 0` with the store at 3, a third pull that swept another key's segment kept both keys' rows, and a reindex afterward adopted the same store. The tests below are written against behavior, so they hold for the streamed form unchanged.
 - `internal/dataset/manifest.go` `Download`: add `ClassID int \`json:"class_id,omitempty"\`` and `RecentLogs *RecentLogsPull \`json:"recent_logs,omitempty"\``, where `RecentLogsPull` holds `WindowStart`, `NightlyThrough`, `Since`, `Until *int64`, `QueryStartedAt`, `LatestTimestamp *int64`, `Rows` and `Cursor string` (`omitempty`). A `recent_logs` entry has `RunID` 0 and `ClassID` set; `Download.Key()` returns `ClassID` for `recent_logs` and `RunID` otherwise, and is what every code path below uses where it pairs a download with a segment or membership key.
 - `internal/dataset/dataset.go`: `sameDownload` also compares `ClassID`; `artifactFileRe` comes from the registry (REPORT-110), so `recent_logs.v<N>.jsonl` and `members_recent_logs_<class>.v<N>.jsonl` are purged.
 - `internal/dataset/merge.go` `recordSweptDownloads`: match on `dl.Key()`. A `recent_logs` entry is never incomplete (the fetch step writes it only after its merge), so this loop finds none for that type, which is right: a swept class's cursor is not advanced, and its next pull re-reads.
 - `internal/dataset/reindex.go`: the membership rebuild makes a `recent_logs` key into `Download{Type, ClassID: key, Complete: true, Recovered: true}`; `priorDownloadIndex` and `downloadKey` key on `dl.Key()`; `carryProvenance` also carries `RecentLogs` (the cursor with it).
 - `internal/dataset/summary.go`: `manifestTotals` adds `recent_logs` (registry-derived under REPORT-110); `DownloadJSON` gains `ClassID int \`json:"class_id,omitempty"\`` and `RecentLogs`; `driftWarnings`' INCOMPLETE text never fires for this type, by construction.
 - `cmd/dataset_show.go`: the RUN cell prints `class <id>` for a `recent_logs` row.
-- `internal/duck/materialize.go`: `incompleteRuns` skips a type with `RunViews: false`.
+- `internal/duck/materialize.go`: `incompleteRuns` skips a `ClassKeyed` kind.
 
 **Tests** (`internal/dataset/merge_test.go`, `reindex_test.go`, `summary_test.go`, `dataset_test.go`):
 - Two pulls of class 590 (`e1,e2` then `e2',e3`): store holds 3, `e2` carries the second pull's data, counts `{2,2,0,0}` then `{2,1,1,0}`. Deleting the union block makes the second merge drop `e1` (`Removed: 1`, store 2), so the test fails on the exact regression.
@@ -97,9 +81,9 @@ The cleanup steps come first: they touch none of the files the recent-logs steps
 
 **Files affected**:
 - `internal/duck/views.go`:
-  - `statements()` builds the `recent_logs` entry with `vs.recentLogsView()` in place of the plain store view REPORT-110's registry would otherwise register under that name, the same in-place redefinition REPORT-111 does for the CLUE views. Registering both would be two `CREATE VIEW recent_logs` statements.
+  - `derivedStoreViews` (REPORT-111's map from kind name to view builder, which `statements()`' loop over the kinds consults before falling back to `storeView`) gains `"recent_logs": recentLogsView`. Without the entry, the registry loop registers a plain `recent_logs` view with no derived columns.
   - `recentLogsView()` builds on `storeView(store.TypeRecentLogs)`'s `read_json` member and wraps it: `SELECT *, <derived> FROM read_json(...)`, where `<derived>` is each `logDerived` entry's `expr(sqlIdent(src))` aliased to its name. The store's columns are pinned, so every source column exists and the CSV path's `CAST(NULL ...)` branch is not needed. The fallback is the pinned columns' typed-empty `SELECT` plus each derived column as `CAST(NULL AS <typ>)`. The view declares the store file in `files`, so `materializableFrom` admits it with no list edit.
-  - `runMembershipView` and `perDownloadViews` skip membership keys whose type has `RunViews: false`, and `run_membership`'s column inventory (REPORT-110's R14 puts every registered identity column on it) leaves such a type's identity columns out. Without the first, a pulled class adds a `recent_logs_590` view and `run_membership` rows whose `run_id` is a class id; without the second, every dataset's `run_membership` gains an always-NULL `id` column.
+  - `runMembershipView` and `perDownloadViews` skip membership keys of a `ClassKeyed` kind, and `run_membership`'s column inventory leaves its identity columns out (REPORT-110's R14 already excludes a kind without per-run membership). Without the first, a pulled class adds a `recent_logs_590` view and `run_membership` rows whose `run_id` is a class id; without the second, every dataset's `run_membership` gains an always-NULL `id` column.
   - `downloadsView`: header gains `class_id`; each row renders `run_id` as `CAST(NULL AS BIGINT)` for a `recent_logs` entry and `class_id` as `CAST(NULL AS BIGINT)` for every other. A bare `NULL` in a `VALUES` table types the column `"NULL"` when no row has a value (checked in DuckDB), so the cast is required, not tidiness. The fallback adds `CAST(NULL AS BIGINT) AS class_id`.
 - `internal/duck/engine_test.go` line 140's static-view list gains `recent_logs`.
 
@@ -133,7 +117,7 @@ The cleanup steps come first: they touch none of the files the recent-logs steps
     6. Write the finished cursor (`store.Cursor{Pages: 1, Items: rows}`), then `ds.MergeCompact`.
     7. `ds.UpsertDownload` the entry: `Complete: true`, merge counts, `RecentLogsPull` from the envelope, and `Cursor` = the response's `next_cursor` when the pull sent neither `Start` nor `End`, else the previous entry's cursor (R4). The cursor is written only after the merge has repointed the manifest, so an interruption between them leaves an old cursor and merged rows: the next pull re-reads, dedup absorbs it (R11).
     8. The R10 result map.
-  - `decodeRecentLogs(r io.Reader, sink func([]json.RawMessage) error) (recentLogsEnvelope, error)`: `json.Decoder` with `UseNumber`, walking the top-level object's keys; `rows` is read element by element as `json.RawMessage` and handed to `sink` in batches; every other key decodes into the envelope; after the closing brace a further token must be `io.EOF`. A row whose `id` is absent, null, not a string or `""` stops the decode with a contract error (R6); rows are passed through byte for byte, so `parameters` stays a string. The shape was run as throwaway code on 2026-10-22 over bodies built like the controller's: a cut inside `rows` fails at once, and a cut before the closing fields fails only after the rows before it were yielded, which is why step 5 writes no cursor until the decode returns cleanly.
+  - `decodeRecentLogs(r io.Reader, sink func([]json.RawMessage) error) (recentLogsEnvelope, error)`: `json.Decoder` with `UseNumber`, walking the top-level object's keys; `rows` is read element by element as `json.RawMessage` and handed to `sink` in batches; every other key decodes into the envelope; after the closing brace a further token must be `io.EOF`. Each row's `id` is read with REPORT-110's `IdentityFromRecord(recentLogsKind, row)`, whose `Strict` rule stops the decode with a contract error on an absent, null, non-string or empty `id` (R6); rows are passed through byte for byte, so `parameters` stays a string. The shape was run as throwaway code on 2026-10-22 over bodies built like the controller's: a cut inside `rows` fails at once, and a cut before the closing fields fails only after the rows before it were yielded, which is why step 5 writes no cursor until the decode returns cleanly.
   - Errors: a body that does not decode is `TRANSIENT` ("the recent-logs answer was cut off; re-run"); a row without its `id`, or a `class_id` or `count` mismatch, is `ExitContract` code `BAD_RESPONSE`; an `api` error goes through `api.AsCLIError`.
 - `internal/fetch/recentlogs_test.go` (new): `recentLogsServer`, an `httptest` handler that records each request's query, answers from a queue of canned bodies built with the controller's opening/rows/closing framing (so a fixture can be cut at any byte), and can answer 410 or 503 first. Cases:
   - first pull sends no parameters and stores the cursor; second sends exactly that cursor;
@@ -161,7 +145,7 @@ The cleanup steps come first: they touch none of the files the recent-logs steps
 - `internal/mcpserver/types.go`: `getRecentLogsIn{Dataset string; ClassID int \`json:"class_id"\`; Start, End string \`json:",omitempty"\`; Refresh bool}` with `jsonschema` descriptions for the two time forms.
 - `internal/mcpserver/tools.go`: `get_recent_logs`, description: "Pull a class's log events from the last day or two into a dataset's recent_logs view. Each later pull asks only for what is new; pass refresh to re-read the whole window. Earlier days come from a Student Actions run."
 - `internal/mcpserver/server_test.go`: the tool is listed and a stubbed call returns the result map.
-- `internal/guidance/src/core.md`: a `recent_logs` view entry after `logs` (R16's content, saying "a recent-logs pull", no command); the `downloads` entry names `class_id`. The existing view entries use an em-dash after the name, and the new entries match that list's style.
+- `internal/guidance/src/core.md`: a `recent_logs` view entry after `logs` (R16's content, saying "a recent-logs pull", no command); the `downloads` entry names `class_id`; the per-store "Identity columns" section (REPORT-110's R17) gains `recent_logs`: `id`, saying that it has no `run_membership` rows, since `IdentityColumnNames` is derived from every kind and `TestGuidanceDocumentsEveryIdentityColumn` fails without it. The existing view entries use an em-dash after the name, and the new entries match that list's style.
 - `internal/guidance/src/tools.md`: `get_recent_logs` after `get_answers, get_history`.
 - `internal/guidance/src/skill_header.md`: `cc-data get recent-logs <class-id> --dataset <ref>` in "Fetching data", with `--refresh`.
 - `README.md`: the command in both lists.
@@ -200,21 +184,21 @@ The cleanup steps come first: they touch none of the files the recent-logs steps
 **Options considered**: an incomplete entry at start, as `FetchPaged` writes; no entry until the end.
 **Decision**: the end. An incomplete `recent_logs` entry would have to carry the previous cursor through, raise an INCOMPLETE warning for rows that are all intact, and appear in materialize's incomplete-run caveat, all for a state the next pull clears anyway. Writing once removes the state rather than reporting it.
 
-### RESOLVED: Low confidence: REPORT-110's registry has the fields this plan names
-**Context**: `StampColumn`, `Accumulate` and `RunViews` are this plan's needs, not anything REPORT-110 has said it will provide; A1 to A5 in requirements.md.
+### RESOLVED: Judgment call: two fields on `store.Kind`, not three
+**Context**: The stage 8 draft asked REPORT-110 for `StampColumn`, `Accumulate` and `RunViews`; REPORT-110 (`70ff4ad`, its open question on the fields) leaves them to this story's steps.
 **Options considered**:
-- A) REPORT-110 provides a per-type declaration; this story adds the three fields to it.
-- B) REPORT-110 generalizes without a single declaration; this story adds a small one for its type and checks it where the code branches.
+- A) The three fields as drafted.
+- B) `ClassKeyed` (which drives the stamp column, the per-run views, `run_membership` and the download key) and `Accumulate`.
 
-**Decision**: A. REPORT-110's draft requirements (R8, read 2026-10-22 in its worktree, uncommitted) declare every store type once, "with its identity columns, its pinned columns and its route segment", and name `recent_logs` keyed by `id` as the shape a new type takes. The three fields are additions to that declaration; stage 8 checks the field names against REPORT-110's implementation spec once it exists.
+**Decision**: B. The stamp, the views and the download key all follow from one fact, that the kind's integer key is a class, so one field keeps them from disagreeing; three would allow a kind stamped `_class_id` that still gets `run_membership` rows. Both default to false, so no existing kind is edited.
 
 ### RESOLVED: Low confidence: `AppendPage`'s stamp column
-**Context**: `Segment.AppendPage(records, fetchedAt, runID)` hard-codes `_run_id`; this plan stamps `_class_id` for `recent_logs` through the type's `StampColumn`. If REPORT-110's CLUE types keep `_run_id`, the change is one lookup; if REPORT-110 changes `AppendPage`'s signature, this step follows it.
+**Context**: `Segment.AppendPage(records, fetchedAt, runID)` hard-codes `_run_id`, and REPORT-110 keeps that for every kind it adds.
 **Options considered**:
-- A) Look the column up by type inside `AppendPage`.
+- A) Choose the column inside `AppendPage` from the segment's kind (`_class_id` when `ClassKeyed`).
 - B) Pass the column name in.
 
-**Decision**: A. The segment already carries its type (`Segment.Type`), and REPORT-110's R4 keeps `_run_id` for its three CLUE types, so the lookup changes nothing for any existing caller and no call site changes signature.
+**Decision**: A. The segment already knows its type (`Segment.Type`), so no call site changes signature and no existing kind's stamp changes.
 
 ## Self-Review
 
@@ -224,7 +208,7 @@ Roles: commit reviewer, test writer, senior Go engineer, operator, security engi
 The plan said deleting the union block makes the second pull report `Removed: 2`. With `e1,e2` then `e2',e3`, the replaced membership is `{e2,e3}`, so only `e1` goes (`Removed: 1`); the `Removed: 2` seen at stage 1 came from a different pair of segments. A test asserting 2 would fail for the wrong reason. Corrected.
 
 #### RESOLVED: Two views named `recent_logs`
-REPORT-110's R8 derives the store views from its registry, so registering `recent_logs` as a store type also registers a plain `recent_logs` view; this plan's derived view would be a second statement with the same name. The view step now replaces the registry's entry, as REPORT-111 does for its three views.
+REPORT-110's R8 derives the store views from its registry, so registering `recent_logs` as a store type also registers a plain `recent_logs` view; this plan's derived view would be a second statement with the same name. The view step now registers `recent_logs` through REPORT-111's `derivedStoreViews`, as REPORT-111 does for its three views.
 
 #### RESOLVED: The membership column inventory
 REPORT-110's R14 puts every registered identity column on `run_membership`. Registering `recent_logs` would add an always-NULL `id` there unless the opt-out covers the inventory too. Added to the view step and to requirement A5.

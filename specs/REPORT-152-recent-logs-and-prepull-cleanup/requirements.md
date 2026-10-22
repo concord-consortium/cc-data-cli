@@ -107,18 +107,18 @@ report-server reads a missing `clue_prepull` as `false` (`Manifest.clue_prepull(
 - **A re-merge of the same key replaces.** The throwaway merge test in Background (`Removed: 2`).
 - **The view's SQL.** `logs`' four derived expressions over a JSONL store with R8's types, in DuckDB: `parameters_json->>'tileType'` read a CLUE payload, a non-JSON `parameters` gave NULL, and `event_time` and `received_time` came out as TIMESTAMP.
 
-### What this story assumes of REPORT-110
+### What this story takes from REPORT-110
 
-REPORT-110 generalizes the stores for its three CLUE types. This story's store reuses that work, and stage 8 checks these against REPORT-110's spec:
+REPORT-110 generalizes the stores for its three CLUE types, and this story's store reuses that work. Each item below was checked against REPORT-110's spec at `70ff4ad` and holds:
 
-- **A1.** Store types are declared once (name, identity fields, pinned columns), and the store-file patterns, `isStoreType`, reindex adoption and the summary's totals derive from that declaration, so `recent_logs` is one more entry.
+- **A1.** Store types are declared once in the `store.Kind` registry (name, identity columns, `Strict`, pinned columns, route, double-decode), and the store-file patterns, `isStoreType`, reindex adoption and the summary's totals derive from it, so `recent_logs` is one more entry plus the two fields it adds (`ClassKeyed`, `Accumulate`).
 - **A2.** Identity is per type: `store.Identity` and membership files carry the type's own key fields, so `recent_logs` can key on `id` alone.
 - **A3.** Pinned column types are per type rather than the single global `pinnedColumns` map, so `recent_logs`' pins (R8) do not leak into other stores.
 - **A4.** No double-decode is per type, as REPORT-110's `entry_json`/`content_json` stay byte for byte; `recent_logs` never decodes.
-- **A5.** `run_membership`, the per-run store views and coverage are generalized per type, and a type can opt out of all three, including `run_membership`'s column inventory (REPORT-110's R14 puts every registered identity column on it).
+- **A5.** `run_membership`, the per-run store views and coverage are generalized per type. REPORT-110's R14 gives `run_membership` the identity columns of "every registered kind that has per-run membership", naming `recent_logs` as a kind that adds none; this story's `ClassKeyed` field is what marks it.
 - **A6.** REPORT-110's commands take a run id (REPORT-109's export is scoped by report run), and a Student ID Mapping run of the class is a valid source, as for answers; R22's package relies on it.
 
-Nothing here assumes REPORT-110 changes `MergeCompact`'s per-run replacement; R7's accumulating merge is this story's.
+REPORT-110 reworks the merge (its R11, in scope by Doug's stage 8 decision): a compact sorted index, membership read and written as key-ordered streams, and a `Covered` walk asking whether any key other than the ones being merged holds each old record. Each merging key's membership is still replaced, so R7's accumulating merge is this story's change on top of that engine.
 
 ## Out of Scope
 
