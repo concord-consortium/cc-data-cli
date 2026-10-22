@@ -17,7 +17,7 @@ The cleanup steps come first: they touch none of the files the recent-logs steps
 **Files affected**:
 - `internal/packages/manifest.go`: delete `Manifest.CluePrepull`. With the field gone, `init` writes no key and `ReadManifest` ignores one that is present.
 - `internal/packages/run.go`: delete the refusal at lines 78 to 80; `Refused`'s comment becomes "a package the runner would not start: it does not apply to the scope." Line 104 drops `ClueSource: "firebase"`.
-- `internal/packages/scope.go`: delete `ScopeFile.ClueSource`, its field in `MarshalJSON`'s `ordered` struct and in the positional literal; the type comment keeps only the `Dataset` sentence.
+- `internal/packages/scope.go`: delete `ScopeFile.ClueSource`, its field in `MarshalJSON`'s `ordered` struct and in the positional literal; the type comment keeps only the `Dataset` sentence. `ParseLocalScope`'s comment says "the other three are the runner's to set", which becomes "the other two".
 - `internal/packages/run_test.go`: line 156 asserts `scope["clue_source"]` is absent and that the file's keys are exactly the six, in order (decode with `json.Decoder.Token` to read key order, since a map loses it). The `clue_prepull` half of `TestRunRefusesBeforeStarting` (lines 197 to 204) becomes `TestRunIgnoresCluePrepull`: a manifest read from bytes holding `"clue_prepull": true` runs to completion and its entrypoint's marker file exists. Deleting the refusal is the mutation it catches only if the manifest is read through `ReadManifest`, so the test goes through it rather than setting a struct field that no longer exists.
 - `internal/packages/init` test (in `files_test.go` or `cmd/package_test.go`, wherever `Init`'s output is asserted): the written `manifest.json` has no `clue_prepull` key.
 - `internal/packages/files_test.go` line 20 and `cmd/package_test.go` line 28: leave the fixture manifests' `"clue_prepull": false` as they are; they now also show that a manifest carrying the key still validates.
@@ -65,7 +65,7 @@ The cleanup steps come first: they touch none of the files the recent-logs steps
 - `internal/duck/materialize.go`: `incompleteRuns` skips a `ClassKeyed` kind.
 
 **Tests** (`internal/dataset/merge_test.go`, `reindex_test.go`, `summary_test.go`, `dataset_test.go`):
-- Two pulls of class 590 (`e1,e2` then `e2',e3`): store holds 3, `e2` carries the second pull's data, counts `{2,2,0,0}` then `{2,1,1,0}`. Deleting the union block makes the second merge drop `e1` (`Removed: 1`, store 2), so the test fails on the exact regression.
+- Two pulls of class 590 (`e1,e2` then `e2',e3`): store holds 3, `e2` carries the second pull's data, counts `{2,2,0,0}` then `{2,1,1,0}`, and the class's membership file holds `e1,e2,e3`; a third pull (`e4`) still holds `e1`. Removing the merging key's file from `openCovered` makes the second merge drop `e1` (`Removed: 1`, store 2). Removing only the membership union leaves the second merge correct (the old file still covers `e1`) but writes `{e2,e3}`, so the membership assertion and the third pull's `Removed: 1` catch it.
 - Classes 590 and 591 pulled alternately, one merging the other by sweep: neither loses a row.
 - Reindex with the manifest present recovers the entry with its cursor; with the manifest deleted, recovers the store and a `recovered` entry with no cursor.
 - Purge removes the store and membership files and the entry.
@@ -104,7 +104,7 @@ The cleanup steps come first: they touch none of the files the recent-logs steps
 **Summary**: R1 to R6, R10, R11 and R12's shared core. The API call, the body decoder, and `fetch.FetchRecentLogs`, tested against an `httptest` server that speaks REPORT-150's contract.
 
 **Files affected**:
-- `internal/api/endpoints.go`: `RecentLogsPath(classID int, q RecentLogsQuery) string` builds `/api/v1/classes/<id>/recent-logs` with `cursor`, or `start`/`end`, URL-encoded; `(c *Client) StreamRecentLogs(ctx, classID, q, dst)` is `c.StreamAPIToFile(ctx, RecentLogsPath(classID, q), dst)`. `StreamAPIToFile` already gives the retry rule (only before the first byte), no size cap and no per-attempt deadline (R5), and maps a cut-off body to `TRANSIENT` (`partialDownloadError`).
+- `internal/api/endpoints.go`: `RecentLogsPath(classID int, q RecentLogsQuery) string` builds `/api/v1/classes/<id>/recent-logs` with `cursor`, or `start`/`end`, URL-encoded; `(c *Client) StreamRecentLogs(ctx, classID, q, dst)` copies the client, sets the copy's `MaxAttempts` to `RecentLogsMaxAttempts` (2), and calls the copy's `StreamAPIToFile(ctx, RecentLogsPath(classID, q), dst)`, so every other call keeps six attempts (R5). `StreamAPIToFile` already gives the retry rule (only before the first byte), no size cap and no per-attempt deadline (R5), and maps a cut-off body to `TRANSIENT` (`partialDownloadError`). That error's message is written for report CSVs ("the server may have exceeded its download budget for this cohort ... or narrow the report filter"), so `api` gains `IsPartialDownload(err) bool` and `FetchRecentLogs` replaces the message on that error with the cut-off one below, keeping `TRANSIENT`.
 - `internal/fetch/recentlogs.go` (new):
   - `RecentLogsOptions{DS, Client, ClassID int, Start, End string, Refresh bool, Progress io.Writer}` and `(o) validate() error`: class id positive; `Refresh` with `Start` or `End` is a usage error; `ParseLogBound` on each; `end > start` when both.
   - `ParseLogBound(s string) (int64, error)`: all digits is epoch milliseconds; otherwise `time.Parse(time.RFC3339Nano, s)` to milliseconds.
@@ -118,17 +118,18 @@ The cleanup steps come first: they touch none of the files the recent-logs steps
     7. `ds.UpsertDownload` the entry: `Complete: true`, merge counts, `RecentLogsPull` from the envelope, and `Cursor` = the response's `next_cursor` when the pull sent neither `Start` nor `End`, else the previous entry's cursor (R4). The cursor is written only after the merge has repointed the manifest, so an interruption between them leaves an old cursor and merged rows: the next pull re-reads, dedup absorbs it (R11).
     8. The R10 result map.
   - `decodeRecentLogs(r io.Reader, sink func([]json.RawMessage) error) (recentLogsEnvelope, error)`: `json.Decoder` with `UseNumber`, walking the top-level object's keys; `rows` is read element by element as `json.RawMessage` and handed to `sink` in batches; every other key decodes into the envelope; after the closing brace a further token must be `io.EOF`. Each row's `id` is read with REPORT-110's `IdentityFromRecord(recentLogsKind, row)`, whose `Strict` rule stops the decode with a contract error on an absent, null, non-string or empty `id` (R6); rows are passed through byte for byte, so `parameters` stays a string. The shape was run as throwaway code on 2026-10-22 over bodies built like the controller's: a cut inside `rows` fails at once, and a cut before the closing fields fails only after the rows before it were yielded, which is why step 5 writes no cursor until the decode returns cleanly.
-  - Errors: a body that does not decode is `TRANSIENT` ("the recent-logs answer was cut off; re-run"); a row without its `id`, or a `class_id` or `count` mismatch, is `ExitContract` code `BAD_RESPONSE`; an `api` error goes through `api.AsCLIError`.
+  - Errors: a body that does not decode, or that the connection cut off (`api.IsPartialDownload`), is `TRANSIENT` ("the recent-logs answer was cut off; re-run"); a row without its `id` is `ExitContract` code `MALFORMED_ITEM`, the code REPORT-110 gives a CLUE item without its identity ("class 590 recent_logs: row 17 has no id"), so R6's one rule is one code too; a `class_id` or `count` mismatch is `ExitContract` code `BAD_RESPONSE`; any other `api` error goes through `api.AsCLIError`.
 - `internal/fetch/recentlogs_test.go` (new): `recentLogsServer`, an `httptest` handler that records each request's query, answers from a queue of canned bodies built with the controller's opening/rows/closing framing (so a fixture can be cut at any byte), and can answer 410 or 503 first. Cases:
   - first pull sends no parameters and stores the cursor; second sends exactly that cursor;
   - `--start` sends `start` only and leaves the stored cursor (the entry's `Cursor` is byte-identical before and after);
   - `--refresh` sends nothing even with a cursor stored;
   - 410 on the stored cursor: two requests, the second with no parameters, `expired_cursor: true`, the warning on progress;
-  - a body cut before its closing fields: error `TRANSIENT`, no store, no segment, cursor unchanged;
+  - a body cut before its closing fields: error `TRANSIENT`, no store, no segment, cursor unchanged; and a body whose connection is closed mid-`rows` (hijacked, as `stream_test.go`'s `truncatingServer` does): `TRANSIENT` whose message does not mention a report filter, which fails if the `IsPartialDownload` mapping is removed;
   - `count` one higher than the rows: `BAD_RESPONSE`, nothing stored; `class_id` of another class likewise;
-  - a null-`id` row and an empty-string one: each `BAD_RESPONSE` naming the class, nothing stored, cursor unchanged;
+  - a null-`id` row and an empty-string one: each `MALFORMED_ITEM` naming the class, nothing stored, cursor unchanged;
   - a finished, unmerged segment left from a crash is merged before the next request;
   - a second `FetchRecentLogs` for the same class while the first holds the lock: busy; for another class: both complete;
+  - a server answering 503 to every request: exactly 2 requests, then `TRANSIENT`, nothing stored (removing the `MaxAttempts` override makes it 6);
   - `ParseLogBound`: `"1792540800000"`, `"2026-10-21T12:00:00Z"`, `"2026-10-21T12:00:00.5-04:00"`, and `"yesterday"` refused.
 
 **Estimated diff size**: ~480 lines, more than half tests. If review wants it smaller, the decoder and its tests split cleanly into their own commit ahead of the rest.
@@ -141,7 +142,7 @@ The cleanup steps come first: they touch none of the files the recent-logs steps
 
 **Files affected**:
 - `cmd/get_recent_logs.go` (new): `newGetRecentLogsCmd()`, `Use: "recent-logs <class-id> --dataset <ref>"`, flags `--dataset`, `--start`, `--end`, `--refresh`; `Long` says what the window is, how the cursor works, that `--refresh` is the backstop for late events, and that days before the window come from a Student Actions run. `RunE` mirrors `newPagedGetCmd` (`openDatasetForFetch`, `emitResult`).
-- `cmd/get.go`: register it; `Short` becomes "Download report CSVs, answers, history, attachments and recent logs into a dataset".
+- `cmd/get.go`: register it; `Short` adds recent logs to REPORT-110's wording, keeping its CLUE mention (REPORT-110's R2 requires it).
 - `internal/mcpserver/types.go`: `getRecentLogsIn{Dataset string; ClassID int \`json:"class_id"\`; Start, End string \`json:",omitempty"\`; Refresh bool}` with `jsonschema` descriptions for the two time forms.
 - `internal/mcpserver/tools.go`: `get_recent_logs`, description: "Pull a class's log events from the last day or two into a dataset's recent_logs view. Each later pull asks only for what is new; pass refresh to re-read the whole window. Earlier days come from a Student Actions run."
 - `internal/mcpserver/server_test.go`: the tool is listed and a stubbed call returns the result map.
@@ -161,7 +162,7 @@ The cleanup steps come first: they touch none of the files the recent-logs steps
 
 **Summary**: R21 and R22, after merge. No code; results go in the PR description.
 
-1. **R21**, once REPORT-150 is on staging: a fresh dataset `learn.portal.staging.concord.org/rl-accept`; a staging test class with a CLUE offering; a test student launched from the portal works for a few minutes; `get recent-logs <class>` (rows, CLUE, the learner's endpoint); more work; `get recent-logs <class>` again (`cursor` sent, `updated` = overlap, `new` = newer, `count(*) = count(DISTINCT id)`); `--start`/`--end` an hour apart (rows in the hour, `cursor: unchanged`).
+1. **R21**, once REPORT-150 is on staging: a fresh dataset `learn.portal.staging.concord.org/rl-accept`; a staging test class with a CLUE offering; a test student launched from the portal works for a few minutes; `get recent-logs <class>` (rows, CLUE, the learner's endpoint); more work; `get recent-logs <class>` again (`cursor` sent, `updated` = overlap, `new` = newer, `count(*) = count(DISTINCT id)`); `--start`/`--end` an hour apart (rows in the hour, `cursor: none` in the result, and the entry's stored cursor byte-identical to before).
 2. **R22 laptop**: a scratch package from `cc-data package init`, its `run.py` reading `scope.json`, making or finding the class's Student ID Mapping run (as the template already does), running `cc-data get clue-documents|clue-history|clue-content <run>` and `cc-data get recent-logs <class_id>`, and writing counts from REPORT-111's views and `recent_logs` to `display.md`; `cc-data package run` against staging.
 3. **R22 VM**: once a cc-data pre-release tag carries 110, 111 and 152 and the runner image pins it, `cc-data package publish` the same zip privately to staging and run it from the dashboard for the same class; compare `display.md`.
 
@@ -212,3 +213,23 @@ REPORT-110's R8 derives the store views from its registry, so registering `recen
 
 #### RESOLVED: The membership column inventory
 REPORT-110's R14 puts every registered identity column on `run_membership`. Registering `recent_logs` would add an always-NULL `id` there unless the opt-out covers the inventory too. Added to the view step and to requirement A5.
+
+### Second pass (roles: senior Go engineer, test writer, commit reviewer, operator)
+
+#### RESOLVED: A cut connection would tell the researcher to narrow a report filter
+REPORT-150's controller streams with `send_chunked` and re-raises on a failure after the first chunk, which closes the connection mid-body. A throwaway test that hijacked and closed a 200 response after `{"class_id":1,"rows":[{"id":"a"}` got `TRANSIENT` from `StreamAPIToFile` with "download failed after 32 bytes; the server may have exceeded its download budget for this cohort. Re-run to retry, or narrow the report filter." The fetch step now maps that error to its own message, with a test.
+
+#### RESOLVED: A row without its `id` had a different code from REPORT-110's
+R6 chose failing the pull so that cc-data has one rule for a record without its identity, but the plan gave it `BAD_RESPONSE` while REPORT-110's implementation spec gives a CLUE item without its identity `MALFORMED_ITEM`. Neither code exists in the tree yet, so aligning costs nothing; `BAD_RESPONSE` stays for the envelope checks.
+
+#### RESOLVED: The merge test missed half of the accumulating merge
+The accumulating merge has two parts: the merging key's previous membership in the covered walk, and the union written as the new membership. With only two pulls, deleting the union passes, since the old file still covers `e1` on the second merge; `e1` is lost only on the third. The test now asserts the membership file and adds a third pull.
+
+#### RESOLVED: `get`'s short help would drop REPORT-110's CLUE mention
+REPORT-110's command step makes `cmd/get.go`'s `Short` mention CLUE (its R2); this plan replaced the whole string with one that does not. The step now adds recent logs to REPORT-110's wording.
+
+#### RESOLVED: The acceptance run expected the wrong `cursor` value
+R10 reports `cursor: none` for a pull with `--end`, but the acceptance step expected `cursor: unchanged` from the `--start`/`--end` pull. It now expects `none` in the result and checks the stored cursor is unchanged, which is what R21 asks.
+
+#### RESOLVED: A comment that counts the scope keys
+`internal/packages/scope.go:58-59` says the keys outside the author's four are "the other three", which is false once `clue_source` goes. Added to the cleanup step.
