@@ -4,7 +4,7 @@
 **Requirements Spec**: [requirements.md](requirements.md)
 **Status**: **In Development**
 
-The branch stacks on REPORT-111's, which stacks on REPORT-110's. The store and view steps are written against REPORT-110's spec at `70ff4ad` (its `store.Kind` registry, its streamed membership and `Covered` walk) and REPORT-111's `derivedStoreViews`; those stories' implementations are the reference where a name here drifts from them. Line numbers are `main` at `7981060`.
+The branch stacks on REPORT-111's, which stacks on REPORT-110's. The store and view steps are written against REPORT-110's spec at `7e3ffb5` (its `store.Kind` registry, its streamed membership and `Covered` walk) and REPORT-111's `derivedStoreViews`; those stories' implementations are the reference where a name here drifts from them. Line numbers are `main` at `7981060`.
 
 The cleanup steps come first: they touch none of the files the recent-logs steps do, so they review and revert on their own.
 
@@ -46,7 +46,7 @@ The cleanup steps come first: they touch none of the files the recent-logs steps
 **Summary**: R7 to R9 and R11's merge half. Declares the store, makes its merge keep every row, gives its download entry a class, and teaches reindex, purge, show and materialize about it. No network code yet; tests drive it with segments written directly, as `merge_test.go` does.
 
 **Files affected**:
-- `internal/store/kind.go` (REPORT-110's registry, `70ff4ad`): two fields on `Kind`, each false by default so `answers`, `history` and the CLUE kinds keep their behavior with no edit:
+- `internal/store/kind.go` (REPORT-110's registry, `7e3ffb5`): two fields on `Kind`, each false by default so `answers`, `history` and the CLUE kinds keep their behavior with no edit:
   - `ClassKeyed bool`: the integer in the kind's segment and membership names is a class id, not a run id. `Segment.AppendPage` stamps it as `_class_id` instead of `_run_id`; `run_membership`'s rows and identity columns and the per-run views leave the kind out (REPORT-110's R14 already words its inventory as "every kind that has per-run membership"); `Download.Key()` reads `ClassID`; `isStoreType`'s incomplete-run caveat skips it.
   - `Accumulate bool`: a merge adds to a key's membership instead of replacing it (below).
 
@@ -186,7 +186,7 @@ The cleanup steps come first: they touch none of the files the recent-logs steps
 **Decision**: the end. An incomplete `recent_logs` entry would have to carry the previous cursor through, raise an INCOMPLETE warning for rows that are all intact, and appear in materialize's incomplete-run caveat, all for a state the next pull clears anyway. Writing once removes the state rather than reporting it.
 
 ### RESOLVED: Judgment call: two fields on `store.Kind`, not three
-**Context**: The stage 8 draft asked REPORT-110 for `StampColumn`, `Accumulate` and `RunViews`; REPORT-110 (`70ff4ad`, its open question on the fields) leaves them to this story's steps.
+**Context**: The stage 8 draft asked REPORT-110 for `StampColumn`, `Accumulate` and `RunViews`; REPORT-110 (`7e3ffb5`, its open question on the fields) leaves them to this story's steps.
 **Options considered**:
 - A) The three fields as drafted.
 - B) `ClassKeyed` (which drives the stamp column, the per-run views, `run_membership` and the download key) and `Accumulate`.

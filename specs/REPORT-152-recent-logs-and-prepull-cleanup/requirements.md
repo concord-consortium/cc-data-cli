@@ -109,7 +109,7 @@ report-server reads a missing `clue_prepull` as `false` (`Manifest.clue_prepull(
 
 ### What this story takes from REPORT-110
 
-REPORT-110 generalizes the stores for its three CLUE types, and this story's store reuses that work. Each item below was checked against REPORT-110's spec at `70ff4ad` and holds:
+REPORT-110 generalizes the stores for its three CLUE types, and this story's store reuses that work. Each item below was checked against REPORT-110's spec at `7e3ffb5` and holds:
 
 - **A1.** Store types are declared once in the `store.Kind` registry (name, identity columns, `Strict`, pinned columns, route, double-decode), and the store-file patterns, `isStoreType`, reindex adoption and the summary's totals derive from it, so `recent_logs` is one more entry plus the two fields it adds (`ClassKeyed`, `Accumulate`).
 - **A2.** Identity is per type: `store.Identity` and membership files carry the type's own key fields, so `recent_logs` can key on `id` alone.
