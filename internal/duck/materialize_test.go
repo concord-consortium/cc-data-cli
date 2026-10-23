@@ -880,3 +880,64 @@ func TestMaterializedViewIsIgnoredWhenTheDefinitionMoved(t *testing.T) {
 		t.Fatalf("sentinel rows = %d, want 0: a Parquet from an older view definition must not be read", n)
 	}
 }
+
+func largeWarnings(t *testing.T, d *dataset.Dataset) []string {
+	t.Helper()
+	s, err := ShowJSON(d, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, w := range s.Warnings {
+		if strings.HasPrefix(w, "LARGE_UNMATERIALIZED") {
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
+func TestShowSuggestsMaterializingALargeStore(t *testing.T) {
+	saved := largeStoreBytes
+	t.Cleanup(func() { largeStoreBytes = saved })
+	d := newDS(t, "big")
+	buildStore(t, d, 584, [][]byte{answerRec("s", "e1", "q1", "hi")})
+
+	if gib(5<<30) != "5.0" || gib(6<<29) != "3.0" {
+		t.Fatalf("gib(5 GiB) = %s, gib(3 GiB) = %s", gib(5<<30), gib(6<<29))
+	}
+	largeStoreBytes = 1
+	m, _ := d.ReadManifest()
+	fi, err := os.Stat(d.Path(m.Stores["answers"].File))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := largeWarnings(t, d)
+	if len(got) != 1 || !strings.Contains(got[0], "view answers reads a "+gib(fi.Size())+" GiB store") ||
+		!strings.Contains(got[0], "cc-data dataset materialize "+d.Ref.String()) {
+		t.Fatalf("warnings %v, want one naming the view, its size and the command", got)
+	}
+
+	materialize(t, d, MaterializeOptions{})
+	if got := largeWarnings(t, d); len(got) != 0 {
+		t.Fatalf("a fresh Parquet copy still warns: %v", got)
+	}
+
+	buildStore(t, d, 612, [][]byte{answerRec("s", "e2", "q2", "yo")})
+	if got := largeWarnings(t, d); len(got) != 1 {
+		t.Fatalf("a stale copy must warn again: %v", got)
+	}
+
+	m, _ = d.ReadManifest()
+	fi, err = os.Stat(d.Path(m.Stores["answers"].File))
+	if err != nil {
+		t.Fatal(err)
+	}
+	largeStoreBytes = fi.Size()
+	if got := largeWarnings(t, d); len(got) != 0 {
+		t.Fatalf("a store at the threshold warns: %v", got)
+	}
+	largeStoreBytes = fi.Size() - 1
+	if got := largeWarnings(t, d); len(got) != 1 {
+		t.Fatalf("a store one byte over the threshold must warn: %v", got)
+	}
+}
