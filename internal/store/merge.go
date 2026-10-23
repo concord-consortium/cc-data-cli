@@ -52,21 +52,15 @@ func StreamMerge(oldStorePath string, k Kind, tmpPath string, src MergeSource, c
 		res.Total++
 		return nil
 	}
-	countNew := func(key string) {
-		run := src.OwnerRun(key)
+	count := func(run int, isNew bool) {
 		c := res.PerRun[run]
-		c.New++
+		if isNew {
+			c.New++
+		} else {
+			c.Updated++
+		}
 		res.PerRun[run] = c
 	}
-	countUpdated := func(key string) {
-		run := src.OwnerRun(key)
-		c := res.PerRun[run]
-		c.Updated++
-		res.PerRun[run] = c
-	}
-
-	segKeys := src.Keys()
-	si := 0
 
 	oldReader, oldClose, err := openOldStore(oldStorePath)
 	if err != nil {
@@ -75,21 +69,23 @@ func StreamMerge(oldStorePath string, k Kind, tmpPath string, src MergeSource, c
 	}
 	defer oldClose()
 
-	oldKey, oldRec, oldOK, err := nextOldRecord(oldReader, k)
-	if err != nil {
-		out.Close()
-		return res, err
-	}
-
 	fail := func(err error) (MergeResult, error) {
 		out.Close()
 		return res, err
 	}
 
-	for oldOK && si < len(segKeys) {
-		segKey := segKeys[si]
+	oldKey, oldRec, oldOK, err := nextOldRecord(oldReader, k)
+	if err != nil {
+		return fail(err)
+	}
+	segKey, segRec, segRun, segOK, err := src.Next()
+	if err != nil {
+		return fail(err)
+	}
+
+	for oldOK || segOK {
 		switch {
-		case oldKey < segKey:
+		case oldOK && (!segOK || oldKey < segKey):
 			if covered[oldKey] {
 				if err := write(oldRec); err != nil {
 					return fail(err)
@@ -97,59 +93,24 @@ func StreamMerge(oldStorePath string, k Kind, tmpPath string, src MergeSource, c
 			} else {
 				res.Removed++
 			}
-			oldKey, oldRec, oldOK, err = nextOldRecord(oldReader, k)
-			if err != nil {
+			if oldKey, oldRec, oldOK, err = nextOldRecord(oldReader, k); err != nil {
 				return fail(err)
 			}
-		case oldKey == segKey:
-			rec, rerr := src.Record(segKey)
-			if rerr != nil {
-				return fail(rerr)
-			}
-			if err := write(rec); err != nil {
+		default:
+			replaces := oldOK && oldKey == segKey
+			if err := write(segRec); err != nil {
 				return fail(err)
 			}
-			countUpdated(segKey)
-			si++
-			oldKey, oldRec, oldOK, err = nextOldRecord(oldReader, k)
-			if err != nil {
+			count(segRun, !replaces)
+			if replaces {
+				if oldKey, oldRec, oldOK, err = nextOldRecord(oldReader, k); err != nil {
+					return fail(err)
+				}
+			}
+			if segKey, segRec, segRun, segOK, err = src.Next(); err != nil {
 				return fail(err)
 			}
-		default: // oldKey > segKey: source identity is new
-			rec, rerr := src.Record(segKey)
-			if rerr != nil {
-				return fail(rerr)
-			}
-			if err := write(rec); err != nil {
-				return fail(err)
-			}
-			countNew(segKey)
-			si++
 		}
-	}
-	for oldOK {
-		if covered[oldKey] {
-			if err := write(oldRec); err != nil {
-				return fail(err)
-			}
-		} else {
-			res.Removed++
-		}
-		oldKey, oldRec, oldOK, err = nextOldRecord(oldReader, k)
-		if err != nil {
-			return fail(err)
-		}
-	}
-	for ; si < len(segKeys); si++ {
-		key := segKeys[si]
-		rec, rerr := src.Record(key)
-		if rerr != nil {
-			return fail(rerr)
-		}
-		if err := write(rec); err != nil {
-			return fail(err)
-		}
-		countNew(key)
 	}
 
 	if err := w.Flush(); err != nil {

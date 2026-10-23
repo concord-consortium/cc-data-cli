@@ -2,8 +2,10 @@ package dataset
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -263,4 +265,44 @@ func identityFor(typ, sk, re, qid, hid string) store.Identity {
 		id[i] = vals[c]
 	}
 	return id
+}
+
+func TestATornSegmentLineFailsTheMergeAndKeepsTheStore(t *testing.T) {
+	d := newDataset(t)
+	seg := writeFinishedSegment(t, d, "history", 584, [][]byte{rec("s", "e1", "q1", "h1", "kept")})
+	if _, err := d.MergeCompact("history", 584, seg); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := d.ReadManifest()
+	storeBytes, err := os.ReadFile(d.Path(before.Stores["history"].File))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	whole := `{"entry_json":"` + strings.Repeat("x", 64) + `","history_id":"h2","question_id":"q1","remote_endpoint":"e1","source_key":"s"}`
+	// Identity keys precede the cut, so only the whole-line JSON check can reject this line.
+	torn := `{"history_id":"h2","question_id":"q1","remote_endpoint":"e1","source_key":"s","entry_json":"xx` + whole + "\n"
+	seg2 := store.OpenSegment(d.Dir, "history", 612)
+	if err := os.MkdirAll(filepath.Dir(seg2.Path()), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(seg2.Path(), []byte(torn), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := seg2.WriteCursor(&store.Cursor{Pages: 1, Items: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.MergeCompact("history", 612, seg2); err == nil {
+		t.Fatal("a torn segment line must fail the merge")
+	}
+	after, _ := d.ReadManifest()
+	if after.Stores["history"].Version != before.Stores["history"].Version || after.Stores["history"].File != before.Stores["history"].File {
+		t.Fatalf("store moved: %+v -> %+v", before.Stores["history"], after.Stores["history"])
+	}
+	if got, _ := os.ReadFile(d.Path(after.Stores["history"].File)); !bytes.Equal(got, storeBytes) {
+		t.Fatal("the store's bytes changed")
+	}
+	if !seg2.Exists() {
+		t.Fatal("the segment must survive a failed merge")
+	}
 }

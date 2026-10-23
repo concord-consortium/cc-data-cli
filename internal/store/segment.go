@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"time"
 
@@ -150,19 +152,19 @@ func (s *Segment) MarkMerged(version int) error {
 	return s.WriteCursor(c)
 }
 
-// segEntry indexes one record's position and identity in the segment.
-type segEntry struct {
-	id     Identity
+type indexEntry struct {
+	key    string
 	offset int64
-	length int
+	length int32
 }
 
-// SegmentIndex holds the sorted-by-key index of a segment; records are streamed
-// from the file by offset, so only the tuples (not the records) live in memory.
+// SegmentIndex is the segment's identities in key order, one entry per key (the last
+// occurrence in the file wins). Records stay on disk and are read by offset, so only the
+// keys and positions live in memory.
 type SegmentIndex struct {
 	f        *os.File
-	keys     []string
-	entries  map[string]segEntry
+	kind     Kind
+	entries  []indexEntry
 	rawCount int
 }
 
@@ -178,7 +180,7 @@ func (s *Segment) BuildIndex() (*SegmentIndex, error) {
 		f.Close()
 		return nil, fmt.Errorf("unknown store type %q", s.Type)
 	}
-	idx := &SegmentIndex{f: f, entries: map[string]segEntry{}}
+	idx := &SegmentIndex{f: f, kind: kind}
 	r := bufio.NewReader(f)
 	var offset int64
 	for {
@@ -196,8 +198,11 @@ func (s *Segment) BuildIndex() (*SegmentIndex, error) {
 					f.Close()
 					return nil, ierr
 				}
-				key := kind.Key(id)
-				idx.entries[key] = segEntry{id: id, offset: offset, length: len(trimmed)}
+				if len(trimmed) > math.MaxInt32 {
+					f.Close()
+					return nil, fmt.Errorf("segment %s: line at offset %d exceeds %d bytes", s.base(), offset, math.MaxInt32)
+				}
+				idx.entries = append(idx.entries, indexEntry{key: kind.Key(id), offset: offset, length: int32(len(trimmed))})
 				idx.rawCount++
 			}
 		}
@@ -213,23 +218,31 @@ func (s *Segment) BuildIndex() (*SegmentIndex, error) {
 			return nil, err
 		}
 	}
-	idx.keys = make([]string, 0, len(idx.entries))
-	for k := range idx.entries {
-		idx.keys = append(idx.keys, k)
+	// Stable, so the last entry of each run of equal keys is the latest in the file.
+	sort.SliceStable(idx.entries, func(i, j int) bool { return idx.entries[i].key < idx.entries[j].key })
+	kept := idx.entries[:0]
+	for i, e := range idx.entries {
+		if i+1 < len(idx.entries) && idx.entries[i+1].key == e.key {
+			continue
+		}
+		kept = append(kept, e)
 	}
-	sort.Strings(idx.keys)
+	clear(idx.entries[len(kept):])
+	if len(kept) < cap(kept)/2 {
+		kept = slices.Clone(kept)
+	}
+	idx.entries = kept
 	return idx, nil
 }
 
-// Keys returns the sorted identity keys.
-func (idx *SegmentIndex) Keys() []string { return idx.keys }
+// Len returns the number of distinct identities.
+func (idx *SegmentIndex) Len() int { return len(idx.entries) }
 
 // RawCount returns the number of records scanned (including resume duplicates).
 func (idx *SegmentIndex) RawCount() int { return idx.rawCount }
 
-// Record reads the record bytes for a key by seeking to its offset.
-func (idx *SegmentIndex) Record(key string) ([]byte, error) {
-	e := idx.entries[key]
+func (idx *SegmentIndex) record(i int) ([]byte, error) {
+	e := idx.entries[i]
 	buf := make([]byte, e.length)
 	if _, err := idx.f.ReadAt(buf, e.offset); err != nil {
 		return nil, err
@@ -237,14 +250,11 @@ func (idx *SegmentIndex) Record(key string) ([]byte, error) {
 	return buf, nil
 }
 
-// Identity returns the identity for a key.
-func (idx *SegmentIndex) Identity(key string) Identity { return idx.entries[key].id }
-
-// Identities returns the segment's identity set.
+// Identities returns the segment's identity set in key order.
 func (idx *SegmentIndex) Identities() []Identity {
-	out := make([]Identity, 0, len(idx.keys))
-	for _, k := range idx.keys {
-		out = append(out, idx.entries[k].id)
+	out := make([]Identity, 0, len(idx.entries))
+	for _, e := range idx.entries {
+		out = append(out, idx.kind.Decode(e.key))
 	}
 	return out
 }

@@ -30,7 +30,7 @@ func TestBuildIndexPropagatesReadError(t *testing.T) {
 
 	idx, err := seg.BuildIndex()
 	if err == nil {
-		t.Fatalf("BuildIndex must return the read error, not a partial index + nil (got %d keys)", len(idx.Keys()))
+		t.Fatalf("BuildIndex must return the read error, not a partial index + nil (got %d keys)", idx.Len())
 	}
 	if errors.Is(err, io.EOF) {
 		t.Fatalf("a real read error must not be reported as EOF: %v", err)
@@ -57,8 +57,8 @@ func TestBuildIndexHappyPathStillWorks(t *testing.T) {
 	// BuildIndex keeps the segment file open for offset reads; close it so the
 	// temp dir cleanup succeeds (Windows cannot remove a file with an open handle).
 	defer idx.Close()
-	if len(idx.Keys()) != 2 {
-		t.Fatalf("expected 2 indexed identities, got %d", len(idx.Keys()))
+	if idx.Len() != 2 {
+		t.Fatalf("expected 2 indexed identities, got %d", idx.Len())
 	}
 }
 

@@ -120,13 +120,7 @@ func (d *Dataset) mergeUnderLock(typ string, runID int, seg *store.Segment) (sto
 		if len(swept) == 0 {
 			src = store.NewSingleSource(primaryIdx, runID)
 		} else {
-			ms, merr := store.NewMultiSource(byRun)
-			if merr != nil {
-				closeAll(byRun)
-				releaseSwept(swept)
-				return store.MergeCounts{}, merr
-			}
-			src = ms
+			src = store.NewMultiSource(byRun)
 		}
 
 		oldPath := ""
