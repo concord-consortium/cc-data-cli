@@ -68,7 +68,8 @@ like `wildfire_2026.answers`):
   `class`, `learner_id`, ...) that are NULL for a plain `student-actions` run's
   rows, while shared columns like `event`/`time` populate for both. When a column
   exists only for some runs, scope by `run_id` (or filter via `downloads`, which
-  carries `run_id`, `type`, `slug`, `report_type`, `hide_names`, `complete`).
+  carries `run_id`, `class_id`, `type`, `slug`, `report_type`, `hide_names`,
+  `complete`).
   **`student_name` and `username` mean different things run by run.** Where a run
   hid names, `student_name` holds the student id and `username` a hash, under the
   same column names, so runs fetched under different roles are union-compatible

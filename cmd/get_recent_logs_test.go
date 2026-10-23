@@ -72,3 +72,14 @@ func TestGetRecentLogsRefusesBadFlags(t *testing.T) {
 		t.Errorf("a refused pull reached the server: %v", *requests)
 	}
 }
+
+func TestQueryHelpListsNoPerClassView(t *testing.T) {
+	long := newQueryCmd().Long
+	_, perRun, ok := strings.Cut(long, "per-run views")
+	if !ok || !strings.Contains(perRun, "clue_content") {
+		t.Fatalf("query help has no per-run view list:\n%s", long)
+	}
+	if strings.Contains(perRun, "recent_logs") {
+		t.Errorf("query help lists a per-run recent_logs view:\n%s", perRun)
+	}
+}

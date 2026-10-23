@@ -756,8 +756,9 @@ func bareViewName(name, prefix string) string {
 	return strings.Trim(strings.TrimPrefix(name, prefix), `"`)
 }
 
-// IdentityColumnNames returns the columns that identify a record across the stores, from the
-// store registry, so the drift guard's inventory side stays code-derived.
+// IdentityColumnNames returns run_membership's key columns, the identity columns of every
+// run-keyed store, from the store registry, so the drift guard's inventory side stays
+// code-derived.
 func IdentityColumnNames() []string {
 	names := store.IdentityColumns()
 	sort.Strings(names)
