@@ -154,11 +154,12 @@ func (d *Dataset) Reindex() error {
 	m.Downloads = append(m.Downloads, attach...)
 
 	// Carry forward a class-keyed download with no membership on disk: a pull that returned no
-	// rows merges nothing, but its entry holds the class's cursor.
+	// rows merges nothing, but its entry holds the class's cursor. An entry with no class, which
+	// an older cc-data's manifest rewrite leaves, is dropped.
 	var classes []Download
 	for k, dl := range prior {
 		if kind, ok := store.KindOf(k.typ); ok && kind.ClassKeyed {
-			if _, held := newestMember[MembershipKey(k.typ, k.run)]; !held {
+			if _, held := newestMember[MembershipKey(k.typ, k.run)]; !held && dl.ClassID > 0 {
 				classes = append(classes, dl)
 			}
 		}

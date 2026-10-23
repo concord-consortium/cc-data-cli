@@ -468,6 +468,9 @@ func TestReindexRecoversARecentLogsPull(t *testing.T) {
 	if err := d.UpsertDownload(Download{Type: store.TypeRecentLogs, ClassID: 591, Complete: true, RecentLogs: empty}); err != nil {
 		t.Fatal(err)
 	}
+	if err := d.UpsertDownload(Download{Type: store.TypeRecentLogs, Complete: true}); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := d.Reindex(); err != nil {
 		t.Fatal(err)
