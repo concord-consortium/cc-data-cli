@@ -171,10 +171,11 @@ func (opts PagedOptions) computeCoverage(totalEndpoints *int) *dataset.Coverage 
 	m, err := opts.DS.ReadManifest()
 	if err == nil {
 		if ref, ok := m.Membership[dataset.MembershipKey(opts.Type, opts.RunID)]; ok {
-			if ids, rerr := store.ReadMembershipFile(opts.DS.Path(ref.File)); rerr == nil {
+			kind := store.MustKind(opts.Type)
+			if ids, rerr := store.ReadMembershipFile(opts.DS.Path(ref.File), kind); rerr == nil {
 				endpoints := map[string]bool{}
 				for _, id := range ids {
-					endpoints[id.RemoteEndpoint] = true
+					endpoints[kind.Field(id, "remote_endpoint")] = true
 				}
 				cov.WithData = len(endpoints)
 			}

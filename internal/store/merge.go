@@ -28,12 +28,12 @@ type MergeResult struct {
 // store to tmpPath and fsyncing it. The source beats the store on equal keys;
 // old-store identities not in covered are dropped and counted as removed. Counts
 // are attributed per owning run.
-func StreamMerge(oldStorePath, typ, tmpPath string, src MergeSource, covered map[string]bool) (MergeResult, error) {
+func StreamMerge(oldStorePath string, k Kind, tmpPath string, src MergeSource, covered map[string]bool) (MergeResult, error) {
 	res := MergeResult{PerRun: map[int]MergeCounts{}}
 	for _, run := range src.Runs() {
 		res.PerRun[run] = MergeCounts{Fetched: src.RawCount(run)}
 	}
-	detector := NewColumnDetector()
+	detector := NewColumnDetector(k)
 
 	out, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
@@ -75,7 +75,7 @@ func StreamMerge(oldStorePath, typ, tmpPath string, src MergeSource, covered map
 	}
 	defer oldClose()
 
-	oldKey, oldRec, oldOK, err := nextOldRecord(oldReader, typ)
+	oldKey, oldRec, oldOK, err := nextOldRecord(oldReader, k)
 	if err != nil {
 		out.Close()
 		return res, err
@@ -97,7 +97,7 @@ func StreamMerge(oldStorePath, typ, tmpPath string, src MergeSource, covered map
 			} else {
 				res.Removed++
 			}
-			oldKey, oldRec, oldOK, err = nextOldRecord(oldReader, typ)
+			oldKey, oldRec, oldOK, err = nextOldRecord(oldReader, k)
 			if err != nil {
 				return fail(err)
 			}
@@ -111,7 +111,7 @@ func StreamMerge(oldStorePath, typ, tmpPath string, src MergeSource, covered map
 			}
 			countUpdated(segKey)
 			si++
-			oldKey, oldRec, oldOK, err = nextOldRecord(oldReader, typ)
+			oldKey, oldRec, oldOK, err = nextOldRecord(oldReader, k)
 			if err != nil {
 				return fail(err)
 			}
@@ -135,7 +135,7 @@ func StreamMerge(oldStorePath, typ, tmpPath string, src MergeSource, covered map
 		} else {
 			res.Removed++
 		}
-		oldKey, oldRec, oldOK, err = nextOldRecord(oldReader, typ)
+		oldKey, oldRec, oldOK, err = nextOldRecord(oldReader, k)
 		if err != nil {
 			return fail(err)
 		}
@@ -183,18 +183,18 @@ func openOldStore(path string) (*bufio.Reader, func(), error) {
 
 // nextOldRecord reads the next non-empty record from the old store and computes
 // its key.
-func nextOldRecord(r *bufio.Reader, typ string) (key string, rec []byte, ok bool, err error) {
+func nextOldRecord(r *bufio.Reader, k Kind) (key string, rec []byte, ok bool, err error) {
 	for {
 		line, readErr := r.ReadBytes('\n')
 		trimmed := bytes.TrimSpace(bytes.TrimRight(line, "\n"))
 		if len(trimmed) > 0 {
-			id, ierr := IdentityFromRecord(typ, trimmed)
+			id, ierr := IdentityFromRecord(k, trimmed)
 			if ierr != nil {
 				return "", nil, false, ierr
 			}
 			out := make([]byte, len(trimmed))
 			copy(out, trimmed)
-			return id.Key(typ), out, true, nil
+			return k.Key(id), out, true, nil
 		}
 		if readErr == io.EOF {
 			return "", nil, false, nil

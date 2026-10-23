@@ -161,7 +161,6 @@ type segEntry struct {
 // from the file by offset, so only the tuples (not the records) live in memory.
 type SegmentIndex struct {
 	f        *os.File
-	typ      string
 	keys     []string
 	entries  map[string]segEntry
 	rawCount int
@@ -174,7 +173,12 @@ func (s *Segment) BuildIndex() (*SegmentIndex, error) {
 	if err != nil {
 		return nil, err
 	}
-	idx := &SegmentIndex{f: f, typ: s.Type, entries: map[string]segEntry{}}
+	kind, ok := KindOf(s.Type)
+	if !ok {
+		f.Close()
+		return nil, fmt.Errorf("unknown store type %q", s.Type)
+	}
+	idx := &SegmentIndex{f: f, entries: map[string]segEntry{}}
 	r := bufio.NewReader(f)
 	var offset int64
 	for {
@@ -182,12 +186,17 @@ func (s *Segment) BuildIndex() (*SegmentIndex, error) {
 		if len(line) > 0 {
 			trimmed := bytes.TrimRight(line, "\n")
 			if len(bytes.TrimSpace(trimmed)) > 0 {
-				id, ierr := IdentityFromRecord(s.Type, trimmed)
+				// The identity scan stops early and would accept a torn line, so validate it whole.
+				if !json.Valid(trimmed) {
+					f.Close()
+					return nil, fmt.Errorf("segment %s: line at offset %d is not valid JSON", s.base(), offset)
+				}
+				id, ierr := IdentityFromRecord(kind, trimmed)
 				if ierr != nil {
 					f.Close()
 					return nil, ierr
 				}
-				key := id.Key(s.Type)
+				key := kind.Key(id)
 				idx.entries[key] = segEntry{id: id, offset: offset, length: len(trimmed)}
 				idx.rawCount++
 			}

@@ -17,7 +17,7 @@ The steps run in order and each leaves `go test ./...` green. The first three ch
 - `internal/store/identity.go`: `Identity` as values; token-scan extraction.
 - `internal/store/membership.go`: per-kind line encoding.
 - `internal/store/columns.go`: `NewColumnDetector(kind)`; pins move onto the kind.
-- `internal/store/{merge,segment,mergesource}.go`: take a `Kind` where they took `typ string`.
+- `internal/store/{merge,segment,mergesource}.go`: take a `Kind` where they took `typ string`; `BuildIndex` checks each segment line with `json.Valid` before the identity scan, since the scan stops early and would otherwise accept a torn line.
 - `internal/dataset/{merge,reindex,summary}.go`: `storeVersionRe`, `reindexStoreRe`, `reindexMemberRe`, `finalArtifactRe`, `manifestTotals` from the registry.
 - `internal/dataset/dataset.go`: `artifactFileRe`, the match `dataset purge` and `dataset delete` remove files by, from the registry.
 - `internal/duck/{views,materialize}.go`: `statements()` loops the registry for store views; `perStoreView` takes `USING` from the kind; `isStoreType` and `IdentityColumnNames` from the registry; `membershipColumns` derived from the kinds. `contractStoreColumns` stays as it is until the CLUE step deletes it.
@@ -70,7 +70,7 @@ func (k Kind) Field(id Identity, col string) string { ... } // "" when col is no
 **Summary**: The segment index stops holding a map of full identities. It becomes a slice of `(key, offset, length)` sorted by key with duplicates resolved last-wins by offset, and `MergeSource` becomes an iterator so a multi-run sweep is a k-way merge of those slices rather than a map over every key (R11).
 
 **Files affected**:
-- `internal/store/segment.go`: `SegmentIndex` as a sorted slice; `BuildIndex` checks each line with `json.Valid`, reads the key with `IdentityFromRecord` and keeps no `Identity`.
+- `internal/store/segment.go`: `SegmentIndex` as a sorted slice; `BuildIndex` keeps the registry step's `json.Valid` check, reads the key with `IdentityFromRecord` and keeps no `Identity`.
 - `internal/store/mergesource.go`: `MergeSource` iterator; `SingleSource`, `MultiSource` rewritten.
 - `internal/store/merge.go`: `StreamMerge` consumes the iterator.
 - `internal/store/segment_fault_test.go`: unchanged assertions on the new type.

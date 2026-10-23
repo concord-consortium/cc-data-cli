@@ -196,7 +196,7 @@ func (m *Manifest) SetMembershipRef(typ string, run, version int) {
 		m.Membership = map[string]MembershipRef{}
 	}
 	m.Membership[MembershipKey(typ, run)] = MembershipRef{
-		File:    fmt.Sprintf("members_%s_%d.v%d.jsonl", typ, run, version),
+		File:    memberFileName(typ, run, version),
 		Version: version,
 	}
 }

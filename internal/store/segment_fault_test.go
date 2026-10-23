@@ -61,3 +61,20 @@ func TestBuildIndexHappyPathStillWorks(t *testing.T) {
 		t.Fatalf("expected 2 indexed identities, got %d", len(idx.Keys()))
 	}
 }
+
+func TestBuildIndexRefusesATornLine(t *testing.T) {
+	dir := t.TempDir()
+	seg := OpenSegment(dir, TypeAnswers, 1)
+	if err := os.MkdirAll(filepath.Dir(seg.Path()), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	whole := `{"question_id":"q","remote_endpoint":"r","source_key":"s","answer":"a"}`
+	torn := `{"question_id":"q","remote_endpoint":"r","source_key":"s","ans` + whole + "\n"
+	if err := os.WriteFile(seg.Path(), []byte(torn), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if idx, err := seg.BuildIndex(); err == nil {
+		idx.Close()
+		t.Fatal("BuildIndex accepted a torn segment line")
+	}
+}

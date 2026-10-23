@@ -1,0 +1,141 @@
+{
+  "version": 1,
+  "name": "v02",
+  "description": "written by cc-data 0.2.x",
+  "created_at": "2026-10-23T11:42:19.898916305Z",
+  "stores": {
+    "answers": {
+      "file": "answers.v2.jsonl",
+      "version": 2,
+      "count": 3,
+      "columns": {
+        "_decode_error": "BOOLEAN",
+        "_fetched_at": "TIMESTAMP",
+        "_run_id": "BIGINT",
+        "answer": "JSON",
+        "history_id": "VARCHAR",
+        "interactive_state_raw": "VARCHAR",
+        "question_id": "VARCHAR",
+        "remote_endpoint": "VARCHAR",
+        "report_state": "JSON",
+        "report_state_raw": "VARCHAR",
+        "source_key": "VARCHAR"
+      }
+    },
+    "history": {
+      "file": "history.v1.jsonl",
+      "version": 1,
+      "count": 2,
+      "columns": {
+        "_decode_error": "BOOLEAN",
+        "_fetched_at": "TIMESTAMP",
+        "_run_id": "BIGINT",
+        "answer": "JSON",
+        "history_id": "VARCHAR",
+        "interactive_state_raw": "VARCHAR",
+        "question_id": "VARCHAR",
+        "remote_endpoint": "VARCHAR",
+        "report_state": "JSON",
+        "report_state_raw": "VARCHAR",
+        "source_key": "VARCHAR"
+      }
+    }
+  },
+  "membership": {
+    "answers/584": {
+      "file": "members_answers_584.v1.jsonl",
+      "version": 1
+    },
+    "answers/585": {
+      "file": "members_answers_585.v2.jsonl",
+      "version": 2
+    },
+    "history/584": {
+      "file": "members_history_584.v1.jsonl",
+      "version": 1
+    }
+  },
+  "downloads": [
+    {
+      "type": "answers",
+      "run_id": 584,
+      "coverage": {
+        "queried": 3,
+        "with_data": 2,
+        "empty": 1
+      },
+      "merge_counts": {
+        "fetched": 2,
+        "new": 2,
+        "updated": 0,
+        "removed": 0
+      },
+      "complete": true,
+      "fetched_at": "2026-10-23T11:42:19.958529755Z"
+    },
+    {
+      "type": "answers",
+      "run_id": 585,
+      "coverage": {
+        "queried": 3,
+        "with_data": 2,
+        "empty": 1
+      },
+      "merge_counts": {
+        "fetched": 2,
+        "new": 1,
+        "updated": 1,
+        "removed": 0
+      },
+      "complete": true,
+      "fetched_at": "2026-10-23T11:42:20.00922176Z"
+    },
+    {
+      "type": "history",
+      "run_id": 584,
+      "coverage": {
+        "queried": 3,
+        "with_data": 1,
+        "empty": 2
+      },
+      "merge_counts": {
+        "fetched": 2,
+        "new": 2,
+        "updated": 0,
+        "removed": 0
+      },
+      "history_mode": "full",
+      "complete": true,
+      "fetched_at": "2026-10-23T11:42:20.06467073Z"
+    }
+  ],
+  "attachments": null,
+  "materialized": {
+    "answers": {
+      "file": "materialized/answers.parquet",
+      "inputs": {
+        "answers.v2.jsonl": "851-1792755739983881412"
+      },
+      "signature": "b781b8813f3ce9ab2f06de41263ec37ee8c77967ac8c24afb1bc4ab405d36280",
+      "built_at": "2026-10-23T11:42:20.094498648Z"
+    },
+    "history": {
+      "file": "materialized/history.parquet",
+      "inputs": {
+        "history.v1.jsonl": "590-1792755740038881469"
+      },
+      "signature": "c2b0b42a37be55faa5b036ab6e1796190ae50bb13a5ef0bf2adf14617cc84fd2",
+      "built_at": "2026-10-23T11:42:20.094498648Z"
+    },
+    "run_membership": {
+      "file": "materialized/run_membership.parquet",
+      "inputs": {
+        "members_answers_584.v1.jsonl": "302-1792755739938881365",
+        "members_answers_585.v2.jsonl": "302-1792755739989881418",
+        "members_history_584.v1.jsonl": "356-1792755740044881475"
+      },
+      "signature": "c089eef6fe3b2ad5657d441f02605b8159543a21f11754b56a6f349152152d42",
+      "built_at": "2026-10-23T11:42:20.094498648Z"
+    }
+  }
+}

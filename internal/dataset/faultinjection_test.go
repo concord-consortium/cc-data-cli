@@ -5,6 +5,8 @@ import (
 	"io"
 	"os"
 	"testing"
+
+	"github.com/concord-consortium/cc-data-cli/internal/store"
 )
 
 // The tests in this file inject filesystem faults (an unreadable store, a missing
@@ -47,7 +49,7 @@ func TestScanStoreCountAndColumnsPropagatesReadError(t *testing.T) {
 	if err := os.Mkdir(p, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	_, _, err := scanStoreCountAndColumns(p)
+	_, _, err := scanStoreCountAndColumns(store.MustKind(store.TypeAnswers), p)
 	if err == nil {
 		t.Fatal("scanStoreCountAndColumns must return a read error, not a truncated count as success")
 	}

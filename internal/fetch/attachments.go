@@ -12,6 +12,7 @@ import (
 	"github.com/concord-consortium/cc-data-cli/internal/api"
 	"github.com/concord-consortium/cc-data-cli/internal/dataset"
 	"github.com/concord-consortium/cc-data-cli/internal/output"
+	"github.com/concord-consortium/cc-data-cli/internal/store"
 )
 
 const attachmentChunkSize = 100
@@ -242,7 +243,7 @@ func applySelectors(refs []dataset.AttachRef, opts AttachmentOptions) []dataset.
 		if opts.History != "" && !(r.Collection == "history" && r.DocID == opts.History) {
 			continue
 		}
-		if opts.Question != "" && r.Identity.QuestionID != opts.Question {
+		if opts.Question != "" && store.MustKind(r.Collection).Field(r.Identity, "question_id") != opts.Question {
 			continue
 		}
 		if opts.Name != "" && r.Name != opts.Name {

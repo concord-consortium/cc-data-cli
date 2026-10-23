@@ -68,7 +68,7 @@ func storeIdentities(t *testing.T, d *Dataset, typ string) []store.Identity {
 		if line == "" {
 			continue
 		}
-		id, err := store.IdentityFromRecord(typ, []byte(line))
+		id, err := store.IdentityFromRecord(store.MustKind(typ), []byte(line))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -91,8 +91,9 @@ func readData(t *testing.T, storeFile, typ string, want store.Identity) string {
 		if line == "" {
 			continue
 		}
-		id, _ := store.IdentityFromRecord(typ, []byte(line))
-		if id.Key(typ) != want.Key(typ) {
+		kind := store.MustKind(typ)
+		id, _ := store.IdentityFromRecord(kind, []byte(line))
+		if kind.Key(id) != kind.Key(want) {
 			continue
 		}
 		var obj map[string]any
@@ -110,7 +111,7 @@ func assertDistinct(t *testing.T, d *Dataset, typ string) {
 	ids := storeIdentities(t, d, typ)
 	seen := map[string]bool{}
 	for _, id := range ids {
-		k := id.Key(typ)
+		k := store.MustKind(typ).Key(id)
 		if seen[k] {
 			t.Fatalf("duplicate identity in store: %+v", id)
 		}
@@ -247,9 +248,19 @@ func TestMergeSortedOutput(t *testing.T) {
 	ids := storeIdentities(t, d, "answers")
 	keys := make([]string, len(ids))
 	for i, id := range ids {
-		keys[i] = id.Key("answers")
+		keys[i] = store.MustKind(store.TypeAnswers).Key(id)
 	}
 	if !sort.StringsAreSorted(keys) {
 		t.Fatalf("store not sorted by identity key: %v", keys)
 	}
+}
+
+func identityFor(typ, sk, re, qid, hid string) store.Identity {
+	vals := map[string]string{"source_key": sk, "remote_endpoint": re, "question_id": qid, "history_id": hid}
+	k := store.MustKind(typ)
+	id := make(store.Identity, len(k.Identity))
+	for i, c := range k.Identity {
+		id[i] = vals[c]
+	}
+	return id
 }

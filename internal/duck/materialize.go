@@ -558,7 +558,10 @@ func incompleteRuns(m *dataset.Manifest, view string, files []string) []int {
 	return runs
 }
 
-func isStoreType(t string) bool { return t == store.TypeAnswers || t == store.TypeHistory }
+func isStoreType(t string) bool {
+	_, ok := store.KindOf(t)
+	return ok
+}
 
 func intersects(a, b []string) bool {
 	seen := map[string]bool{}

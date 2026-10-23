@@ -3,7 +3,7 @@ package store
 import "testing"
 
 func TestColumnDetectorPinnedAndWidened(t *testing.T) {
-	d := NewColumnDetector()
+	d := NewColumnDetector(MustKind(TypeAnswers))
 	d.Observe([]byte(`{"source_key":"s","score":5,"ratio":1.5,"flag":true,"note":"hi","report_state":{"a":1}}`))
 	d.Observe([]byte(`{"score":7,"note":"there"}`))
 	m := d.Map()
@@ -29,7 +29,7 @@ func TestColumnDetectorPinnedAndWidened(t *testing.T) {
 }
 
 func TestColumnDetectorWideningRules(t *testing.T) {
-	d := NewColumnDetector()
+	d := NewColumnDetector(MustKind(TypeAnswers))
 	d.Observe([]byte(`{"n":1}`))
 	d.Observe([]byte(`{"n":2.5}`)) // int then double -> DOUBLE
 	d.Observe([]byte(`{"mix":1}`))
@@ -44,7 +44,7 @@ func TestColumnDetectorWideningRules(t *testing.T) {
 }
 
 func TestColumnDetectorNullOnlyIsVarchar(t *testing.T) {
-	d := NewColumnDetector()
+	d := NewColumnDetector(MustKind(TypeAnswers))
 	d.Observe([]byte(`{"maybe":null}`))
 	if d.Map()["maybe"] != TypeVARCHAR {
 		t.Fatalf("null-only field should default VARCHAR, got %q", d.Map()["maybe"])

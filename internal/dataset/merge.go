@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 
@@ -25,6 +24,7 @@ func (d *Dataset) CurrentStore(typ string) (Store, error) {
 // being merged (whose identity sets replace them wholesale), unions them with
 // all the new identities, and returns the covered key set.
 func (d *Dataset) membershipUnionMulti(m *Manifest, typ string, idsByRun map[int][]store.Identity) (map[string]bool, error) {
+	kind := store.MustKind(typ)
 	covered := map[string]bool{}
 	for key, ref := range m.Membership {
 		t, r, ok := parseMembershipKey(key)
@@ -37,17 +37,17 @@ func (d *Dataset) membershipUnionMulti(m *Manifest, typ string, idsByRun map[int
 		// Fail closed: a missing membership file must not silently drop this run's
 		// identities from covered, or the next merge would delete still-owned
 		// records (the sibling ScanRunAttachments fails closed for the same reason).
-		ids, err := store.ReadMembershipFile(d.Path(ref.File))
+		ids, err := store.ReadMembershipFile(d.Path(ref.File), kind)
 		if err != nil {
 			return nil, err
 		}
 		for _, id := range ids {
-			covered[id.Key(typ)] = true
+			covered[kind.Key(id)] = true
 		}
 	}
 	for _, ids := range idsByRun {
 		for _, id := range ids {
-			covered[id.Key(typ)] = true
+			covered[kind.Key(id)] = true
 		}
 	}
 	return covered, nil
@@ -55,8 +55,8 @@ func (d *Dataset) membershipUnionMulti(m *Manifest, typ string, idsByRun map[int
 
 // WriteMembership writes a run's membership version file.
 func (d *Dataset) WriteMembership(typ string, runID, version int, ids []store.Identity) error {
-	file := fmt.Sprintf("members_%s_%d.v%d.jsonl", typ, runID, version)
-	return store.WriteMembershipFile(d.Path(file), ids)
+	file := memberFileName(typ, runID, version)
+	return store.WriteMembershipFile(d.Path(file), store.MustKind(typ), ids)
 }
 
 // MergeCompact merges the segment into a new store version under the per-dataset
@@ -92,7 +92,7 @@ func (d *Dataset) mergeUnderLock(typ string, runID int, seg *store.Segment) (sto
 		}
 		cur := m.Stores[typ]
 		next := cur.Version + 1
-		tmp := d.Path(fmt.Sprintf("%s.v%d.jsonl.tmp", typ, next))
+		tmp := d.Path(storeFileName(typ, next) + ".tmp")
 
 		primaryIdx, err := seg.BuildIndex()
 		if err != nil {
@@ -133,7 +133,7 @@ func (d *Dataset) mergeUnderLock(typ string, runID int, seg *store.Segment) (sto
 		if cur.File != "" {
 			oldPath = d.Path(cur.File)
 		}
-		result, err := store.StreamMerge(oldPath, typ, tmp, src, covered)
+		result, err := store.StreamMerge(oldPath, store.MustKind(typ), tmp, src, covered)
 		closeAll(byRun)
 		if err != nil {
 			os.Remove(tmp)
@@ -157,7 +157,7 @@ func (d *Dataset) mergeUnderLock(typ string, runID int, seg *store.Segment) (sto
 
 		// Durable-write order is load-bearing: store rename, membership writes,
 		// manifest repoint, cursor merged_as, segment removal last.
-		final := d.Path(fmt.Sprintf("%s.v%d.jsonl", typ, next))
+		final := d.Path(storeFileName(typ, next))
 		if err := os.Rename(tmp, final); err != nil {
 			releaseSwept(swept)
 			return store.MergeCounts{}, err
@@ -281,7 +281,7 @@ func releaseSwept(swept []sweptSegment) {
 // to abort after each of the five durable writes.
 var testHookAfterWrite = func(n int) {}
 
-var storeVersionRe = regexp.MustCompile(`^(answers|history)\.v(\d+)\.jsonl$`)
+var storeVersionRe = storeFileRe()
 
 // cleanupOldVersions removes superseded store versions for the type and old
 // membership versions for the run; best-effort and idempotent.
