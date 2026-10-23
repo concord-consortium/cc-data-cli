@@ -53,6 +53,13 @@ var clueDerived = map[string]map[string]string{
 		"action": "VARCHAR", "tile_id": "VARCHAR", "shared_model_id": "VARCHAR", "doc_uid": "VARCHAR",
 		"portal_class_id": "BIGINT", "unit": "VARCHAR", "investigation": "VARCHAR", "problem": "VARCHAR", "offering_id": "BIGINT",
 	},
+	store.TypeClueContent: {
+		"content_json": "JSON", "content_json_unparsed": "VARCHAR", "change_count": "BIGINT", "change_count_unparsed": "JSON",
+		"parse_ok": "BOOLEAN", "n_tiles": "BIGINT", "tile_types": "VARCHAR[]", "tile_type_counts": "JSON", "n_dataflow_tiles": "BIGINT",
+		"n_rows": "BIGINT", "n_shared_models": "BIGINT", "n_annotations": "BIGINT",
+		"self_uid": "VARCHAR", "self_doc_key": "VARCHAR", "self_class_hash": "VARCHAR",
+		"portal_class_id": "BIGINT", "unit": "VARCHAR", "investigation": "VARCHAR", "problem": "VARCHAR", "offering_id": "BIGINT",
+	},
 }
 
 // clueViewColumns is each CLUE view's expected schema over a store with only the pinned columns.
@@ -297,9 +304,9 @@ type clueContentRow struct {
 }
 
 var clueFixtureContent = []clueContentRow{
-	{"dA", `{"tileMap":{"T1":{"content":{"type":"Dataflow"}},"T2":{"content":{"type":"Dataflow"}},"T3":{"content":{"type":"Text"}},"T4":{"content":{"type":5}},"T5":{}},"rowMap":{"r1":{},"r2":{}},"sharedModelMap":{"s1":{}},"annotations":{"a1":{},"a2":{},"a3":{}}}`,
+	{"dA", `{"tileMap":{"T1":{"content":{"type":"Text"}},"T2":{"content":{"type":"Dataflow"}},"T3":{"content":{"type":"Dataflow"}},"T4":{"content":{"type":5}},"T5":{},"T6":{"content":{"type":"Geometry"}}},"rowMap":{"r1":{},"r2":{}},"sharedModelMap":{"s1":{}},"annotations":{"a1":{},"a2":{},"a3":{}}}`,
 		12, map[string]any{"uid": "101", "documentKey": "dA", "classHash": "hA"},
-		[]string{"5", "[Dataflow, Text]", `{"Dataflow":2,"Text":1}`, "2", "2", "1", "3"}},
+		[]string{"6", "[Dataflow, Geometry, Text]", `{"Dataflow":2,"Geometry":1,"Text":1}`, "2", "2", "1", "3"}},
 	{"dB", `{}`, "12", nil, []string{"0", "[]", "{}", "0", "0", "0", "0"}},
 	{"dC", `{"tileMap":`, 12.5, map[string]any{"uid": "103"}, nil},
 	{"dD", nil, nil, nil, nil},
@@ -548,6 +555,12 @@ func TestClueHistoryWithoutADocumentsStore(t *testing.T) {
 		if n := queryInt(t, e, "SELECT count(*) FROM clue_history WHERE coalesce(doc_uid, unit, investigation, problem, portal_class_id::VARCHAR, offering_id::VARCHAR) IS NOT NULL"); n != 0 {
 			t.Fatalf("%d clue_history rows carry document columns with no documents store", n)
 		}
+		if n := queryInt(t, e, "SELECT count(*) FROM clue_content"); n != len(clueFixtureContent) {
+			t.Fatalf("clue_content has %d rows without its documents, want %d", n, len(clueFixtureContent))
+		}
+		if n := queryInt(t, e, "SELECT count(*) FROM clue_content WHERE coalesce(unit, investigation, problem, portal_class_id::VARCHAR, offering_id::VARCHAR) IS NOT NULL"); n != 0 {
+			t.Fatalf("%d clue_content rows carry document columns with no documents store", n)
+		}
 		if got := strings.Count(warn, "clue_documents.v"); wantWarning != "" && got != 1 || wantWarning == "" && got != 0 {
 			t.Fatalf("warnings name the documents file %d times: %q", got, warn)
 		}
@@ -574,14 +587,16 @@ func TestClueHistoryWithoutADocumentsStore(t *testing.T) {
 		check(t, d, file)
 
 		res, _ := materialize(t, d, MaterializeOptions{})
-		for _, view := range []string{store.TypeClueDocuments, store.TypeClueHistory} {
+		for _, view := range []string{store.TypeClueDocuments, store.TypeClueHistory, store.TypeClueContent} {
 			if r, ok := res.Refused()[view]; !ok || !strings.Contains(r, file) {
 				t.Fatalf("%s outcome %q, want refused naming %s", view, outcomeReason(res, view), file)
 			}
 		}
 		res, _ = materialize(t, d, MaterializeOptions{AllowPartial: true})
-		if r := outcomeReason(res, store.TypeClueHistory); !slices.Contains(res.Written(), store.TypeClueHistory) || !strings.Contains(r, "built from 1 of 2 declared inputs") || !strings.Contains(r, file) {
-			t.Fatalf("clue_history with partial copies allowed: written %v, reason %q", res.Written(), r)
+		for _, view := range []string{store.TypeClueHistory, store.TypeClueContent} {
+			if r := outcomeReason(res, view); !slices.Contains(res.Written(), view) || !strings.Contains(r, "built from 1 of 2 declared inputs") || !strings.Contains(r, file) {
+				t.Fatalf("%s with partial copies allowed: written %v, reason %q", view, res.Written(), r)
+			}
 		}
 	})
 }
@@ -633,6 +648,7 @@ func TestClueViewsCaveatIncompleteStores(t *testing.T) {
 	for view, want := range map[string][]int{
 		store.TypeClueDocuments: {801},
 		store.TypeClueHistory:   {801, 802},
+		store.TypeClueContent:   {801},
 	} {
 		r := outcomeReason(res, view)
 		for _, run := range []int{801, 802} {
@@ -641,4 +657,80 @@ func TestClueViewsCaveatIncompleteStores(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestClueContentTileSummaries(t *testing.T) {
+	e := openEngine(t, []DatasetSpec{{DS: clueFixture(t)}}, nil)
+	for _, c := range clueFixtureContent {
+		want := c.summary
+		if want == nil {
+			want = slices.Repeat([]string{"<NULL>"}, 7)
+		}
+		got := queryRow(t, e, "SELECT n_tiles::VARCHAR, tile_types::VARCHAR, tile_type_counts::VARCHAR, n_dataflow_tiles::VARCHAR, n_rows::VARCHAR, n_shared_models::VARCHAR, n_annotations::VARCHAR FROM clue_content WHERE doc_id = '"+c.doc+"'")
+		if !slices.Equal(got, want) {
+			t.Errorf("%s tile summary %v, want %v", c.doc, got, want)
+		}
+	}
+}
+
+func TestClueContentCarriesItsDocumentsColumns(t *testing.T) {
+	d := clueFixture(t)
+	e := openEngine(t, []DatasetSpec{{DS: d}}, nil)
+	for _, c := range clueFixtureContent {
+		got := queryRow(t, e, "SELECT "+clueDocColumnsQuery(false)+" FROM clue_content WHERE doc_id = '"+c.doc+"'")
+		if want := clueDocWant(c.doc, false); !slices.Equal(got, want) {
+			t.Errorf("%s document columns %v, want %v", c.doc, got, want)
+		}
+	}
+	want := mustManifest(t, d).Stores[store.TypeClueContent].Count
+	if n := queryInt(t, e, "SELECT count(*) FROM clue_content"); n != want || n != len(clueFixtureContent) {
+		t.Fatalf("clue_content has %d rows, want the store's %d", n, want)
+	}
+}
+
+func TestClueContentSelfColumns(t *testing.T) {
+	e := openEngine(t, []DatasetSpec{{DS: clueFixture(t)}}, nil)
+	for doc, want := range map[string][]string{
+		"dA": {"101", "dA", "hA"},
+		"dC": {"103", "<NULL>", "<NULL>"},
+		"dB": {"<NULL>", "<NULL>", "<NULL>"},
+	} {
+		if got := queryRow(t, e, "SELECT self_uid, self_doc_key, self_class_hash FROM clue_content WHERE doc_id = '"+doc+"'"); !slices.Equal(got, want) {
+			t.Errorf("%s self_uid, self_doc_key, self_class_hash = %v, want %v", doc, got, want)
+		}
+	}
+}
+
+func TestClueContentChangeCount(t *testing.T) {
+	e := openEngine(t, []DatasetSpec{{DS: clueFixture(t)}}, nil)
+	for doc, want := range map[string][]string{
+		"dA": {"12", "<NULL>"},
+		"dB": {"<NULL>", `"12"`},
+		"dC": {"<NULL>", "12.5"},
+		"dX": {"<NULL>", `{"n":1}`},
+		"dD": {"<NULL>", "<NULL>"},
+	} {
+		if got := queryRow(t, e, "SELECT change_count::VARCHAR, change_count_unparsed::VARCHAR FROM clue_content WHERE doc_id = '"+doc+"'"); !slices.Equal(got, want) {
+			t.Errorf("%s change_count, change_count_unparsed = %v, want %v", doc, got, want)
+		}
+	}
+}
+
+func TestClueContentPayloads(t *testing.T) {
+	e := openEngine(t, []DatasetSpec{{DS: clueFixture(t)}}, nil)
+	for _, c := range clueFixtureContent {
+		want := []string{"<NULL>", "<NULL>", "<NULL>"}
+		if stored, ok := c.content.(string); ok && c.summary != nil {
+			want = []string{stored, "<NULL>", "true"}
+		} else if ok {
+			want = []string{"<NULL>", stored, "false"}
+		}
+		if got := queryRow(t, e, "SELECT content_json::VARCHAR, content_json_unparsed, parse_ok::VARCHAR FROM clue_content WHERE doc_id = '"+c.doc+"'"); !slices.Equal(got, want) {
+			t.Errorf("%s content_json, content_json_unparsed, parse_ok = %v, want %v", c.doc, got, want)
+		}
+	}
+}
+
+func TestClueContentFallbackDeclaresEveryColumn(t *testing.T) {
+	assertClueFallback(t, store.TypeClueContent)
 }

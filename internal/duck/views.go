@@ -74,6 +74,7 @@ func (vs viewSet) statements() []viewStmt {
 var derivedStoreViews = map[string]func(viewSet) viewStmt{
 	store.TypeClueDocuments: viewSet.clueDocumentsView,
 	store.TypeClueHistory:   viewSet.clueHistoryView,
+	store.TypeClueContent:   viewSet.clueContentView,
 }
 
 func (vs viewSet) file(rel string) string {

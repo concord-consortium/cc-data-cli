@@ -101,7 +101,7 @@ func (vs viewSet) clueDocumentsView() viewStmt {
 	})
 }
 
-// clueActionExprs normalizes an MST action path as CLUE's normalizeAction does:
+// clueActionExprs normalizes an MST action path as cc-data-studies' normalizeAction does:
 // each substitution replaces the first match only, as a non-global JavaScript regex does.
 func clueActionExprs(col string) (action, tileID, sharedModelID string) {
 	col = fmt.Sprintf("nullif(%s, '')", col) // normalizeAction returns nulls for any falsy raw
@@ -141,5 +141,40 @@ func (vs viewSet) clueHistoryView() viewStmt {
 FROM %s h LEFT JOIN %s d USING (doc_id)`,
 			entry, clueUndoable.replace("h.undoable"), unparsedColumn("h.entry_json", entry, "entry_json"), clueUndoable.unparsed("h.undoable"),
 			action, tileID, sharedModelID, docColumnRefs("d"), h, d), append(files, docFiles...)
+	})
+}
+
+// clueMapCount is the key count of one of content's top-level maps: 0 when the content
+// parsed and the map is absent, as cc-data-studies' summarise has it, and NULL with no content.
+func clueMapCount(path string) string {
+	return fmt.Sprintf("CASE WHEN cj.j IS NOT NULL THEN coalesce(len(json_keys(cj.j, %s)), 0) END", sqlStr(path))
+}
+
+var clueChangeCount = typedScalar{"change_count", []string{"BIGINT", "UBIGINT"}, func(c string) string { return fmt.Sprintf("TRY_CAST(%s AS BIGINT)", c) }}
+
+func (vs viewSet) clueContentView() viewStmt {
+	return vs.clueView(store.TypeClueContent, func(standIn bool) (string, []string) {
+		c, files := vs.clueSource(store.TypeClueContent, standIn, true)
+		d, docFiles := vs.clueDocJoin(standIn)
+		// Lateral relations, referenced qualified, so no store column can shadow them; untyped
+		// or non-string tile types are skipped, though n_tiles still counts their keys.
+		return fmt.Sprintf(`SELECT c.* REPLACE (cj.j AS content_json, %s),
+  CASE WHEN c.content_json IS NOT NULL AND cj.j IS NULL THEN c.content_json END AS content_json_unparsed,
+  %s,
+  CASE WHEN c.content_json IS NOT NULL THEN cj.j IS NOT NULL END AS parse_ok,
+  %s AS n_tiles,
+  CASE WHEN cj.j IS NOT NULL THEN list_sort(list_distinct(ct.types)) END AS tile_types,
+  CASE WHEN cj.j IS NOT NULL THEN coalesce(to_json((SELECT histogram(x) FROM unnest(ct.types) u(x))), '{}'::JSON) END AS tile_type_counts,
+  CASE WHEN cj.j IS NOT NULL THEN len(list_filter(ct.types, lambda x: x = 'Dataflow')) END AS n_dataflow_tiles,
+  %s AS n_rows, %s AS n_shared_models, %s AS n_annotations,
+  c.self ->> 'uid' AS self_uid, c.self ->> 'documentKey' AS self_doc_key, c.self ->> 'classHash' AS self_class_hash,
+  %s
+FROM %s c
+CROSS JOIN LATERAL (SELECT TRY_CAST(c.content_json AS JSON) AS j) cj
+CROSS JOIN LATERAL (SELECT list_transform(list_filter(json_extract(cj.j, '$.tileMap.*.content.type'), lambda x: json_type(x) = 'VARCHAR'), lambda x: x ->> '$') AS types) ct
+LEFT JOIN %s d USING (doc_id)`,
+			clueChangeCount.replace("c.change_count"), clueChangeCount.unparsed("c.change_count"),
+			clueMapCount("$.tileMap"), clueMapCount("$.rowMap"), clueMapCount("$.sharedModelMap"), clueMapCount("$.annotations"),
+			docColumnRefs("d"), c, d), append(files, docFiles...)
 	})
 }

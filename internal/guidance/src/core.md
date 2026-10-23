@@ -147,10 +147,20 @@ like `wildfire_2026.answers`):
   document's `uid`) and its `portal_class_id`, `unit`, `investigation`, `problem`
   and `offering_id`, NULL when the document is not in `clue_documents`; the join
   never adds or drops an entry.
-- `clue_content`: one row per CLUE document with its current content string in
-  `content_json`, NULL when `found` is false or the document has no content, no
-  dedup needed. `change_count` is JSON, as stored; cast it, e.g.
-  `TRY_CAST(change_count AS BIGINT)`.
+- `clue_content`: one row per CLUE document with its current content, no dedup
+  needed. `content_json` is the content as JSON, byte for byte, NULL when `found`
+  is false or the document has no content; content DuckDB cannot parse is NULL
+  there and kept as text in `content_json_unparsed`, and `parse_ok` says which (NULL
+  with no content). Tile summaries: `n_tiles` (every `tileMap` key), `tile_types`
+  (the sorted distinct tile types, `VARCHAR[]`), `tile_type_counts` (a JSON object
+  of type to count, `{}` with no typed tiles), `n_dataflow_tiles`, and the key
+  counts `n_rows`, `n_shared_models` and `n_annotations`; each is 0 or empty when
+  the content parsed and the map is absent, and NULL when `content_json` is NULL
+  (no content, or content DuckDB cannot parse). `self_uid`,
+  `self_doc_key` and `self_class_hash` come from the `self` object. `change_count`
+  is a BIGINT, with a stored value that is not an integer in
+  `change_count_unparsed`. Every row carries its document's `portal_class_id`,
+  `unit`, `investigation`, `problem` and `offering_id`, as `clue_history` does.
 - `run_membership` — one row per membership line with `run_id` and `type`. Join
   **type-qualified**: `answers a JOIN run_membership m USING
   (source_key, remote_endpoint, question_id) WHERE m.run_id = 584 AND m.type =
