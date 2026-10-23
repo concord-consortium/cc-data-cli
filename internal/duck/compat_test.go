@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -90,8 +91,22 @@ func TestV02DatasetOpensQueriesMergesAndReindexes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(stale) != 0 {
-		t.Fatalf("materialized views stale after the upgrade: %v", stale)
+	// Only run_membership's definition differs from 0.2.x's, so only its copy reads stale.
+	if !slices.Equal(stale, []string{"run_membership"}) {
+		t.Fatalf("materialized views stale after the upgrade: %v, want only run_membership", stale)
+	}
+	show, err := ShowJSON(d, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var staleWarnings []string
+	for _, w := range show.Warnings {
+		if strings.HasPrefix(w, "STALE_MATERIALIZED") {
+			staleWarnings = append(staleWarnings, w)
+		}
+	}
+	if len(staleWarnings) != 1 || !strings.Contains(staleWarnings[0], "run_membership") {
+		t.Fatalf("dataset show stale warnings %v, want one for run_membership", staleWarnings)
 	}
 
 	e := openEngine(t, []DatasetSpec{{DS: d}}, nil)

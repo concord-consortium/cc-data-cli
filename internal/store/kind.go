@@ -8,8 +8,11 @@ import (
 
 // Store types.
 const (
-	TypeAnswers = "answers"
-	TypeHistory = "history"
+	TypeAnswers       = "answers"
+	TypeHistory       = "history"
+	TypeClueDocuments = "clue_documents"
+	TypeClueHistory   = "clue_history"
+	TypeClueContent   = "clue_content"
 )
 
 // Kind declares one store type.
@@ -24,18 +27,25 @@ type Kind struct {
 }
 
 // laraPins are the answers and history contract fields.
-var laraPins = map[string]string{
+var laraPins = withStamps(map[string]string{
 	"source_key":            TypeVARCHAR,
 	"remote_endpoint":       TypeVARCHAR,
 	"question_id":           TypeVARCHAR,
 	"history_id":            TypeVARCHAR,
-	"_fetched_at":           TypeTIMESTAMP,
-	"_run_id":               TypeBIGINT,
 	"_decode_error":         TypeBOOLEAN,
 	"report_state":          TypeJSON,
 	"report_state_raw":      TypeVARCHAR,
 	"interactive_state_raw": TypeVARCHAR,
 	"answer":                TypeJSON,
+})
+
+// withStamps adds the _fetched_at and _run_id stamps every store record carries.
+func withStamps(fields map[string]string) map[string]string {
+	pins := map[string]string{"_fetched_at": TypeTIMESTAMP, "_run_id": TypeBIGINT}
+	for c, t := range fields {
+		pins[c] = t
+	}
+	return pins
 }
 
 var kinds = []Kind{
@@ -53,6 +63,76 @@ var kinds = []Kind{
 		Pinned:       laraPins,
 		Route:        "history",
 		DoubleDecode: true,
+	},
+	// Fields the export builds have strict types; fields it passes through from CLUE are
+	// VARCHAR or JSON, so one stray stored value cannot fail every query on the view.
+	{
+		Name:     TypeClueDocuments,
+		Identity: []string{"doc_id"},
+		Strict:   true,
+		Route:    "clue/documents",
+		Pinned: withStamps(map[string]string{
+			"doc_id":             TypeVARCHAR,
+			"uid":                TypeVARCHAR,
+			"context_id":         TypeVARCHAR,
+			"portal_class_id":    TypeBIGINT,
+			"owner_kind":         TypeVARCHAR,
+			"type":               TypeVARCHAR,
+			"visibility":         TypeVARCHAR,
+			"title":              TypeVARCHAR,
+			"unit":               TypeVARCHAR,
+			"investigation":      TypeVARCHAR,
+			"problem":            TypeVARCHAR,
+			"group_id":           TypeVARCHAR,
+			"network":            TypeVARCHAR,
+			"offering_id":        TypeBIGINT,
+			"tools":              TypeJSON,
+			"created_at":         TypeJSON,
+			"metadata_sources":   TypeJSON,
+			"firestore_metadata": TypeJSON,
+			"rtdb_metadata":      TypeJSON,
+		}),
+	},
+	{
+		Name:     TypeClueHistory,
+		Identity: []string{"doc_id", "entry_id"},
+		Strict:   true,
+		Route:    "clue/history",
+		Pinned: withStamps(map[string]string{
+			"doc_id":         TypeVARCHAR,
+			"entry_id":       TypeVARCHAR,
+			"idx":            TypeBIGINT,
+			"prev_entry_id":  TypeVARCHAR,
+			"server_created": TypeTIMESTAMP,
+			"created":        TypeTIMESTAMP,
+			"model":          TypeVARCHAR,
+			"action_raw":     TypeVARCHAR,
+			"undoable":       TypeJSON,
+			"state":          TypeVARCHAR,
+			"n_records":      TypeBIGINT,
+			"is_revert":      TypeBOOLEAN,
+			"entry_uid":      TypeVARCHAR,
+			"parse_ok":       TypeBOOLEAN,
+			"entry_json":     TypeVARCHAR,
+		}),
+	},
+	{
+		Name:     TypeClueContent,
+		Identity: []string{"doc_id"},
+		Strict:   true,
+		Route:    "clue/content",
+		Pinned: withStamps(map[string]string{
+			"doc_id":                TypeVARCHAR,
+			"uid":                   TypeVARCHAR,
+			"context_id":            TypeVARCHAR,
+			"found":                 TypeBOOLEAN,
+			"type":                  TypeVARCHAR,
+			"version":               TypeVARCHAR,
+			"change_count":          TypeJSON,
+			"last_history_entry_id": TypeVARCHAR,
+			"self":                  TypeJSON,
+			"content_json":          TypeVARCHAR,
+		}),
 	},
 }
 

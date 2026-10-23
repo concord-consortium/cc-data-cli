@@ -16,24 +16,6 @@ import (
 	"github.com/concord-consortium/cc-data-cli/internal/store"
 )
 
-// contractStoreColumns is the minimal typed schema an absent store falls back to.
-var contractStoreColumns = map[string]string{
-	"source_key":      "VARCHAR",
-	"remote_endpoint": "VARCHAR",
-	"question_id":     "VARCHAR",
-	"history_id":      "VARCHAR",
-	"_fetched_at":     "TIMESTAMP",
-	"_run_id":         "BIGINT",
-}
-
-var membershipColumns = func() map[string]string {
-	cols := map[string]string{}
-	for _, c := range store.IdentityColumns() {
-		cols[c] = store.TypeVARCHAR
-	}
-	return cols
-}()
-
 // viewStmt is one view with its primary SQL and a typed-empty fallback.
 type viewStmt struct {
 	name         string
@@ -70,7 +52,7 @@ func (vs viewSet) statements() []viewStmt {
 	stmts = append(stmts, vs.reportPromptsView())
 	stmts = append(stmts, vs.logsView())
 	for _, k := range store.Kinds() {
-		stmts = append(stmts, vs.storeView(k.Name))
+		stmts = append(stmts, vs.storeView(k))
 	}
 	stmts = append(stmts, vs.runMembershipView())
 	stmts = append(stmts, vs.runAnswersView())
@@ -322,11 +304,12 @@ func (vs viewSet) csvScan(dl dataset.Download, keepData bool, derived []derivedC
 	return scan
 }
 
-// storeView builds the answers or history view over the current store.
-func (vs viewSet) storeView(typ string) viewStmt {
-	name := vs.prefix + sqlIdent(typ)
-	st, ok := vs.m.Stores[typ]
-	cols := contractStoreColumns
+// storeView builds a registered store type's view, falling back to its pinned columns when
+// there is no store.
+func (vs viewSet) storeView(k store.Kind) viewStmt {
+	name := vs.prefix + sqlIdent(k.Name)
+	st, ok := vs.m.Stores[k.Name]
+	cols := k.Pinned
 	if ok && len(st.Columns) > 0 {
 		cols = st.Columns
 	}
@@ -348,23 +331,40 @@ func (vs viewSet) runMembershipView() viewStmt {
 		if !ok {
 			continue
 		}
+		kind, known := store.KindOf(typ)
+		if !known {
+			continue
+		}
+		own := map[string]string{}
+		for _, c := range kind.Identity {
+			own[c] = store.TypeVARCHAR
+		}
 		members = append(members, fmt.Sprintf(
 			"SELECT %d AS run_id, %s AS type, %s FROM read_json(%s, format='newline_delimited', columns=%s)",
-			run, sqlStr(typ), strings.Join(store.IdentityColumns(), ", "), vs.file(ref.File), columnsClause(membershipColumns)))
+			run, sqlStr(typ), membershipSelect(own), vs.file(ref.File), columnsClause(own)))
 		files = append(files, ref.File)
 	}
 	name := vs.prefix + `"run_membership"`
-	nulls := make([]string, 0, len(store.IdentityColumns()))
-	for _, c := range store.IdentityColumns() {
-		nulls = append(nulls, fmt.Sprintf("CAST(NULL AS VARCHAR) AS %s", c))
-	}
-	fallback := fmt.Sprintf("CREATE VIEW %s AS SELECT CAST(NULL AS BIGINT) AS run_id, CAST(NULL AS VARCHAR) AS type, %s WHERE false", name, strings.Join(nulls, ", "))
+	fallback := fmt.Sprintf("CREATE VIEW %s AS SELECT CAST(NULL AS BIGINT) AS run_id, CAST(NULL AS VARCHAR) AS type, %s WHERE false", name, membershipSelect(nil))
 	if len(members) == 0 {
 		return viewStmt{name: name, primary: fallback, fallback: fallback}
 	}
 	sort.Strings(members)
 	primary := fmt.Sprintf("CREATE VIEW %s AS %s", name, strings.Join(members, "\nUNION ALL BY NAME\n"))
 	return viewStmt{name: name, primary: primary, fallback: fallback, files: files}
+}
+
+// membershipSelect lists every registered identity column, NULL for those not in own.
+func membershipSelect(own map[string]string) string {
+	cols := make([]string, 0, len(store.IdentityColumns()))
+	for _, c := range store.IdentityColumns() {
+		if _, has := own[c]; has {
+			cols = append(cols, c)
+		} else {
+			cols = append(cols, fmt.Sprintf("CAST(NULL AS VARCHAR) AS %s", c))
+		}
+	}
+	return strings.Join(cols, ", ")
 }
 
 // runAnswersView is answers with the run_id of each answers membership. Always bound, unlike

@@ -116,12 +116,34 @@ like `wildfire_2026.answers`):
   alone distinguishes the five: `logs l JOIN downloads d ON d.run_id = l.run_id AND
   d.type = 'report'`. `hide_names` is NULL where the run's filter is not on disk,
   which the `reports` entry above explains and which is not the same as false.
-- `answers`, `history` — the identity-keyed stores (double-decoded
+- `answers`, `history` — the LARA identity-keyed stores (double-decoded
   `report_state`; no dedup needed).
+- `clue_documents`, `clue_history`, `clue_content` — the CLUE stores, no dedup
+  needed. `clue_documents` has one row per CLUE document: its owner (`uid`,
+  `context_id`, `portal_class_id`, `owner_kind`), unit and problem, `offering_id`,
+  and the raw Firestore and RTDB metadata. `clue_history` has one row per entry of a
+  document's edit history, with the stored entry string in `entry_json`; it is CLUE
+  **document** history, unrelated to `history`'s interactive-state snapshots.
+  `clue_content` has one row per document with its current content string in
+  `content_json`, NULL when `found` is false or the document has no content. Join
+  the three on `doc_id`. A CLUE row has no `remote_endpoint`, so it never joins the
+  LARA stores. `created_at`,
+  `change_count` and `undoable` are JSON, as stored; cast them, e.g.
+  `TRY_CAST(created_at AS BIGINT)`.
+  To put CLUE rows in a cohort, `uid` is VARCHAR and is a portal `user_id` only when
+  `owner_kind = 'student'` (group and class owners have synthetic ids): match it with
+  `TRY_CAST(d.uid AS BIGINT) = m.user_id` against `student_id_mapping`, plus
+  `d.portal_class_id = m.class_id`. `student_id_mapping` has one row per learner,
+  which is one per assignment, so that join repeats a document once per assignment
+  its student has in the class: test membership with `SEMI JOIN` or `EXISTS`, or add
+  `d.offering_id = m.offering_id`, which leaves out documents with no offering.
 - `run_membership` — one row per membership line with `run_id` and `type`. Join
   **type-qualified**: `answers a JOIN run_membership m USING
   (source_key, remote_endpoint, question_id) WHERE m.run_id = 584 AND m.type =
-  'answers'`. History joins add `history_id` to the USING list.
+  'answers'`. History joins add `history_id` to the USING list. CLUE stores join
+  `USING (doc_id)` (`clue_documents`, `clue_content`) or `USING (doc_id, entry_id)`
+  (`clue_history`); joining `clue_history` on `doc_id` alone repeats every entry once
+  per entry of its document.
 - `run_answers` — every `answers` row with `run_id`, once for each run whose
   answers fetch holds it (a Student Answers or a Student ID Mapping run), so one
   run's answers are `SELECT count(*) FROM
@@ -191,7 +213,8 @@ like `wildfire_2026.answers`):
   **One row per download, not per run**: a run that had its report, answers and
   history pulled has three, so join it type-qualified (`AND d.type = 'report'`)
   or the join fans out.
-- Per-run views: `report_<run>`, `answers_<run>`, `history_<run>`, and
+- Per-run views: `report_<run>`, `answers_<run>`, `history_<run>`,
+  `clue_documents_<run>`, `clue_history_<run>`, `clue_content_<run>`, and
   `report_<run>_job_<job>` for a run that has post-processing jobs.
 
 Learner identity (within a portal): in `answers`/`history`, a learner-run is keyed
@@ -236,14 +259,21 @@ Re-read any Portal run later by re-pulling the same run id; do not duplicate it.
 
 ## Identity columns
 
-A record is identified across the stores by these columns, which are also the
-`USING` key when joining a store to `run_membership`:
+Each store identifies a record by its own columns, which are also the `USING` key
+when joining it to `run_membership`: `answers` by `source_key`, `remote_endpoint`
+and `question_id`, `history` by those and `history_id`, `clue_documents` and
+`clue_content` by `doc_id`, and `clue_history` by `doc_id` and `entry_id`.
 
-- `source_key` — the data-source host the record came from.
-- `remote_endpoint` — one per student per offering-run, the learner-run key.
-- `question_id` — the question within the resource.
+- `source_key` — the data-source host the record came from (`answers`, `history`).
+- `remote_endpoint` — one per student per offering-run, the learner-run key
+  (`answers`, `history`).
+- `question_id` — the question within the resource (`answers`, `history`).
 - `history_id` — one snapshot within an answer's history. Only history joins
   need it; answers joins use the other three.
+- `doc_id` — one CLUE document, the whole key of `clue_documents` and
+  `clue_content` and the first half of `clue_history`'s.
+- `entry_id` — one entry of a CLUE document's edit history. Only `clue_history`
+  joins need it.
 
 ## Multi-dataset (longitudinal)
 

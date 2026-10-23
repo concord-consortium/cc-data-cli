@@ -215,9 +215,9 @@ func driftWarnings(d *Dataset, m *Manifest) []string {
 		if !dl.Complete {
 			warnings = append(warnings, "INCOMPLETE: a "+dl.Type+" download for run "+itoa(dl.RunID)+" did not finish")
 		}
-		// Only report/report_job downloads carry provenance; store downloads
-		// (answers/history) have none, so the recovered flag there is not a
-		// provenance gap and must not raise this warning.
+		// Only report/report_job downloads carry provenance; store downloads have
+		// none, so the recovered flag there is not a provenance gap and must not
+		// raise this warning.
 		if dl.Recovered && (dl.Type == "report" || dl.Type == "report_job") {
 			warnings = append(warnings, "RECOVERED_PROVENANCE: run "+itoa(dl.RunID)+" has no provenance; re-fetch to restore its report_type, its filter, and any dimension view it feeds")
 		}

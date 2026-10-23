@@ -25,12 +25,20 @@ func answerRec(sk, re, qid, data string) []byte {
 
 func buildStore(t *testing.T, d *dataset.Dataset, run int, recs [][]byte) {
 	t.Helper()
-	seg := store.OpenSegment(d.Dir, store.TypeAnswers, run)
+	landRaw(t, d, store.TypeAnswers, run, recs)
+}
+
+// landRaw merges records into a store type as one finished download for run.
+func landRaw(t *testing.T, d *dataset.Dataset, typ string, run int, recs [][]byte) {
+	t.Helper()
+	seg := store.OpenSegment(d.Dir, typ, run)
 	if err := seg.AppendPage(recs, time.Unix(int64(run), 0).UTC(), run); err != nil {
 		t.Fatal(err)
 	}
-	seg.WriteCursor(&store.Cursor{Items: len(recs)})
-	if _, err := d.MergeCompact(store.TypeAnswers, run, seg); err != nil {
+	if err := seg.WriteCursor(&store.Cursor{Pages: 1, Items: len(recs)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.MergeCompact(typ, run, seg); err != nil {
 		t.Fatal(err)
 	}
 }

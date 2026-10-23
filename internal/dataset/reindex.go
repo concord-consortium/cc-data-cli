@@ -100,7 +100,7 @@ func (d *Dataset) Reindex() error {
 		m.Membership[key] = MembershipRef{File: newestMemberFile[key], Version: v}
 	}
 
-	// Rebuild downloads: one per adopted membership (answers/history), one per CSV.
+	// Rebuild downloads: one per adopted membership (every store type), one per CSV.
 	// Label provenance (report_type, slug, filters, source_key, history_mode) is
 	// not on disk, so a reindex that still has the old manifest carries it forward
 	// rather than discarding it and flagging the entry recovered. Disk-derived

@@ -17,11 +17,16 @@ import (
 
 const memoryTestIdentities = 1_000_000
 
-// writeHistoryShapedSegment writes n records whose identity is two 20-character ids, as
-// in a CLUE history key, carried in the history kind's source_key and question_id.
-func writeHistoryShapedSegment(t *testing.T, dir string, run, n int) *store.Segment {
+// writeHistoryShapedSegment writes n records whose identity is two 20-character ids, a
+// CLUE history key: doc_id and entry_id for clue_history, carried in source_key and
+// question_id for history.
+func writeHistoryShapedSegment(t *testing.T, dir, typ string, run, n int) *store.Segment {
 	t.Helper()
-	seg := store.OpenSegment(dir, store.TypeHistory, run)
+	docCol, entryCol := "source_key", "question_id"
+	if typ == store.TypeClueHistory {
+		docCol, entryCol = "doc_id", "entry_id"
+	}
+	seg := store.OpenSegment(dir, typ, run)
 	if err := os.MkdirAll(filepath.Dir(seg.Path()), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -31,7 +36,7 @@ func writeHistoryShapedSegment(t *testing.T, dir string, run, n int) *store.Segm
 	}
 	w := bufio.NewWriter(f)
 	for i := 0; i < n; i++ {
-		fmt.Fprintf(w, `{"_fetched_at":"2026-10-23T00:00:00Z","_run_id":%d,"entry_json":"{}","question_id":"Ab3dEf6hIj9lMn%06d","source_key":"-NabcdefGHIJ%08d"}`+"\n", run, i, i/1365)
+		fmt.Fprintf(w, `{"_fetched_at":"2026-10-23T00:00:00Z","_run_id":%d,"entry_json":"{}",%q:"-NabcdefGHIJ%08d",%q:"Ab3dEf6hIj9lMn%06d"}`+"\n", run, docCol, i/1365, entryCol, i)
 	}
 	if err := w.Flush(); err != nil {
 		t.Fatal(err)
@@ -59,7 +64,7 @@ func TestMergeMemoryPerIdentity(t *testing.T) {
 	}
 
 	t.Run("index", func(t *testing.T) {
-		seg := writeHistoryShapedSegment(t, t.TempDir(), 1, memoryTestIdentities)
+		seg := writeHistoryShapedSegment(t, t.TempDir(), store.TypeClueHistory, 1, memoryTestIdentities)
 		before := heapInUse()
 		idx, err := seg.BuildIndex()
 		if err != nil {
@@ -79,10 +84,10 @@ func TestMergeMemoryPerIdentity(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := d.MergeCompact(store.TypeHistory, 1, writeHistoryShapedSegment(t, d.Dir, 1, memoryTestIdentities)); err != nil {
+		if _, err := d.MergeCompact(store.TypeHistory, 1, writeHistoryShapedSegment(t, d.Dir, store.TypeHistory, 1, memoryTestIdentities)); err != nil {
 			t.Fatal(err)
 		}
-		small := writeHistoryShapedSegment(t, d.Dir, 2, 1)
+		small := writeHistoryShapedSegment(t, d.Dir, store.TypeHistory, 2, 1)
 		base := heapInUse()
 		var peak atomic.Uint64
 		done := make(chan struct{})
