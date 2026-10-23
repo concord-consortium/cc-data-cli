@@ -6,10 +6,10 @@
 
 ## Implementation Plan
 
-The branch stacks on REPORT-110's. Every step below is written against the interfaces REPORT-110 posted (#910), its finished spec on `REPORT-110-clue-fetch`, assumed at its head (`specs/REPORT-110-fetch-clue-documents-history-and-content/`: R8, R10, R13 and its registry step), and the assumptions in the requirements' Technical Notes (A1 to A7). REPORT-110 declares every store type once as a `store.Kind` (`Name`, `Identity`, `Pinned`, ...) with `store.KindOf(name)`, and its `statements()` builds every store view in one loop over `store.Kinds()` with `storeView(k)`, falling back to `typedEmpty(k.Pinned)`. Two names stand in for REPORT-110 code whose final spelling its implementation decides:
+The branch stacks on REPORT-110's. Every step below is written against the interfaces REPORT-110 posted (#910), its finished spec on `REPORT-110-clue-fetch`, assumed at its head (`specs/REPORT-110-fetch-clue-documents-history-and-content/`: R8, R10, R13 and its registry step), and the assumptions in the requirements' Technical Notes (A1 to A7). REPORT-110 declares every store type once as a `store.Kind` (`Name`, `Identity`, `Pinned`, ...) with `store.KindOf(name)`, and its `statements()` builds every store view in one loop over `store.Kinds()` with `storeView(k)`, falling back to `typedEmpty(k.Pinned)`. Two names come from REPORT-110's code:
 
-- `cluePins(typ)`: `store.KindOf(typ)`'s `Pinned` map, the same map REPORT-110's stand-ins are built from. A two-line helper in `clue_views.go` that panics on an unknown name, since the three names are constants.
-- `store.TypeClueDocuments`, `store.TypeClueHistory`, `store.TypeClueContent`: the three kinds' names, `clue_documents`, `clue_history` and `clue_content`, wherever REPORT-110 spells them.
+- `cluePins(typ)`: `store.MustKind(typ).Pinned`, the same map REPORT-110's stand-ins are built from. `MustKind` panics on an unknown name, which is right since the three names are constants.
+- `store.TypeClueDocuments`, `store.TypeClueHistory`, `store.TypeClueContent`: the three kinds' names, `clue_documents`, `clue_history` and `clue_content`.
 
 **Hooking the registry loop.** The first step adds `derivedStoreViews` to `views.go`, beside `statements()`: a `map[string]func(viewSet) viewStmt` keyed by kind name, and the loop builds a kind's view from it when it has an entry and from `storeView(k)` otherwise; each view step adds its kind's entry. That keeps the store views in registry order (so REPORT-110's per-run views, appended after them, still follow), keeps `answers` and `history` on `storeView`, and makes the override visible in one place rather than as a skip inside the loop. REPORT-152 registers its `recent_logs` view through the same map (#917), so it stays keyed by kind name and holds nothing CLUE-specific.
 
@@ -22,7 +22,7 @@ The Go below was built as written (stage 7, with stand-ins for the two REPORT-11
 **Files affected**:
 - `internal/duck/clue_views.go`: new.
 - `internal/duck/views.go`: `derivedStoreViews`, with the `clue_documents` entry, and the registry loop in `statements()` consulting it; nothing of REPORT-110's is deleted, since its plain view is `storeView(k)`, which the other kinds still use.
-- `internal/duck/clue_views_test.go`: new; the fixture builder and the `clue_documents` tests.
+- `internal/duck/clue_views_test.go`: REPORT-110's file; the fixture builder and the `clue_documents` tests, and REPORT-110's CLUE tests compare each view with its store's columns plus the derived ones (`clueDerived`, which each view step extends).
 - `internal/guidance/src/core.md`, `docs/researcher-guide.md`: the `clue_documents` entry and row describe `tools`, `n_tools`, `created_at` and `*_unparsed`.
 
 **Estimated diff size**: ~300 lines
@@ -34,12 +34,9 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
-)
 
-// clueDocColumns are the documents-store columns joined onto every clue_history and
-// clue_content row, so a recipe written against one document-level file finds them
-// on either view. Their types are the documents store's own.
-var clueDocColumns = []string{"portal_class_id", "unit", "investigation", "problem", "offering_id"}
+	"github.com/concord-consortium/cc-data-cli/internal/store"
+)
 
 // clueSource is a CLUE store as a relation: its file when the store has one on disk,
 // otherwise a typed-empty stand-in. Its columns are the store's recorded ones, as
@@ -76,7 +73,7 @@ func (vs viewSet) clueView(bare string, build func(standIn bool) (string, []stri
 	return viewStmt{name: name, primary: "CREATE VIEW " + name + " AS " + primary, fallback: "CREATE VIEW " + name + " AS " + fallback, files: files}
 }
 
-// typedScalar turns a column REPORT-110 stores as raw JSON into its typed form. A value
+// typedScalar turns a column the store keeps as raw JSON into its typed form. A value
 // of any other JSON kind is NULL rather than converted, since TRY_CAST from JSON reads
 // "12" and 12.5 as 12; the raw value then survives in <name>_unparsed.
 type typedScalar struct {
@@ -109,15 +106,11 @@ func unparsedColumn(raw, typed, name string) string {
 
 var (
 	clueTools     = typedScalar{"tools", []string{"ARRAY"}, func(c string) string { return fmt.Sprintf("TRY_CAST(%s AS VARCHAR[])", c) }}
-	clueCreatedAt = typedScalar{"created_at", []string{"BIGINT", "UBIGINT", "DOUBLE"}, func(c string) string { return epochExpr(1000)(c) }}
+	clueCreatedAt = typedScalar{"created_at", []string{"BIGINT", "UBIGINT", "DOUBLE"}, epochExpr(1000)}
 )
 
 func cluePins(typ string) map[string]string {
-	k, ok := store.KindOf(typ)
-	if !ok {
-		panic("no store kind " + typ)
-	}
-	return k.Pinned
+	return store.MustKind(typ).Pinned
 }
 
 func (vs viewSet) clueDocumentsView() viewStmt {
@@ -142,13 +135,13 @@ var derivedStoreViews = map[string]func(viewSet) viewStmt{
 
 The expressions inside `REPLACE` and beside it name the qualified source column (`d.tools`), which DuckDB resolves to the input column, not the replaced output: in the prototype `undoable_unparsed` came out as the raw `"yes"` while `undoable` was NULL. `epochExpr` is the existing `logs` helper (`views.go:198-206`), so the epoch handling has one definition.
 
-**Fixture builder** (`clue_views_test.go`): Go structs for a document, an entry (`records []record`, each with `tree`, `action`, `patches []patch`), and content, marshaled with `encoding/json` into the three store files, and written into the manifest with `UpdateManifest` (`Stores[typ] = dataset.Store{File, Version: 1, Count, Columns: cluePins(typ)}`), the way the prototype did. The fixture is the R17 set, synthetic, with lines in a fixed order that is not R13's. The lone-surrogate entry's `entry_json` is raw text holding the six characters `\ud83d`, not marshaled from a struct: `encoding/json` cannot carry a lone surrogate (`Unmarshal` turns the escape into U+FFFD and `Marshal` writes U+FFFD for the bytes a Go string would hold instead, checked), and the entry would then parse in DuckDB as well. It also returns the Go-side expectations the tests compare with: the patch count summed over the structs, and the patch keys sorted by `(doc_id, idx, entry_id, rec_idx, patch_idx)` in Go, with a NULL `idx` after every non-NULL one in its document as DuckDB orders it.
+**Fixture builder** (`clue_views_test.go`): Go structs for a document, an entry (`records []record`, each with `tree`, `action`, `patches []patch`), and content, landed with REPORT-110's `land` helper, which merges them through the store itself, so each store's manifest `Columns` are the pins plus the column the fixture widens it with, as a fetch records them. The fixture is the R17 set, synthetic. The store orders lines by its length-prefixed identity key, so the entry ids are chosen to make that order differ from R13's: `a-9` and `a-02` tie on `created` and `idx`, and the shorter `a-9` is stored first while the key orders it last. The lone-surrogate entry's `entry_json` is raw text holding the six characters `\ud83d`, not marshaled from a struct: `encoding/json` cannot carry a lone surrogate (`Unmarshal` turns the escape into U+FFFD and `Marshal` writes U+FFFD for the bytes a Go string would hold instead, checked), and the entry would then parse in DuckDB as well. It also returns the Go-side expectations the tests compare with: the patch count summed over the structs, and the patch keys sorted by `(doc_id, idx, entry_id, rec_idx, patch_idx)` in Go, with a NULL `idx` after every non-NULL one in its document as DuckDB orders it.
 
 **Tests**:
 - `TestClueDocumentsTypesTools`: `tools` is `VARCHAR[]`, `n_tools` its length, both NULL for a NULL `tools`; a `tools` object gives NULL with `tools_unparsed` set.
 - `TestClueDocumentsCreatedAt`: an epoch-ms number is the UTC `TIMESTAMP`; `"1700000000123"` (a string) is NULL with `created_at_unparsed` set; NULL stays NULL in both.
 - `TestClueDocumentsFallbackDeclaresEveryColumn`: on an empty dataset, `DESCRIBE clue_documents` lists every pinned column plus the derived ones at the primary's types (compared with the types `DESCRIBE` gives on the populated fixture, so the two cannot drift).
-- `TestClueViewsPassWidenedColumns`: with a column in each store's manifest `Columns` that the pins lack (the fixture builder adds one per store), the column is in `clue_documents`, `clue_history` and `clue_content`, and in each view's fallback with the primary's type. Reading the pins instead of `st.Columns` drops it (checked in the build). The content store's extra column is named `j`, which a CTE column added beside `*` would collide with: that form fails `clue_content`'s primary and fallback alike, so `Open` fails for the whole dataset (checked).
+- `TestClueViewsPassWidenedColumns`: with a column in each store's manifest `Columns` that the pins lack (the fixture builder adds one per store), the column is in `clue_documents`, `clue_history` and `clue_content`, and in each view's fallback with the primary's type. A malformed store file does not make a primary fail to install (see the requirements' Technical Notes), so the test describes each fallback's SQL directly and checks it reads no file. Reading the pins instead of `st.Columns` drops it (checked in the build). The content store's extra column is named `j`, which a CTE column added beside `*` would collide with: that form fails `clue_content`'s primary and fallback alike, so `Open` fails for the whole dataset (checked).
 
 ---
 
@@ -161,17 +154,23 @@ The expressions inside `REPLACE` and beside it name the qualified source column 
 - `internal/duck/views.go`: `derivedStoreViews` gains the `clue_history` entry.
 - `internal/duck/materialize.go`: `incompleteRuns` maps a store download to every view whose declared files hold that store's current file, not only the view named after the store, and its doc comment's store rule ("The store views map by download type") says so.
 - `internal/duck/clue_views_test.go`: history tests.
+- `internal/fetch/clue_test.go`: the tests that check `entry_json` is stored byte for byte read it as `coalesce(entry_json::VARCHAR, entry_json_unparsed)`, since an unparseable payload is NULL in `entry_json`.
 - `internal/guidance/src/core.md`, `docs/researcher-guide.md`: the `clue_history` entry and row.
 
 **Estimated diff size**: ~270 lines
 
 ```go
+// clueDocColumns are the documents-store columns joined onto every clue_history and
+// clue_content row, so a recipe written against one document-level file finds them
+// on either view. Their types are the documents store's own.
+var clueDocColumns = []string{"portal_class_id", "unit", "investigation", "problem", "offering_id"}
+
 var clueUndoable = typedScalar{"undoable", []string{"BOOLEAN"}, func(c string) string { return fmt.Sprintf("CAST(%s AS BOOLEAN)", c) }}
 
 // jsonPayload parses a stored payload string; the cast keeps the bytes when it parses.
 func jsonPayload(col string) string { return fmt.Sprintf("TRY_CAST(%s AS JSON)", col) }
 
-// clueActionExprs normalizes an MST action path as Scott's download-history.ts did:
+// clueActionExprs normalizes an MST action path as cc-data-studies' normalizeAction does:
 // each substitution replaces the first match only, as a non-global JavaScript regex does.
 func clueActionExprs(col string) (action, tileID, sharedModelID string) {
 	col = fmt.Sprintf("nullif(%s, '')", col) // normalizeAction returns nulls for any falsy raw
@@ -229,7 +228,7 @@ A download whose store has no manifest entry reads `File` as `""`, which no view
 - `TestClueHistoryWithoutADocumentsStore`: with no documents store in the manifest, and again with its file deleted, `clue_history` keeps every row and the joined columns are NULL, and the open's warnings name the missing file exactly once. With the file deleted, `Materialize` refuses `clue_documents`, `clue_history` and `clue_content` with a reason naming it, and with `AllowPartial` writes `clue_history` and `clue_content` with the "built from 1 of 2 declared inputs" caveat (both fail if `clueSource` drops a missing file from `files`).
 - `TestClueHistoryFallbackDeclaresEveryColumn`: as for documents, on a dataset with no CLUE stores.
 - `TestClueHistoryPayloads`: a parseable `entry_json` is `JSON` and byte-identical to the stored string (`entry_json::VARCHAR`), `->>` on it never raises over the whole fixture, the unparseable one is NULL with `entry_json_unparsed` holding the stored bytes; `undoable` follows R21 for `true`, `"yes"` and NULL; the lone-surrogate entry keeps `parse_ok` true with NULL `entry_json` and its bytes in `entry_json_unparsed`.
-- `TestClueViewsCaveatIncompleteStores`: with an incomplete `clue_documents` download and an incomplete `clue_history` one, `Materialize`'s outcome for `clue_history` names both runs, `clue_content` the documents run and `clue_patches` the history run.
+- `TestClueViewsCaveatIncompleteStores`: with an incomplete `clue_documents` download and an incomplete `clue_history` one, `Materialize`'s outcome for `clue_history` names both runs, `clue_content` the documents run and `clue_patches` the history run. Each view step adds its view's row to this test and to `TestClueHistoryWithoutADocumentsStore`.
 
 ---
 
@@ -241,13 +240,14 @@ A download whose store has no manifest entry reads `File` as `""`, which no view
 - `internal/duck/clue_views.go`: `clueContentView`.
 - `internal/duck/views.go`: `derivedStoreViews` gains the `clue_content` entry.
 - `internal/duck/clue_views_test.go`: content tests.
+- `internal/fetch/clue_test.go`: the byte-for-byte content check reads `coalesce(content_json::VARCHAR, content_json_unparsed)`.
 - `internal/guidance/src/core.md`, `docs/researcher-guide.md`: the `clue_content` entry and row.
 
 **Estimated diff size**: ~260 lines
 
 ```go
 // clueMapCount is the key count of one of content's top-level maps: 0 when the content
-// parsed and the map is absent, as Scott's summarise has it, and NULL with no content.
+// parsed and the map is absent, as cc-data-studies' summarise has it, and NULL with no content.
 func clueMapCount(path string) string {
 	return fmt.Sprintf("CASE WHEN cj.j IS NOT NULL THEN coalesce(len(json_keys(cj.j, %s)), 0) END", sqlStr(path))
 }
@@ -258,10 +258,8 @@ func (vs viewSet) clueContentView() viewStmt {
 	return vs.clueView(store.TypeClueContent, func(standIn bool) (string, []string) {
 		c, files := vs.clueSource(store.TypeClueContent, standIn, true)
 		d, docFiles := vs.clueDocJoin(standIn)
-		// The parsed content and its tile types sit in their own lateral relations, referenced
-		// qualified, so no store column can shadow them. The wildcard skips tiles with no type
-		// and a type that is not a string, as summarise does; n_tiles counts the keys, so those
-		// tiles still count.
+		// Lateral relations, referenced qualified, so no store column can shadow them; untyped
+		// or non-string tile types are skipped, though n_tiles still counts their keys.
 		return fmt.Sprintf(`SELECT c.* REPLACE (cj.j AS content_json, %s),
   CASE WHEN c.content_json IS NOT NULL AND cj.j IS NULL THEN c.content_json END AS content_json_unparsed,
   %s,
@@ -305,14 +303,14 @@ In the prototype this gave, for content with two `Dataflow` tiles, one `Text`, o
 - `internal/duck/views.go`: `statements()` appends `vs.cluePatchesView()` after the registry loop and before the per-run views.
 - `internal/duck/clue_views_test.go`: patch tests, and the materialization test over all four views.
 - `internal/guidance/src/core.md`, `docs/researcher-guide.md`: the `clue_patches` entry and row.
+- `README.md`: the view list names `clue_patches`.
 
 **Estimated diff size**: ~295 lines
 
 ```go
-// cluePatchKey is clue_patches' unique key: rec_idx and patch_idx are positions in the
-// source arrays, so they break every tie the data has. The view applies no ORDER BY, since
-// sorting every patch with its value exceeds the sandbox's caps at a full corpus, so output
-// and windows that need order use this key, or one operation can split in two between runs.
+// cluePatchKey is clue_patches' unique key; rec_idx and patch_idx break every tie. The view
+// has no ORDER BY (a full-corpus sort exceeds the sandbox's caps), so ordered output and
+// windows must use this key.
 const cluePatchKey = "doc_id, idx, entry_id, rec_idx, patch_idx"
 
 // cluePatchesView reads the history store itself rather than the clue_history view: a
@@ -340,10 +338,10 @@ The view is not named after a store, so `Materialize` applies no row-count check
 
 **Tests**:
 - `TestCluePatchesCountsEveryPatch`: `count(*)` equals the patch count the fixture builder summed in Go over the parseable entries (the builder marks the lone-surrogate entry unparseable by hand, since Go's `json.Valid` accepts it as `JSON.parse` does and DuckDB does not); the unparseable entry, the empty `records`, the record without `patches` and a `records` object contribute nothing and raise nothing.
-- `TestCluePatchesKeyIsUnique`: `count(*) = count(DISTINCT (doc_id, entry_id, rec_idx, patch_idx))`, and an anti-join to `clue_history` on `(doc_id, entry_id)` is empty.
+- `TestCluePatchesKeyIsUnique`: `count(*) = count(DISTINCT (doc_id, entry_id, rec_idx, patch_idx))`, no group of `cluePatchKey` itself repeats, and an anti-join to `clue_history` on `(doc_id, entry_id)` is empty.
 - `TestCluePatchesOrderedByTheKey`: `SELECT doc_id, entry_id, rec_idx, patch_idx FROM clue_patches ORDER BY ` + `cluePatchKey` returns the Go-sorted key list on two `Open`s of the same dataset, and `lag(path) OVER (PARTITION BY doc_id ORDER BY ` + `cluePatchKey` + `)` equals the previous path computed in Go, over the fixture's entries tied on `created` and on `idx` and its entry with a NULL `idx` (a key that dropped `rec_idx` or `patch_idx` leaves ties there and fails).
-- `TestCluePatchesColumns`: per fixture patch, `tile_id` from the path when it has one and from the entry otherwise (an `/addTile` entry whose patch path names the new tile), `op` and `path`, `value IS NULL` for the `remove` and `json_type(value) = 'NULL'` for the set-to-null patch, and the entry's `action`, `created`, `server_created` and `is_revert` on each.
-- `TestCluePatchesFallbackDeclaresEveryColumn`: as for documents.
+- `TestCluePatchesColumns`: per fixture patch, `tile_id` from the path when it has one (an `/addTile` entry whose patch path names the new tile) and from the entry otherwise (an entry whose action names a tile and whose patch path names none), `op` and `path`, `value IS NULL` for the `remove` and `json_type(value) = 'NULL'` for the set-to-null patch, and the entry's `action`, `created`, `server_created` and `is_revert` on each.
+- `TestCluePatchesFallbackDeclaresEveryColumn`: R11's columns at their types, written out by hand, on the fixture; then as for documents.
 - `TestClueViewsMaterialize`: `Materialize` writes all four; reopening pins all four to their Parquet (`e.pinned`), and each returns the raw view's rows (`viewRows`). A fetch-like rewrite of the documents file then makes `clue_history` and `clue_content` stale and leaves `clue_patches` fresh.
 
 ---
