@@ -242,7 +242,7 @@ The threshold is a package variable so the test can lower it rather than write 4
 
 **Files affected**:
 - `README.md`: the `get` command list, the dataset layout (CLUE store and membership files), and the duplicate-free paragraph's list of identities.
-- `docs/researcher-guide.md`: command lists in sections 3 and 4.
+- `docs/researcher-guide.md`: the complete-session command list in section 4, and section 5's list of what a dataset holds and its identities (section 3 has no command list).
 - `internal/guidance/src/skill_header.md`: the three commands under "Fetching data", `clue-documents` first, `clue-history` described against `history` and saying its owner coverage needs the run's documents fetched before it (as `attachments` says what it needs fetched first).
 - Comment headers in the store and fetch packages that state the identity contract (`identity.go`, `paged.go`'s `PagedOptions`), rewritten to the per-kind contract.
 
