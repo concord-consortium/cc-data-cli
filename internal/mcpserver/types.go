@@ -66,6 +66,14 @@ type getPagedIn struct {
 	Refresh bool   `json:"refresh,omitempty"`
 }
 
+type getRecentLogsIn struct {
+	Dataset string `json:"dataset"`
+	ClassID int    `json:"class_id"`
+	Start   string `json:"start,omitempty" jsonschema:"read from this time: epoch milliseconds or an RFC 3339 time"`
+	End     string `json:"end,omitempty" jsonschema:"read up to this time: epoch milliseconds or an RFC 3339 time"`
+	Refresh bool   `json:"refresh,omitempty"`
+}
+
 type getAttachmentsIn struct {
 	Dataset  string `json:"dataset"`
 	RunID    int    `json:"run_id"`

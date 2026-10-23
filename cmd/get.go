@@ -12,10 +12,10 @@ import (
 func newGetCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "get",
-		Short: "Download report CSVs, answers, history, attachments, and CLUE documents into a dataset",
+		Short: "Download report CSVs, answers, history, attachments, CLUE documents, and recent logs into a dataset",
 	}
 	cmd.AddCommand(newGetReportCmd(), newGetAnswersCmd(), newGetHistoryCmd(), newGetAttachmentsCmd(),
-		newGetClueDocumentsCmd(), newGetClueHistoryCmd(), newGetClueContentCmd())
+		newGetClueDocumentsCmd(), newGetClueHistoryCmd(), newGetClueContentCmd(), newGetRecentLogsCmd())
 	return cmd
 }
 

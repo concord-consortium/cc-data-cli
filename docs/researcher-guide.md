@@ -279,6 +279,36 @@ If you've configured a default portal, you can use a bare dataset name
 (`wildfire`) instead of the full `learn.concord.org/wildfire`. The queryable views
 (`reports`, `answers`, `history`, ...) are described in the next section.
 
+### Recent logs
+
+A Student Actions run reads a nightly copy of the logs, so it can be up to a day
+behind. To see what a class did minutes ago, pull its recent logs by its portal
+class id:
+
+```
+cc-data get recent-logs 590 --dataset learn.concord.org/wildfire
+```
+
+This reads the class's log events from 00:00 UTC yesterday onward, about two
+minutes behind live, into the `recent_logs` view. Run it again later and it asks
+only for what is new: each pull stores a cursor, and the next one sends it back.
+Pulls overlap by ten minutes, and an event pulled twice is kept once.
+
+- **`--refresh`** ignores the cursor and reads the whole window again. Use it when
+  you suspect events arrived late, since one delivered more than ten minutes after
+  it happened can fall between two cursor pulls.
+- **`--start` and `--end`** read part of the window, each as epoch milliseconds or
+  a time such as `2026-10-21T14:00:00Z`. They leave the stored cursor as it was.
+- **Days before the window** come from a Student Actions run. Its events go to
+  `logs`, not `recent_logs`, so for the hours both cover, count one view or the
+  other rather than adding them.
+- If a dataset goes more than a day or two without a pull, its cursor expires. The
+  next pull reads the whole window again and warns that events since the last pull
+  but before the window are only in a Student Actions run.
+
+CLUE logs only for students launched from the portal, so a CLUE class has rows
+only for them.
+
 ### Getting results out
 
 By default `query` prints a table. For analysis in R, Python, or a spreadsheet,
