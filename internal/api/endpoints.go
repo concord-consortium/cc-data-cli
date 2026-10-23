@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
+	"strconv"
 )
 
 // ExchangeCLIToken exchanges a PKCE grant code for an API token. The endpoint is
@@ -201,4 +203,45 @@ func (c *Client) DrainFilterOptions(ctx context.Context, req FilterOptionsReq) (
 		req.PageToken = next
 		req.IncludeCount = &declined
 	}
+}
+
+// RecentLogsMaxAttempts is a recent-logs pull's attempt budget: each attempt that reaches
+// Athena starts a query the server does not stop.
+const RecentLogsMaxAttempts = 2
+
+// RecentLogsQuery is a recent-logs request: the stored cursor, or start and end in epoch
+// milliseconds, or nothing for the whole window.
+type RecentLogsQuery struct {
+	Cursor     string
+	Start, End *int64
+}
+
+// Bounded reports whether the request names a start or an end.
+func (q RecentLogsQuery) Bounded() bool { return q.Start != nil || q.End != nil }
+
+// RecentLogsPath is the recent-logs route for a class with the query's parameters.
+func RecentLogsPath(classID int, q RecentLogsQuery) string {
+	v := url.Values{}
+	if q.Cursor != "" {
+		v.Set("cursor", q.Cursor)
+	}
+	if q.Start != nil {
+		v.Set("start", strconv.FormatInt(*q.Start, 10))
+	}
+	if q.End != nil {
+		v.Set("end", strconv.FormatInt(*q.End, 10))
+	}
+	path := fmt.Sprintf("/api/v1/classes/%d/recent-logs", classID)
+	if len(v) > 0 {
+		path += "?" + v.Encode()
+	}
+	return path
+}
+
+// StreamRecentLogs streams a class's recent logs to dstPath, retrying as StreamAPIToFile does
+// within RecentLogsMaxAttempts.
+func (c *Client) StreamRecentLogs(ctx context.Context, classID int, q RecentLogsQuery, dstPath string) error {
+	cc := *c
+	cc.MaxAttempts = RecentLogsMaxAttempts
+	return cc.StreamAPIToFile(ctx, RecentLogsPath(classID, q), dstPath)
 }
