@@ -4,9 +4,9 @@
 **Requirements Spec**: [requirements.md](requirements.md)
 **Status**: **In Development**
 
-The branch stacks on REPORT-111's, which stacks on REPORT-110's. The store and view steps are written against REPORT-110's spec at `7e3ffb5` (its `store.Kind` registry, its streamed membership and `Covered` walk) and REPORT-111's `derivedStoreViews`; those stories' implementations are the reference where a name here drifts from them. Line numbers are `main` at `7981060`.
+The branch stacks on REPORT-111's, which stacks on REPORT-110's. The store and view steps are written against REPORT-110's spec at `ca69b36` (its `store.Kind` registry, its streamed membership and `Covered` walk) and REPORT-111's `derivedStoreViews`; those stories' implementations are the reference where a name here drifts from them. Line numbers are `main` at `7981060`.
 
-The cleanup steps come first: they touch none of the files the recent-logs steps do, so they review and revert on their own.
+The cleanup steps come first: the only file they share with the recent-logs steps is `docs/researcher-guide.md`, where they delete a bullet in section 7 and the guidance step adds a view-table row and a fetching subsection, so they review and revert on their own.
 
 ## Implementation Plan
 
@@ -19,7 +19,7 @@ The cleanup steps come first: they touch none of the files the recent-logs steps
 - `internal/packages/run.go`: delete the refusal at lines 78 to 80; `Refused`'s comment becomes "a package the runner would not start: it does not apply to the scope." Line 104 drops `ClueSource: "firebase"`.
 - `internal/packages/scope.go`: delete `ScopeFile.ClueSource`, its field in `MarshalJSON`'s `ordered` struct and in the positional literal; the type comment keeps only the `Dataset` sentence. `ParseLocalScope`'s comment says "the other three are the runner's to set", which becomes "the other two".
 - `internal/packages/run_test.go`: line 156 asserts `scope["clue_source"]` is absent and that the file's keys are exactly the six, in order (decode with `json.Decoder.Token` to read key order, since a map loses it). The `clue_prepull` half of `TestRunRefusesBeforeStarting` (lines 197 to 204) becomes `TestRunIgnoresCluePrepull`: a manifest read from bytes holding `"clue_prepull": true` runs to completion and its entrypoint's marker file exists. Deleting the refusal is the mutation it catches only if the manifest is read through `ReadManifest`, so the test goes through it rather than setting a struct field that no longer exists.
-- `internal/packages/init` test (in `files_test.go` or `cmd/package_test.go`, wherever `Init`'s output is asserted): the written `manifest.json` has no `clue_prepull` key.
+- `cmd/package_test.go` `TestPackageInitRefusesASecondInit` (lines 122 to 136, the one test that reads `Init`'s `manifest.json`): the written file has no `clue_prepull` key, which fails if the field stays on `Manifest`.
 - `internal/packages/files_test.go` line 20 and `cmd/package_test.go` line 28: leave the fixture manifests' `"clue_prepull": false` as they are; they now also show that a manifest carrying the key still validates.
 - `cmd/package.go`: `runDifferences` drops its last sentence.
 - `docs/researcher-guide.md`: delete the "CLUE" bullet at lines 650 and 651.
@@ -46,7 +46,7 @@ The cleanup steps come first: they touch none of the files the recent-logs steps
 **Summary**: R7 to R9 and R11's merge half. Declares the store, makes its merge keep every row, gives its download entry a class, and teaches reindex, purge, show and materialize about it. No network code yet; tests drive it with segments written directly, as `merge_test.go` does.
 
 **Files affected**:
-- `internal/store/kind.go` (REPORT-110's registry, `7e3ffb5`): two fields on `Kind`, each false by default so `answers`, `history` and the CLUE kinds keep their behavior with no edit:
+- `internal/store/kind.go` (REPORT-110's registry, `ca69b36`): two fields on `Kind`, each false by default so `answers`, `history` and the CLUE kinds keep their behavior with no edit:
   - `ClassKeyed bool`: the integer in the kind's segment and membership names is a class id, not a run id. `Segment.AppendPage` stamps it as `_class_id` instead of `_run_id`; `run_membership`'s rows and identity columns and the per-run views leave the kind out (REPORT-110's R14 already words its inventory as "every kind that has per-run membership"); `Download.Key()` reads `ClassID`; `isStoreType`'s incomplete-run caveat skips it.
   - `Accumulate bool`: a merge adds to a key's membership instead of replacing it (below).
 
@@ -60,7 +60,7 @@ The cleanup steps come first: they touch none of the files the recent-logs steps
 - `internal/dataset/dataset.go`: `sameDownload` also compares `ClassID`; `artifactFileRe` comes from the registry (REPORT-110), so `recent_logs.v<N>.jsonl` and `members_recent_logs_<class>.v<N>.jsonl` are purged.
 - `internal/dataset/merge.go` `recordSweptDownloads`: match on `dl.Key()`. A `recent_logs` entry is never incomplete (the fetch step writes it only after its merge), so this loop finds none for that type, which is right: a swept class's cursor is not advanced, and its next pull re-reads.
 - `internal/dataset/reindex.go`: the membership rebuild makes a `recent_logs` key into `Download{Type, ClassID: key, Complete: true, Recovered: true}`; `priorDownloadIndex` and `downloadKey` key on `dl.Key()`; `carryProvenance` also carries `RecentLogs` (the cursor with it).
-- `internal/dataset/summary.go`: `manifestTotals` adds `recent_logs` (registry-derived under REPORT-110); `DownloadJSON` gains `ClassID int \`json:"class_id,omitempty"\`` and `RecentLogs`; `driftWarnings`' INCOMPLETE text never fires for this type, by construction.
+- `internal/dataset/summary.go`: `manifestTotals` adds `recent_logs` (registry-derived under REPORT-110); `DownloadJSON` gains `ClassID int \`json:"class_id,omitempty"\`` and `RecentLogs`, and its `RunID` tag becomes `json:"run_id,omitempty"` so a `recent_logs` entry does not read as run 0 (run ids start at 1, so no other entry changes); `driftWarnings`' INCOMPLETE text never fires for this type, by construction.
 - `cmd/dataset_show.go`: the RUN cell prints `class <id>` for a `recent_logs` row.
 - `internal/duck/materialize.go`: `incompleteRuns` skips a `ClassKeyed` kind.
 
@@ -69,7 +69,7 @@ The cleanup steps come first: they touch none of the files the recent-logs steps
 - Classes 590 and 591 pulled alternately, one merging the other by sweep: neither loses a row.
 - Reindex with the manifest present recovers the entry with its cursor; with the manifest deleted, recovers the store and a `recovered` entry with no cursor.
 - Purge removes the store and membership files and the entry.
-- Show lists the entry with `class_id` and the `recent_logs` total.
+- Show lists the entry with `class_id` and the `recent_logs` total, and its JSON entry has no `run_id` key (fails if `omitempty` is dropped).
 
 **Estimated diff size**: ~300 lines, about half tests.
 
@@ -146,7 +146,7 @@ The cleanup steps come first: they touch none of the files the recent-logs steps
 - `internal/mcpserver/types.go`: `getRecentLogsIn{Dataset string; ClassID int \`json:"class_id"\`; Start, End string \`json:",omitempty"\`; Refresh bool}` with `jsonschema` descriptions for the two time forms.
 - `internal/mcpserver/tools.go`: `get_recent_logs`, description: "Pull a class's log events from the last day or two into a dataset's recent_logs view. Each later pull asks only for what is new; pass refresh to re-read the whole window. Earlier days come from a Student Actions run."
 - `internal/mcpserver/server_test.go`: the tool is listed and a stubbed call returns the result map.
-- `internal/guidance/src/core.md`: a `recent_logs` view entry after `logs` (R16's content, saying "a recent-logs pull", no command); the `downloads` entry names `class_id`; the per-store "Identity columns" section (REPORT-110's R17) gains `recent_logs`: `id`, saying that it has no `run_membership` rows, since `IdentityColumnNames` is derived from every kind and `TestGuidanceDocumentsEveryIdentityColumn` fails without it. The existing view entries use an em-dash after the name, and the new entries match that list's style.
+- `internal/guidance/src/core.md`: a `recent_logs` view entry after `logs` (R16's content, saying "a recent-logs pull", no command); the `downloads` entry names `class_id`; the "Identity columns" section's guarded list is unchanged, since it is the `run_membership` join key and `recent_logs` has no membership rows there; the `recent_logs` view entry names `id` as its key, and one prose line after that list (a sentence, not a bullet, so `ParseCatalog` ignores it) says `recent_logs` is keyed by `id` alone with no `run_membership` rows. `TestGuidanceDocumentsEveryIdentityColumn` stays green only while no `id` bullet is added. The existing view entries use an em-dash after the name, and the new entries match that list's style.
 - `internal/guidance/src/tools.md`: `get_recent_logs` after `get_answers, get_history`.
 - `internal/guidance/src/skill_header.md`: `cc-data get recent-logs <class-id> --dataset <ref>` in "Fetching data", with `--refresh`.
 - `README.md`: the command in both lists.
@@ -186,7 +186,7 @@ The cleanup steps come first: they touch none of the files the recent-logs steps
 **Decision**: the end. An incomplete `recent_logs` entry would have to carry the previous cursor through, raise an INCOMPLETE warning for rows that are all intact, and appear in materialize's incomplete-run caveat, all for a state the next pull clears anyway. Writing once removes the state rather than reporting it.
 
 ### RESOLVED: Judgment call: two fields on `store.Kind`, not three
-**Context**: The stage 8 draft asked REPORT-110 for `StampColumn`, `Accumulate` and `RunViews`; REPORT-110 (`7e3ffb5`, its open question on the fields) leaves them to this story's steps.
+**Context**: The stage 8 draft asked REPORT-110 for `StampColumn`, `Accumulate` and `RunViews`; REPORT-110 (`ca69b36`, its open question on the fields) leaves them to this story's steps.
 **Options considered**:
 - A) The three fields as drafted.
 - B) `ClassKeyed` (which drives the stamp column, the per-run views, `run_membership` and the download key) and `Accumulate`.
@@ -233,3 +233,13 @@ R10 reports `cursor: none` for a pull with `--end`, but the acceptance step expe
 
 #### RESOLVED: A comment that counts the scope keys
 `internal/packages/scope.go:58-59` says the keys outside the author's four are "the other three", which is false once `clue_source` goes. Added to the cleanup step.
+
+### Third pass (roles: security engineer, performance engineer, education researcher querying `recent_logs`, REPORT-192 implementer, senior engineer reading cold)
+
+The requirements' third pass records the findings that touch both files (the REPORT-110 citation, `dataset show --json`'s `run_id`, the identity-columns guard, and the 400 on a stored cursor). These touch only the plan.
+
+#### RESOLVED: The cleanup steps do share a file with the recent-logs steps
+The plan said the cleanup steps touch none of the files the recent-logs steps do, but both edit `docs/researcher-guide.md` (the CLUE bullet at lines 650 and 651, and the view table and fetching chapter). The opening paragraph now names the shared file and the separate sections.
+
+#### RESOLVED: The `Init` test was named by guess
+The cleanup step said the no-`clue_prepull` assertion goes "in `files_test.go` or `cmd/package_test.go`, wherever `Init`'s output is asserted". Only `cmd/package_test.go`'s `TestPackageInitRefusesASecondInit` reads the written `manifest.json`; the step now names it and the mutation it catches.
