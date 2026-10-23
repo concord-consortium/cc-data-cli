@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -272,17 +273,20 @@ const (
 func set(path string, v any) cluePatch { return cluePatch{"replace", path, v, true} }
 
 // clueFixtureEntries is the synthetic history: entry ids are chosen so the store's identity-key order is
-// not (doc_id, idx, entry_id), dA's a-01 and a-02 tie on created and on idx, and a-00 has neither.
+// not (doc_id, idx, entry_id), dA's a-9 and a-02 tie on created and on idx,
+// a-9's shorter id stores it first while the key orders it last, and a-00 has neither.
 var clueFixtureEntries = []clueEntry{
 	{doc: "dA", id: "a-03", idx: 0, created: clueT0, server: clueT0, action: "/content/tileMap/T1/content/setText", undoable: true, parseOK: true, parseable: true,
 		records: []clueRecord{
 			{"dA", "/content/tileMap/T1/content/setText", []cluePatch{set("/content/tileMap/T1/content/text", "hi"), {"add", "/content/tileMap/T1/content/x", 1, true}}},
 			{"dA", "/content/tileMap/T1/content/setText", []cluePatch{{"remove", "/content/tileMap/T2", nil, false}}},
 		}},
-	{doc: "dA", id: "a-01", idx: 1, created: clueT1, server: clueT1, action: "/content/sharedModelMap/S1/sharedModel/setX", undoable: "yes", parseOK: true, parseable: true,
+	{doc: "dA", id: "a-9", idx: 1, created: clueT1, server: clueT1, action: "/content/sharedModelMap/S1/sharedModel/setX", undoable: "yes", parseOK: true, parseable: true,
 		records: []clueRecord{{"dA", "/content/sharedModelMap/S1/sharedModel/setX", []cluePatch{set("/content/sharedModelMap/S1/x", nil)}}}},
 	{doc: "dA", id: "a-02", idx: 1, created: clueT1, server: clueT2, action: "/content/tileMap/T3/content/setProgram", undoable: nil, parseOK: true, parseable: true,
 		records: []clueRecord{{"dA", "/content/tileMap/T3/content/setProgram", []cluePatch{set("/content/tileMap/T3/content/program", map[string]any{"n": 1}), set("/content/tileMap/T3/content/program/values/x", 5)}}}},
+	{doc: "dA", id: "a-04", idx: 2, created: clueT2, server: clueT2, action: "/content/tileMap/T7/content/setTitle", undoable: true, parseOK: true, parseable: true,
+		records: []clueRecord{{"dA", "/content/tileMap/T7/content/setTitle", []cluePatch{set("/content/title", "t")}}}},
 	{doc: "dA", id: "a-00", idx: nil, created: nil, server: clueT2, action: "/addTile", undoable: false, isRevert: true, parseOK: true, parseable: true,
 		records: []clueRecord{{"dA", "/addTile", []cluePatch{{"add", "/content/tileMap/T4", map[string]any{"id": "T4"}, true}}}}},
 	{doc: "dB", id: "b-1", idx: 0, created: clueT0, server: clueT0, action: "/content/rowMap/R1/setValue", undoable: 1, parseOK: false, raw: `{"records":[{"patches":[{"op":"add",`},
@@ -488,7 +492,7 @@ func TestClueHistoryNormalizesActions(t *testing.T) {
 	e := openEngine(t, []DatasetSpec{{DS: clueFixture(t)}}, nil)
 	for entry, want := range map[string][]string{
 		"a-03": {"/content/tileMap/T1/content/setText", "/content/tileMap/{tile}/content/setText", "T1", "<NULL>"},
-		"a-01": {"/content/sharedModelMap/S1/sharedModel/setX", "/content/sharedModelMap/{sharedModel}/sharedModel/setX", "<NULL>", "S1"},
+		"a-9":  {"/content/sharedModelMap/S1/sharedModel/setX", "/content/sharedModelMap/{sharedModel}/sharedModel/setX", "<NULL>", "S1"},
 		"b-1":  {"/content/rowMap/R1/setValue", "/content/rowMap/{row}/setValue", "<NULL>", "<NULL>"},
 		"b-4":  {"/content/tileMap/A/content/tileMap/B/x", "/content/tileMap/{tile}/content/tileMap/B/x", "A", "<NULL>"},
 		"a-00": {"/addTile", "/addTile", "<NULL>", "<NULL>"},
@@ -624,7 +628,7 @@ func TestClueHistoryPayloads(t *testing.T) {
 	for entry, want := range map[string][]string{
 		"a-03": {"true", "<NULL>"},
 		"a-00": {"false", "<NULL>"},
-		"a-01": {"<NULL>", `"yes"`},
+		"a-9":  {"<NULL>", `"yes"`},
 		"b-1":  {"<NULL>", "1"},
 		"a-02": {"<NULL>", "<NULL>"},
 	} {
@@ -649,6 +653,7 @@ func TestClueViewsCaveatIncompleteStores(t *testing.T) {
 		store.TypeClueDocuments: {801},
 		store.TypeClueHistory:   {801, 802},
 		store.TypeClueContent:   {801},
+		"clue_patches":          {802},
 	} {
 		r := outcomeReason(res, view)
 		for _, run := range []int{801, 802} {
@@ -733,4 +738,213 @@ func TestClueContentPayloads(t *testing.T) {
 
 func TestClueContentFallbackDeclaresEveryColumn(t *testing.T) {
 	assertClueFallback(t, store.TypeClueContent)
+}
+
+// cluePatchRow is one patch the fixture's struct-built entries hold, with its position.
+type cluePatchRow struct {
+	entry          clueEntry
+	recIdx, patIdx int
+	patch          cluePatch
+}
+
+func (p cluePatchRow) key() string {
+	return fmt.Sprintf("%s/%s/%d/%d", p.entry.doc, p.entry.id, p.recIdx, p.patIdx)
+}
+
+// clueFixturePatches lists every patch of the fixture's parseable entries, computed in Go,
+// sorted by cluePatchKey with a NULL idx after every non-NULL one in its document, as DuckDB's
+// default NULLS LAST orders it.
+func clueFixturePatches() []cluePatchRow {
+	var out []cluePatchRow
+	for _, en := range clueFixtureEntries {
+		if !en.parseable {
+			continue
+		}
+		for ri, rec := range en.records {
+			for pi, p := range rec.Patches {
+				out = append(out, cluePatchRow{en, ri, pi, p})
+			}
+		}
+	}
+	idx := func(en clueEntry) (int, bool) {
+		i, ok := en.idx.(int)
+		return i, ok
+	}
+	slices.SortFunc(out, func(a, b cluePatchRow) int {
+		if c := strings.Compare(a.entry.doc, b.entry.doc); c != 0 {
+			return c
+		}
+		ai, aok := idx(a.entry)
+		bi, bok := idx(b.entry)
+		if aok != bok {
+			if aok {
+				return -1
+			}
+			return 1
+		}
+		if c := ai - bi; c != 0 {
+			return c
+		}
+		if c := strings.Compare(a.entry.id, b.entry.id); c != 0 {
+			return c
+		}
+		if c := a.recIdx - b.recIdx; c != 0 {
+			return c
+		}
+		return a.patIdx - b.patIdx
+	})
+	return out
+}
+
+const cluePatchKeySQL = "doc_id || '/' || entry_id || '/' || rec_idx || '/' || patch_idx"
+
+func TestCluePatchesCountsEveryPatch(t *testing.T) {
+	e := openEngine(t, []DatasetSpec{{DS: clueFixture(t)}}, nil)
+	want := clueFixturePatches()
+	if len(want) == 0 {
+		t.Fatal("the fixture holds no patches")
+	}
+	if n := queryInt(t, e, "SELECT count(*) FROM clue_patches"); n != len(want) {
+		t.Fatalf("clue_patches has %d rows, want the fixture's %d patches", n, len(want))
+	}
+	if n := queryInt(t, e, "SELECT count(*) FROM clue_patches WHERE doc_id = 'dB'"); n != 0 {
+		t.Fatalf("dB's entries hold no explodable patches but gave %d rows", n)
+	}
+}
+
+func TestCluePatchesKeyIsUnique(t *testing.T) {
+	e := openEngine(t, []DatasetSpec{{DS: clueFixture(t)}}, nil)
+	if n := queryInt(t, e, "SELECT count(*) - count(DISTINCT (doc_id, entry_id, rec_idx, patch_idx)) FROM clue_patches"); n != 0 {
+		t.Fatalf("%d duplicate patch keys", n)
+	}
+	if n := queryInt(t, e, "SELECT count(*) FROM (SELECT 1 FROM clue_patches GROUP BY "+cluePatchKey+" HAVING count(*) > 1)"); n != 0 {
+		t.Fatalf("%d patch keys repeat under cluePatchKey", n)
+	}
+	if n := queryInt(t, e, "SELECT count(*) FROM clue_patches p ANTI JOIN clue_history h USING (doc_id, entry_id)"); n != 0 {
+		t.Fatalf("%d patches join no clue_history row", n)
+	}
+}
+
+func TestCluePatchesOrderedByTheKey(t *testing.T) {
+	d := clueFixture(t)
+	want := clueFixturePatches()
+	var keys, lags []string
+	prev := map[string]string{}
+	for _, p := range want {
+		keys = append(keys, p.key())
+		lag, ok := prev[p.entry.doc]
+		if !ok {
+			lag = "<NULL>"
+		}
+		lags = append(lags, p.key()+" "+lag)
+		prev[p.entry.doc] = p.patch.path
+	}
+	for i := range 2 {
+		e := openEngine(t, []DatasetSpec{{DS: d}}, nil)
+		if got := queryStrings(t, e, "SELECT "+cluePatchKeySQL+" FROM clue_patches ORDER BY "+cluePatchKey); !slices.Equal(got, keys) {
+			t.Fatalf("open %d: patches ordered by the key %v, want %v", i, got, keys)
+		}
+		got := queryStrings(t, e, "SELECT "+cluePatchKeySQL+" || ' ' || coalesce(lag(path) OVER (PARTITION BY doc_id ORDER BY "+cluePatchKey+"), '<NULL>') FROM clue_patches ORDER BY "+cluePatchKey)
+		if !slices.Equal(got, lags) {
+			t.Fatalf("open %d: lag(path) over the key %v, want %v", i, got, lags)
+		}
+		e.Close()
+	}
+}
+
+var tileInPath = regexp.MustCompile(`/tileMap/([^/]+)`)
+
+func TestCluePatchesColumns(t *testing.T) {
+	e := openEngine(t, []DatasetSpec{{DS: clueFixture(t)}}, nil)
+	for _, p := range clueFixturePatches() {
+		tile := "<NULL>"
+		if m := tileInPath.FindStringSubmatch(p.patch.path); m != nil {
+			tile = m[1]
+		} else if m := tileInPath.FindStringSubmatch(fmt.Sprint(p.entry.action)); m != nil {
+			tile = m[1]
+		}
+		value := "set"
+		switch {
+		case !p.patch.hasValue:
+			value = "absent"
+		case p.patch.value == nil:
+			value = "null"
+		}
+		got := queryRow(t, e, fmt.Sprintf(`SELECT coalesce(tile_id, '<NULL>'), op, path,
+  CASE WHEN value IS NULL THEN 'absent' WHEN json_type(value) = 'NULL' THEN 'null' ELSE 'set' END,
+  is_revert::VARCHAR
+FROM clue_patches WHERE %s = '%s'`, cluePatchKeySQL, p.key()))
+		if want := []string{tile, p.patch.op, p.patch.path, value, fmt.Sprint(p.entry.isRevert)}; !slices.Equal(got, want) {
+			t.Errorf("%s tile_id, op, path, value, is_revert = %v, want %v", p.key(), got, want)
+		}
+	}
+	if n := queryInt(t, e, `SELECT count(*) FROM clue_patches p JOIN clue_history h USING (doc_id, entry_id)
+WHERE p.action IS DISTINCT FROM h.action OR p.created IS DISTINCT FROM h.created
+  OR p.server_created IS DISTINCT FROM h.server_created OR p.idx IS DISTINCT FROM h.idx`); n != 0 {
+		t.Fatalf("%d patches disagree with their entry's action, idx or clocks", n)
+	}
+}
+
+var cluePatchesColumns = map[string]string{
+	"doc_id": "VARCHAR", "entry_id": "VARCHAR", "idx": "BIGINT", "created": "TIMESTAMP", "server_created": "TIMESTAMP",
+	"action": "VARCHAR", "tile_id": "VARCHAR", "is_revert": "BOOLEAN", "rec_idx": "BIGINT", "patch_idx": "BIGINT",
+	"op": "VARCHAR", "path": "VARCHAR", "value": "JSON",
+}
+
+func TestCluePatchesFallbackDeclaresEveryColumn(t *testing.T) {
+	if got := columnTypes(t, openEngine(t, []DatasetSpec{{DS: clueFixture(t)}}, nil), "clue_patches"); !maps.Equal(got, cluePatchesColumns) {
+		t.Fatalf("clue_patches columns %v, want %v", got, cluePatchesColumns)
+	}
+	assertClueFallback(t, "clue_patches")
+}
+
+func pinnedViews(e *Engine) []string {
+	var out []string
+	for _, p := range e.pinned {
+		out = append(out, strings.Trim(p.stmt.name, `"`))
+	}
+	return out
+}
+
+func TestClueViewsMaterialize(t *testing.T) {
+	d := clueFixture(t)
+	views := append(slices.Clone(clueKinds), "clue_patches")
+	e := openEngine(t, []DatasetSpec{{DS: d}}, nil)
+	raw := map[string][]string{}
+	for _, v := range views {
+		raw[v] = viewRows(t, e, v)
+		if len(raw[v]) == 0 {
+			t.Fatalf("%s has no rows to compare", v)
+		}
+	}
+	e.Close()
+
+	res, _ := materialize(t, d, MaterializeOptions{})
+	for _, v := range views {
+		if !slices.Contains(res.Written(), v) {
+			t.Fatalf("%s was not written: %+v", v, res.Views)
+		}
+	}
+	e = openEngine(t, []DatasetSpec{{DS: d}}, nil)
+	for _, v := range views {
+		if !slices.Contains(pinnedViews(e), v) {
+			t.Fatalf("%s is not read from its Parquet, pinned %v", v, pinnedViews(e))
+		}
+		if got := viewRows(t, e, v); !slices.Equal(got, raw[v]) {
+			t.Fatalf("%s from its Parquet %v, want the raw view's %v", v, got, raw[v])
+		}
+	}
+	e.Close()
+
+	land(t, d, store.TypeClueDocuments, 702, map[string]any{"doc_id": "dE", "uid": "105"})
+	e = openEngine(t, []DatasetSpec{{DS: d}}, nil)
+	pinned := pinnedViews(e)
+	for _, v := range []string{store.TypeClueDocuments, store.TypeClueHistory, store.TypeClueContent} {
+		if slices.Contains(pinned, v) {
+			t.Fatalf("%s still reads its Parquet after a documents fetch", v)
+		}
+	}
+	if !slices.Contains(pinned, "clue_patches") {
+		t.Fatalf("clue_patches went stale on a documents fetch, pinned %v", pinned)
+	}
 }

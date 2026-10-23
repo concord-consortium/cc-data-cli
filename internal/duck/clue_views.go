@@ -178,3 +178,28 @@ LEFT JOIN %s d USING (doc_id)`,
 			docColumnRefs("d"), c, d), append(files, docFiles...)
 	})
 }
+
+// cluePatchKey is clue_patches' unique key; rec_idx and patch_idx break every tie. The view
+// has no ORDER BY (a full-corpus sort exceeds the sandbox's caps), so ordered output and
+// windows must use this key.
+const cluePatchKey = "doc_id, idx, entry_id, rec_idx, patch_idx"
+
+// cluePatchesView reads the history store itself rather than the clue_history view: a
+// view reading another by name declares no files and is never materialized, and its
+// Parquet's signature would not cover the other view's SQL.
+func (vs viewSet) cluePatchesView() viewStmt {
+	return vs.clueView("clue_patches", func(standIn bool) (string, []string) {
+		h, files := vs.clueSource(store.TypeClueHistory, standIn, false)
+		action, tileID, _ := clueActionExprs("action_raw")
+		// Two unnests in one SELECT zip by position, so each range() index is its element's.
+		return fmt.Sprintf(`WITH e AS (SELECT doc_id, entry_id, idx, created, server_created, is_revert, %s AS action, %s AS entry_tile_id, %s AS entry FROM %s),
+rec AS (SELECT * EXCLUDE (entry), unnest(json_extract(entry, '$.records[*]')) AS rec,
+  unnest(range(CAST(json_array_length(entry, '$.records') AS BIGINT))) AS rec_idx FROM e),
+pat AS (SELECT * EXCLUDE (rec), unnest(json_extract(rec, '$.patches[*]')) AS patch,
+  unnest(range(CAST(json_array_length(rec, '$.patches') AS BIGINT))) AS patch_idx FROM rec)
+SELECT doc_id, entry_id, idx, created, server_created, action,
+  coalesce(nullif(regexp_extract(patch ->> 'path', '/tileMap/([^/]+)', 1), ''), entry_tile_id) AS tile_id,
+  is_revert, rec_idx, patch_idx, patch ->> 'op' AS op, patch ->> 'path' AS path, json_extract(patch, '$.value') AS value
+FROM pat`, action, tileID, jsonPayload("entry_json"), h), files
+	})
+}

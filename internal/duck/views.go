@@ -58,6 +58,7 @@ func (vs viewSet) statements() []viewStmt {
 		}
 		stmts = append(stmts, vs.storeView(k))
 	}
+	stmts = append(stmts, vs.cluePatchesView())
 	stmts = append(stmts, vs.runMembershipView())
 	stmts = append(stmts, vs.runAnswersView())
 	stmts = append(stmts, vs.downloadsView())

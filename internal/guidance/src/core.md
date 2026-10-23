@@ -161,6 +161,13 @@ like `wildfire_2026.answers`):
   is a BIGINT, with a stored value that is not an integer in
   `change_count_unparsed`. Every row carries its document's `portal_class_id`,
   `unit`, `investigation`, `problem` and `offering_id`, as `clue_history` does.
+- `clue_patches`: one row per JSON patch of every `clue_history` entry whose
+  `entry_json` parses: `doc_id`, `entry_id`, `idx`, `created`, `server_created`,
+  the entry's `action`, `tile_id` (the tile in the patch's own `path`, else the
+  entry's), `is_revert`, `rec_idx` and `patch_idx` (the patch's 0-based positions in
+  the entry's `records` and in that record's `patches`), `op`, `path`, and `value`
+  as JSON. `(doc_id, idx, entry_id, rec_idx, patch_idx)` is unique. The view
+  applies no order, so order output and windows by that key.
 - `run_membership` — one row per membership line with `run_id` and `type`. Join
   **type-qualified**: `answers a JOIN run_membership m USING
   (source_key, remote_endpoint, question_id) WHERE m.run_id = 584 AND m.type =
