@@ -26,11 +26,14 @@ type bulkServer struct {
 	totalEndpoints *int
 	expireToken    string // return 410 when this token arrives, once
 	expired        bool
+	failFrom       int      // when > 0, answer 500 for this page index and later
+	paths          []string // request paths, in order
 }
 
 func newBulkServer(t *testing.T, b *bulkServer) *bulkServer {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/reports/", func(w http.ResponseWriter, r *http.Request) {
+		b.paths = append(b.paths, r.URL.Path)
 		token := r.URL.Query().Get("page_token")
 		if token != "" && token == b.expireToken && !b.expired {
 			b.expired = true
@@ -39,6 +42,11 @@ func newBulkServer(t *testing.T, b *bulkServer) *bulkServer {
 			return
 		}
 		idx := b.pageForToken(token)
+		if b.failFrom > 0 && idx >= b.failFrom {
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprint(w, `{"error":"SERVER_ERROR","message":"down"}`)
+			return
+		}
 		next := b.tokens[idx]
 		te := ""
 		if b.totalEndpoints != nil {

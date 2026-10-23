@@ -1,0 +1,54 @@
+[
+ {
+  "doc_id": "-Nd1",
+  "uid": "1234",
+  "context_id": "7be899cf0000000000000000000000000000000000000000",
+  "found": true,
+  "type": "problem",
+  "version": "1.0",
+  "change_count": 6,
+  "last_history_entry_id": "e06",
+  "self": {
+   "uid": "1234",
+   "documentKey": "-Nd1",
+   "classHash": "7be899cf0000000000000000000000000000000000000000"
+  },
+  "content_json": "{\"tileMap\":{\"t1\":{\"title\":\"<b>&</b>\"}}}"
+ },
+ {
+  "doc_id": "-Nd2",
+  "uid": "group_701_a",
+  "context_id": "7be899cf0000000000000000000000000000000000000000",
+  "found": false,
+  "type": null,
+  "version": null,
+  "change_count": null,
+  "last_history_entry_id": null,
+  "self": null,
+  "content_json": null
+ },
+ {
+  "doc_id": "-Nd3",
+  "uid": "class_7be899cf0000000000000000000000000000000000000000",
+  "context_id": "7be899cf0000000000000000000000000000000000000000",
+  "found": true,
+  "type": "problem",
+  "version": "1.0",
+  "change_count": null,
+  "last_history_entry_id": null,
+  "self": null,
+  "content_json": null
+ },
+ {
+  "doc_id": "-Nd4",
+  "uid": "1234",
+  "context_id": "7be899cf0000000000000000000000000000000000000000",
+  "found": false,
+  "type": null,
+  "version": null,
+  "change_count": null,
+  "last_history_entry_id": null,
+  "self": null,
+  "content_json": null
+ }
+]
