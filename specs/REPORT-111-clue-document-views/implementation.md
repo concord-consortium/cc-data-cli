@@ -38,15 +38,10 @@ import (
 	"github.com/concord-consortium/cc-data-cli/internal/store"
 )
 
-// clueSource is a CLUE store as a relation: its file when the store has one on disk,
-// otherwise a typed-empty stand-in. Its columns are the store's recorded ones, as
-// storeView reads them, so a field the export adds later passes through; with no store,
-// the kind's pinned columns. standIn forces the stand-in, which is how a view's fallback
-// is the view's own SQL with no files in it, so the two cannot declare different
-// columns. Only the store's own view passes warn, so a missing file is reported once
-// rather than by every view that joins it. A missing file is still declared, as
-// storeView and reportUnionView declare theirs, so materializing refuses the view
-// unless partial copies are allowed, rather than writing one short of that store.
+// clueSource is a CLUE store as a relation: its file, or a typed-empty stand-in over the
+// store's recorded columns (the pins when there is no store) when standIn is set or the
+// file is absent. A missing file is still declared, so materializing refuses the view;
+// only the store's own view passes warn, so the file is reported once.
 func (vs viewSet) clueSource(typ string, standIn, warn bool) (rel string, files []string) {
 	cols := cluePins(typ)
 	st, ok := vs.m.Stores[typ]
@@ -126,8 +121,8 @@ func (vs viewSet) clueDocumentsView() viewStmt {
 In `views.go`, beside `statements()`, so REPORT-152 adds its `recent_logs` entry where its plan looks for the map (its view step edits `views.go`):
 
 ```go
-// derivedStoreViews replaces a kind's plain storeView with its derived view, under the
-// same name and over the same file.
+// derivedStoreViews replaces a kind's plain storeView with its derived view under the
+// same name.
 var derivedStoreViews = map[string]func(viewSet) viewStmt{
 	store.TypeClueDocuments: viewSet.clueDocumentsView,
 }
@@ -339,7 +334,7 @@ The view is not named after a store, so `Materialize` applies no row-count check
 **Tests**:
 - `TestCluePatchesCountsEveryPatch`: `count(*)` equals the patch count the fixture builder summed in Go over the parseable entries (the builder marks the lone-surrogate entry unparseable by hand, since Go's `json.Valid` accepts it as `JSON.parse` does and DuckDB does not); the unparseable entry, the empty `records`, the record without `patches` and a `records` object contribute nothing and raise nothing.
 - `TestCluePatchesKeyIsUnique`: `count(*) = count(DISTINCT (doc_id, entry_id, rec_idx, patch_idx))`, no group of `cluePatchKey` itself repeats, and an anti-join to `clue_history` on `(doc_id, entry_id)` is empty.
-- `TestCluePatchesOrderedByTheKey`: `SELECT doc_id, entry_id, rec_idx, patch_idx FROM clue_patches ORDER BY ` + `cluePatchKey` returns the Go-sorted key list on two `Open`s of the same dataset, and `lag(path) OVER (PARTITION BY doc_id ORDER BY ` + `cluePatchKey` + `)` equals the previous path computed in Go, over the fixture's entries tied on `created` and on `idx` and its entry with a NULL `idx` (a key that dropped `rec_idx` or `patch_idx` leaves ties there and fails).
+- `TestCluePatchesOrderedByTheKey`: `SELECT doc_id, entry_id, rec_idx, patch_idx FROM clue_patches ORDER BY ` + `cluePatchKey` returns the Go-sorted key list on two `Open`s of the same dataset, and `lag(path) OVER (PARTITION BY doc_id ORDER BY ` + `cluePatchKey` + `)` equals the previous path computed in Go, over the fixture's entries tied on `created` and on `idx` and its entry with a NULL `idx`, read once as the view gives it and once with each entry's positions reversed first (a key that dropped `rec_idx` or `patch_idx` leaves ties there and fails).
 - `TestCluePatchesColumns`: per fixture patch, `tile_id` from the path when it has one (an `/addTile` entry whose patch path names the new tile) and from the entry otherwise (an entry whose action names a tile and whose patch path names none), `op` and `path`, `value IS NULL` for the `remove` and `json_type(value) = 'NULL'` for the set-to-null patch, and the entry's `action`, `created`, `server_created` and `is_revert` on each.
 - `TestCluePatchesFallbackDeclaresEveryColumn`: R11's columns at their types, written out by hand, on the fixture; then as for documents.
 - `TestClueViewsMaterialize`: `Materialize` writes all four; reopening pins all four to their Parquet (`e.pinned`), and each returns the raw view's rows (`viewRows`). A fetch-like rewrite of the documents file then makes `clue_history` and `clue_content` stale and leaves `clue_patches` fresh.

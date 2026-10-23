@@ -259,9 +259,10 @@ type clueDoc struct {
 
 var clueFixtureDocs = []clueDoc{
 	{"dA", "101", 11, 21, "uA", "iA", "pA", []string{"Text", "Dataflow"}, 1700000000123},
-	{"dB", "102", 12, 22, "uB", "iB", "pB", nil, "1700000000123"},
+	{"dB", "102", 12, 22, "uB", "iB", "pB", "Text", "1700000000123"},
 	{"dC", "103", 13, 23, "uC", "iC", "pC", map[string]any{"a": 1}, 1700000000123.5},
 	{"dD", "104", 14, 24, "uD", "iD", "pD", []string{}, map[string]any{"ms": 1}},
+	{"dF", "106", 16, 26, "uF", "iF", "pF", nil, nil},
 }
 
 const (
@@ -272,9 +273,9 @@ const (
 
 func set(path string, v any) cluePatch { return cluePatch{"replace", path, v, true} }
 
-// clueFixtureEntries is the synthetic history: entry ids are chosen so the store's identity-key order is
-// not (doc_id, idx, entry_id), dA's a-9 and a-02 tie on created and on idx,
-// a-9's shorter id stores it first while the key orders it last, and a-00 has neither.
+// clueFixtureEntries is the synthetic history. Its ids make the store's identity-key order
+// differ from (doc_id, idx, entry_id): dA's a-9 and a-02 tie on created and idx, and a-9 is
+// stored first while the key orders it last. a-00 has a NULL idx and created.
 var clueFixtureEntries = []clueEntry{
 	{doc: "dA", id: "a-03", idx: 0, created: clueT0, server: clueT0, action: "/content/tileMap/T1/content/setText", undoable: true, parseOK: true, parseable: true,
 		records: []clueRecord{
@@ -290,9 +291,10 @@ var clueFixtureEntries = []clueEntry{
 	{doc: "dA", id: "a-00", idx: nil, created: nil, server: clueT2, action: "/addTile", undoable: false, isRevert: true, parseOK: true, parseable: true,
 		records: []clueRecord{{"dA", "/addTile", []cluePatch{{"add", "/content/tileMap/T4", map[string]any{"id": "T4"}, true}}}}},
 	{doc: "dB", id: "b-1", idx: 0, created: clueT0, server: clueT0, action: "/content/rowMap/R1/setValue", undoable: 1, parseOK: false, raw: `{"records":[{"patches":[{"op":"add",`},
-	{doc: "dB", id: "b-2", idx: 1, created: clueT1, server: clueT1, action: "", parseOK: true, parseable: true, raw: `{"records":[]}`},
+	{doc: "dB", id: "b-2", idx: 1, created: clueT1, server: clueT1, action: "", undoable: map[string]any{"v": true}, parseOK: true, parseable: true, raw: `{"records":[]}`},
 	{doc: "dB", id: "b-3", idx: 2, created: clueT1, server: clueT1, action: nil, parseOK: true, parseable: true, raw: `{"records":[{"tree":"dB","action":"x"}]}`},
 	{doc: "dB", id: "b-4", idx: 3, created: clueT2, server: clueT2, action: "/content/tileMap/A/content/tileMap/B/x", parseOK: true, parseable: true, raw: `{"records":{"patches":[{"op":"add","path":"/p","value":1}]}}`},
+	{doc: "dB", id: "b-6", idx: 5, created: clueT2, server: clueT2, action: nil, parseOK: true, parseable: true, raw: `{"records":[{"patches":{"op":"add","path":"/p"}}]}`},
 	{doc: "dB", id: "b-5", idx: 4, created: clueT2, server: clueT2, action: "/content/tileMap/T9/content/setText", parseOK: true, raw: `{"records":[{"patches":[{"op":"add","path":"/t","value":"\ud83d"}]}]}`},
 	{doc: "dX", id: "x-1", idx: 0, created: clueT0, server: clueT0, action: "/content/rowMap/R9/setValue", undoable: true, parseOK: true, parseable: true,
 		records: []clueRecord{{"dX", "/content/rowMap/R9/setValue", []cluePatch{{"add", "/content/rowMap/R9", 1, true}}}}},
@@ -402,9 +404,10 @@ func TestClueDocumentsTypesTools(t *testing.T) {
 	e := openEngine(t, []DatasetSpec{{DS: clueFixture(t)}}, nil)
 	for doc, want := range map[string][]string{
 		"dA": {"[Text, Dataflow]", "2", "<NULL>"},
-		"dB": {"<NULL>", "<NULL>", "<NULL>"},
+		"dB": {"<NULL>", "<NULL>", `"Text"`},
 		"dC": {"<NULL>", "<NULL>", `{"a":1}`},
 		"dD": {"[]", "0", "<NULL>"},
+		"dF": {"<NULL>", "<NULL>", "<NULL>"},
 	} {
 		got := queryRow(t, e, "SELECT tools::VARCHAR, n_tools::VARCHAR, tools_unparsed::VARCHAR FROM clue_documents WHERE doc_id = '"+doc+"'")
 		if !slices.Equal(got, want) {
@@ -414,15 +417,13 @@ func TestClueDocumentsTypesTools(t *testing.T) {
 }
 
 func TestClueDocumentsCreatedAt(t *testing.T) {
-	d := clueFixture(t)
-	land(t, d, store.TypeClueDocuments, 701, map[string]any{"doc_id": "dN", "uid": "105", "created_at": nil})
-	e := openEngine(t, []DatasetSpec{{DS: d}}, nil)
+	e := openEngine(t, []DatasetSpec{{DS: clueFixture(t)}}, nil)
 	for doc, want := range map[string][]string{
 		"dA": {"2023-11-14 22:13:20.123", "<NULL>"},
 		"dB": {"<NULL>", `"1700000000123"`},
 		"dC": {"2023-11-14 22:13:20.1235", "<NULL>"},
 		"dD": {"<NULL>", `{"ms":1}`},
-		"dN": {"<NULL>", "<NULL>"},
+		"dF": {"<NULL>", "<NULL>"},
 	} {
 		got := queryRow(t, e, "SELECT created_at::VARCHAR, created_at_unparsed::VARCHAR FROM clue_documents WHERE doc_id = '"+doc+"'")
 		if !slices.Equal(got, want) {
@@ -630,6 +631,7 @@ func TestClueHistoryPayloads(t *testing.T) {
 		"a-00": {"false", "<NULL>"},
 		"a-9":  {"<NULL>", `"yes"`},
 		"b-1":  {"<NULL>", "1"},
+		"b-2":  {"<NULL>", `{"v":true}`},
 		"a-02": {"<NULL>", "<NULL>"},
 	} {
 		if got := queryRow(t, e, "SELECT undoable::VARCHAR, undoable_unparsed::VARCHAR FROM clue_history WHERE entry_id = '"+entry+"'"); !slices.Equal(got, want) {
@@ -844,9 +846,12 @@ func TestCluePatchesOrderedByTheKey(t *testing.T) {
 		if got := queryStrings(t, e, "SELECT "+cluePatchKeySQL+" FROM clue_patches ORDER BY "+cluePatchKey); !slices.Equal(got, keys) {
 			t.Fatalf("open %d: patches ordered by the key %v, want %v", i, got, keys)
 		}
-		got := queryStrings(t, e, "SELECT "+cluePatchKeySQL+" || ' ' || coalesce(lag(path) OVER (PARTITION BY doc_id ORDER BY "+cluePatchKey+"), '<NULL>') FROM clue_patches ORDER BY "+cluePatchKey)
-		if !slices.Equal(got, lags) {
-			t.Fatalf("open %d: lag(path) over the key %v, want %v", i, got, lags)
+		// Reversing the positions first means a key that leaves a tie reads it in the wrong order.
+		for _, src := range []string{"clue_patches", "(SELECT * FROM clue_patches ORDER BY rec_idx DESC, patch_idx DESC)"} {
+			got := queryStrings(t, e, "SELECT "+cluePatchKeySQL+" || ' ' || coalesce(lag(path) OVER (PARTITION BY doc_id ORDER BY "+cluePatchKey+"), '<NULL>') FROM "+src+" ORDER BY "+cluePatchKey)
+			if !slices.Equal(got, lags) {
+				t.Fatalf("open %d: lag(path) over the key from %s %v, want %v", i, src, got, lags)
+			}
 		}
 		e.Close()
 	}

@@ -13,15 +13,10 @@ import (
 // on either view. Their types are the documents store's own.
 var clueDocColumns = []string{"portal_class_id", "unit", "investigation", "problem", "offering_id"}
 
-// clueSource is a CLUE store as a relation: its file when the store has one on disk,
-// otherwise a typed-empty stand-in. Its columns are the store's recorded ones, as
-// storeView reads them, so a field the export adds later passes through; with no store,
-// the kind's pinned columns. standIn forces the stand-in, which is how a view's fallback
-// is the view's own SQL with no files in it, so the two cannot declare different
-// columns. Only the store's own view passes warn, so a missing file is reported once
-// rather than by every view that joins it. A missing file is still declared, as
-// storeView and reportUnionView declare theirs, so materializing refuses the view
-// unless partial copies are allowed, rather than writing one short of that store.
+// clueSource is a CLUE store as a relation: its file, or a typed-empty stand-in over the
+// store's recorded columns (the pins when there is no store) when standIn is set or the
+// file is absent. A missing file is still declared, so materializing refuses the view;
+// only the store's own view passes warn, so the file is reported once.
 func (vs viewSet) clueSource(typ string, standIn, warn bool) (rel string, files []string) {
 	cols := cluePins(typ)
 	st, ok := vs.m.Stores[typ]

@@ -394,7 +394,7 @@ A few things to know before analyzing CLUE documents with these views:
   original text is in `entry_json_unparsed` or `content_json_unparsed`, and
   `clue_patches` has no rows for that entry. The stored `parse_ok` is the server's
   verdict; the query engine's is whether `entry_json` is filled in, and
-  `clue_patches` follows the query engine. The two can disagree: `entry_json` is empty for
+  `clue_patches` follows the query engine. The two can disagree: `entry_json` is NULL for
   a split emoji the server accepted, and filled in for text with a trailing comma,
   `NaN` or `Infinity` that the server rejected.
 - **There is no per-run `clue_patches`.** To look at one run's patches, keep the

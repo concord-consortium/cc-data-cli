@@ -121,7 +121,8 @@ like `wildfire_2026.answers`):
 - `clue_documents`: one row per CLUE document, no dedup needed: its owner (`uid`,
   `context_id`, `portal_class_id`, `owner_type`), unit and problem, `offering_id`,
   and the raw Firestore and RTDB metadata. `tools` is the document's tool list as
-  `VARCHAR[]`, NULL when the document records none, and `n_tools` its length.
+  `VARCHAR[]`, NULL when the stored `tools` is NULL (an empty list stays `[]`), and
+  `n_tools` its length.
   `created_at` is a UTC `TIMESTAMP` from the stored epoch milliseconds. A stored
   value of the wrong JSON kind (a `created_at` string, a `tools` object) is NULL
   there rather than converted, and kept as JSON in `created_at_unparsed` or
@@ -173,8 +174,8 @@ like `wildfire_2026.answers`):
     document and `server_created` across documents: the two differ by about a
     minute either way (-55 s to +53 s at the 1st and 99th percentiles in one
     corpus).
-  - **Entry order is `(idx, entry_id)`, not `idx` alone.** Many documents have
-    duplicate or gapped `idx` values that are distinct entries, and an entry whose
+  - **Entry order is `(idx, entry_id)`, not `idx` alone.** Some documents (73 in
+    one corpus) have duplicate or gapped `idx` values that are distinct entries, and an entry whose
     `idx` is NULL (an index the export could not carry as an integer) sorts after
     its document's indexed entries.
   - **`clue_patches` promises no order.** Order output by `doc_id, idx, entry_id,
@@ -183,8 +184,7 @@ like `wildfire_2026.answers`):
     runs, so one operation can split into two.
   - **`action` is not the edit.** Most documents record their edits as one
     catch-all action ending in `setProgram`, and only a minority record granular
-    actions,
-    so per-edit questions read `clue_patches`, not `clue_history.action`.
+    actions, so per-edit questions read `clue_patches`, not `clue_history.action`.
   - **Runtime output is not student work.** Patch paths containing
     `program/values/`, `demoOutput` or `tickEntries/` are written by a running
     program, and actions ending in `content/step` or `tickAndProcess` are most

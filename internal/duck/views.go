@@ -70,8 +70,8 @@ func (vs viewSet) statements() []viewStmt {
 	return stmts
 }
 
-// derivedStoreViews replaces a kind's plain storeView with its derived view, under the
-// same name and over the same file.
+// derivedStoreViews replaces a kind's plain storeView with its derived view under the
+// same name.
 var derivedStoreViews = map[string]func(viewSet) viewStmt{
 	store.TypeClueDocuments: viewSet.clueDocumentsView,
 	store.TypeClueHistory:   viewSet.clueHistoryView,
