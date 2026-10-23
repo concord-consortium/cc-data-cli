@@ -199,8 +199,8 @@ func stored(item []byte) []byte {
 // computeCoverage reports the run's coverage and, when CLUE history owners cannot be
 // counted, a note saying why.
 func (opts PagedOptions) computeCoverage(totalEndpoints *int) (*dataset.Coverage, string) {
-	if isClueType(opts.Type) {
-		return opts.clueCoverage(totalEndpoints)
+	if kind := store.MustKind(opts.Type); kind.OwnerStore != "" {
+		return opts.ownerCoverage(kind, totalEndpoints)
 	}
 	cov := &dataset.Coverage{}
 	// with_data: distinct remote_endpoint in the run's current membership.

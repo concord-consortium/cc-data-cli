@@ -921,6 +921,19 @@ func TestShowSuggestsMaterializingALargeStore(t *testing.T) {
 	if got := largeWarnings(t, d); len(got) != 0 {
 		t.Fatalf("a fresh Parquet copy still warns: %v", got)
 	}
+	m, _ = d.ReadManifest()
+	parquet := d.Path(m.Materialized["answers"].File)
+	parquetBytes, err := os.ReadFile(parquet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Remove(parquet)
+	if got := largeWarnings(t, d); len(got) != 1 {
+		t.Fatalf("a deleted Parquet copy must warn: %v", got)
+	}
+	if err := os.WriteFile(parquet, parquetBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	buildStore(t, d, 612, [][]byte{answerRec("s", "e2", "q2", "yo")})
 	if got := largeWarnings(t, d); len(got) != 1 {

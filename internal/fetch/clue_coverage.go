@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/concord-consortium/cc-data-cli/internal/dataset"
 	"github.com/concord-consortium/cc-data-cli/internal/store"
@@ -17,14 +18,10 @@ var ownerKind = store.Kind{Name: "owner", Identity: []string{"context_id", "uid"
 // coverageWalkHook runs inside the coverage walk; tests use it to observe the lock.
 var coverageWalkHook = func() {}
 
-func isClueType(typ string) bool {
-	return typ == store.TypeClueDocuments || typ == store.TypeClueHistory || typ == store.TypeClueContent
-}
-
-// clueCoverage counts the run's distinct (context_id, uid) owners, taking history's from
-// the clue_documents store. It walks under the dataset lock so another run's merge cannot
-// delete the store version the manifest names.
-func (opts PagedOptions) clueCoverage(totalEndpoints *int) (*dataset.Coverage, string) {
+// ownerCoverage counts the run's distinct (context_id, uid) owners, read from the kind's
+// owner store. It walks under the dataset lock so another run's merge cannot delete the
+// store version the manifest names.
+func (opts PagedOptions) ownerCoverage(kind store.Kind, totalEndpoints *int) (*dataset.Coverage, string) {
 	lock := opts.DS.Lock()
 	if err := lock.Lock(); err != nil {
 		return nil, ""
@@ -39,15 +36,12 @@ func (opts PagedOptions) clueCoverage(totalEndpoints *int) (*dataset.Coverage, s
 	if !ok {
 		return nil, ""
 	}
-	ownerStore := opts.Type
-	if opts.Type == store.TypeClueHistory {
-		ownerStore = store.TypeClueDocuments
-	}
+	ownerStore := kind.OwnerStore
 	note := ""
-	if opts.Type == store.TypeClueHistory {
-		note = fmt.Sprintf("owners not counted: fetch clue-documents for run %d before clue-history", opts.RunID)
+	if ownerStore != kind.Name {
+		note = fmt.Sprintf("owners not counted: fetch %s for run %d before %s", cliVerb(ownerStore), opts.RunID, cliVerb(kind.Name))
 	}
-	owners, resolved, err := walkOwners(opts.DS.Path(ref.File), store.MustKind(opts.Type), m.Stores[ownerStore].File, opts.DS, store.MustKind(ownerStore))
+	owners, resolved, err := walkOwners(opts.DS.Path(ref.File), kind, m.Stores[ownerStore].File, opts.DS, store.MustKind(ownerStore))
 	if err != nil {
 		return nil, ""
 	}
@@ -62,6 +56,9 @@ func (opts PagedOptions) clueCoverage(totalEndpoints *int) (*dataset.Coverage, s
 	}
 	return cov, ""
 }
+
+// cliVerb is a store type's get command name, clue_documents -> clue-documents.
+func cliVerb(typ string) string { return strings.ReplaceAll(typ, "_", "-") }
 
 // walkOwners counts the distinct owners of the membership's records, reading each from
 // the owner store's record with the same doc_id. resolved is false when a member has no

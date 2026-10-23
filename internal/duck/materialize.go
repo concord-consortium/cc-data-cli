@@ -618,8 +618,10 @@ func largeUnmaterialized(d *dataset.Dataset, m *dataset.Manifest, stale []string
 		if err != nil || fi.Size() <= largeStoreBytes {
 			continue
 		}
-		if _, materialized := m.Materialized[k.Name]; materialized && !slices.Contains(stale, k.Name) {
-			continue
+		if mat, ok := m.Materialized[k.Name]; ok && !slices.Contains(stale, k.Name) {
+			if _, err := os.Stat(d.Path(mat.File)); err == nil {
+				continue
+			}
 		}
 		out = append(out, fmt.Sprintf(
 			"LARGE_UNMATERIALIZED: view %s reads a %s GiB store; run cc-data dataset materialize %s to query a Parquet copy instead",

@@ -24,6 +24,7 @@ type Kind struct {
 	Pinned       map[string]string // DuckDB types fixed regardless of observed values
 	Route        string            // path under /api/v1/reports/<run>/
 	DoubleDecode bool              // double-decode report_state (LARA answers and history)
+	OwnerStore   string            // store whose records carry each record's (context_id, uid) owner; "" counts remote_endpoints
 }
 
 // laraPins are the answers and history contract fields.
@@ -67,10 +68,11 @@ var kinds = []Kind{
 	// Fields the export builds have strict types; fields it passes through from CLUE are
 	// VARCHAR or JSON, so one stray stored value cannot fail every query on the view.
 	{
-		Name:     TypeClueDocuments,
-		Identity: []string{"doc_id"},
-		Strict:   true,
-		Route:    "clue/documents",
+		Name:       TypeClueDocuments,
+		Identity:   []string{"doc_id"},
+		Strict:     true,
+		OwnerStore: TypeClueDocuments,
+		Route:      "clue/documents",
 		Pinned: withStamps(map[string]string{
 			"doc_id":             TypeVARCHAR,
 			"uid":                TypeVARCHAR,
@@ -94,10 +96,11 @@ var kinds = []Kind{
 		}),
 	},
 	{
-		Name:     TypeClueHistory,
-		Identity: []string{"doc_id", "entry_id"},
-		Strict:   true,
-		Route:    "clue/history",
+		Name:       TypeClueHistory,
+		Identity:   []string{"doc_id", "entry_id"},
+		Strict:     true,
+		OwnerStore: TypeClueDocuments,
+		Route:      "clue/history",
 		Pinned: withStamps(map[string]string{
 			"doc_id":         TypeVARCHAR,
 			"entry_id":       TypeVARCHAR,
@@ -117,10 +120,11 @@ var kinds = []Kind{
 		}),
 	},
 	{
-		Name:     TypeClueContent,
-		Identity: []string{"doc_id"},
-		Strict:   true,
-		Route:    "clue/content",
+		Name:       TypeClueContent,
+		Identity:   []string{"doc_id"},
+		Strict:     true,
+		OwnerStore: TypeClueContent,
+		Route:      "clue/content",
 		Pinned: withStamps(map[string]string{
 			"doc_id":                TypeVARCHAR,
 			"uid":                   TypeVARCHAR,

@@ -42,6 +42,7 @@ A dataset is a named, single-portal, user-managed workspace meant to combine man
         clue_history.v2.jsonl          # one record per CLUE document history entry (doc_id, entry_id)
         clue_content.v1.jsonl          # one record per CLUE document's current content (doc_id)
         members_answers_584.v3.jsonl   # which identities run 584's answers fetch covered
+        members_clue_history_584.v2.jsonl  # which (doc_id, entry_id) pairs run 584's clue-history fetch covered
         attachments/                   # audio .mp3, offloaded CODAP/SageModeler .json state
 ```
 
