@@ -43,7 +43,7 @@ type Page[T any] struct {
 	NextPageToken *string `json:"next_page_token"`
 }
 
-// BulkPage is the answers/history paged envelope, whose items stay raw.
+// BulkPage is the bulk routes' paged envelope (answers, history, CLUE), whose items stay raw.
 type BulkPage struct {
 	Items          []json.RawMessage `json:"items"`
 	NextPageToken  *string           `json:"next_page_token"`

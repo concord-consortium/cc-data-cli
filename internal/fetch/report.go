@@ -1,5 +1,5 @@
-// Package fetch implements the download commands: report CSVs, paged
-// answers/history, and attachments.
+// Package fetch implements the download commands: report CSVs, the paged store
+// types (answers, history and CLUE), and attachments.
 package fetch
 
 import (

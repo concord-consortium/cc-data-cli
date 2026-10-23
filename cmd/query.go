@@ -7,19 +7,23 @@ import (
 	"github.com/concord-consortium/cc-data-cli/internal/dataset"
 	"github.com/concord-consortium/cc-data-cli/internal/duck"
 	"github.com/concord-consortium/cc-data-cli/internal/output"
+	"github.com/concord-consortium/cc-data-cli/internal/store"
 	"github.com/spf13/cobra"
 )
 
 // staticViewList renders the views every dataset gets, wrapped for help output. It is derived
 // rather than written out so the help cannot drift from what the engine registers, which is the
 // same reason the catalog and the researcher guide are checked against StaticViewNames.
-func staticViewList() string {
+func staticViewList() string { return wrapNames(duck.StaticViewNames()) }
+
+// wrapNames lists names comma-separated and indented, wrapped for help output.
+func wrapNames(names []string) string {
 	const width = 76
 	var lines []string
 	line := " "
-	for i, name := range duck.StaticViewNames() {
+	for i, name := range names {
 		word := " " + name
-		if i < len(duck.StaticViewNames())-1 {
+		if i < len(names)-1 {
 			word += ","
 		}
 		if len(line)+len(word) > width {
@@ -41,7 +45,8 @@ func newQueryCmd() *cobra.Command {
 
 Views (single dataset: unqualified; multiple: schema-qualified per dataset):
 ` + staticViewList() + `
-  plus per-run views (report_<run>, answers_<run>, history_<run>).
+  plus per-run views: report_<run>, and <type>_<run> for each store type:
+` + wrapNames(store.Names()) + `
 
 The session is sandboxed to the named dataset folders. --allow-dir adds a
 directory to the allowlist for this invocation only (never persisted), so joining

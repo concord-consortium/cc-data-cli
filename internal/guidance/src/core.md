@@ -181,8 +181,8 @@ like `wildfire_2026.answers`):
   excluded here (not UTF-8 text) but remain downloadable via `attachment_files`.
 - `student_id_mapping` — one row per `learner_id` from Student ID Mapping runs
   (slug `student-id-mapping`), deduplicated across runs with the latest fetch
-  winning. Such a run's id is a valid source for fetching answers, history and
-  attachments. Join to `answers` and `history` on `run_remote_endpoint =
+  winning. Such a run's id is a valid source for fetching answers, history,
+  attachments, and CLUE documents, history and content. Join to `answers` and `history` on `run_remote_endpoint =
   remote_endpoint`. A NULL `run_remote_endpoint` is a learner with no secure
   key, not missing data: every such learner carries the same endpoint string, so
   the join key is withheld rather than attributing one learner's answers to all
@@ -194,8 +194,8 @@ like `wildfire_2026.answers`):
 - `student_metadata` — one row per `learner_id` from Student Metadata runs (slug
   `student-metadata`), same dedupe and the same `run_remote_endpoint` rule,
   carrying the names and roster labels the mapping view deliberately has none
-  of. Such a run's id is a valid source for fetching answers, history and
-  attachments. Join to `student_id_mapping` on `learner_id`. `hide_names` is the
+  of. Such a run's id is a valid source for fetching answers, history,
+  attachments, and CLUE documents, history and content. Join to `student_id_mapping` on `learner_id`. `hide_names` is the
   run's own setting: where it is true, `student_name` holds the student id and
   `username` a hash, so a dataset holding runs fetched under different roles is
   filterable rather than silently mixed. It is NULL for any download whose
@@ -244,7 +244,8 @@ slugs cc-data cannot enumerate; take one from a run that already exists.
 
 1. Create a `student-id-mapping` run over the learners of interest, assembling
    the filter from the available filter options.
-2. Fetch that run's answers, history and attachments by its run id.
+2. Fetch that run's answers, history and attachments by its run id, and for CLUE
+   its documents, then their history and content.
 3. Fetch the run's own report CSV, which becomes `student_id_mapping`.
 4. Create and fetch a `student-metadata` run over the same learners, which
    becomes `student_metadata`.

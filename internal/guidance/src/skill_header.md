@@ -1,6 +1,6 @@
 ---
 name: cc-data
-description: Download and query Concord Consortium researcher data (report CSVs, student answers, interactive state history, file attachments) into local datasets and analyze them with SQL via cc-data. Use whenever a researcher asks to pull, join, or analyze student report/answer/history data, or asks a plain-English question that maps to that data.
+description: Download and query Concord Consortium researcher data (report CSVs, student answers, interactive state history, file attachments, CLUE documents with their edit history and content) into local datasets and analyze them with SQL via cc-data. Use whenever a researcher asks to pull, join, or analyze student report/answer/history or CLUE document data, or asks a plain-English question that maps to that data.
 ---
 
 # cc-data
@@ -71,6 +71,13 @@ Researcher Dashboard packages are developed and published with `cc-data package`
   the run.
 - `cc-data get answers <run-id> --dataset <ref>` — student answers.
 - `cc-data get history <run-id> --dataset <ref>` — full interactive state history.
+- `cc-data get clue-documents <run-id> --dataset <ref>` — a run's CLUE documents.
+  Fetch them before `clue-history`.
+- `cc-data get clue-history <run-id> --dataset <ref>` — each CLUE document's edit
+  history, not `get history`'s interactive-state history. Its owner coverage needs
+  the run's documents fetched first.
+- `cc-data get clue-content <run-id> --dataset <ref>` — each CLUE document's current
+  content.
 - `cc-data get attachments <run-id> --dataset <ref>` — file attachments (requires
   answers or history fetched first). Prefer downloading into the dataset over
   `--url`; a presigned URL is a credential-free capability to a student's file.

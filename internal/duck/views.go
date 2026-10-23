@@ -470,8 +470,8 @@ func (vs viewSet) attachmentContentView() viewStmt {
 	return viewStmt{name: name, primary: primary, fallback: fallback, files: files}
 }
 
-// perDownloadViews builds report_<run>, answers_<run>, history_<run>, and
-// report_<run>_job_<id> views.
+// perDownloadViews builds report_<run> and report_<run>_job_<id> views, and a
+// <type>_<run> view for each registered store type's membership.
 func (vs viewSet) perDownloadViews() []viewStmt {
 	var stmts []viewStmt
 	// Report CSV per-run views from the download entries.
