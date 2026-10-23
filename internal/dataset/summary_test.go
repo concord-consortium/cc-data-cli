@@ -2,6 +2,7 @@ package dataset
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"sort"
@@ -9,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/concord-consortium/cc-data-cli/internal/config"
+	"github.com/concord-consortium/cc-data-cli/internal/store"
 )
 
 func TestShowJSONSchema(t *testing.T) {
@@ -247,5 +249,29 @@ func TestMissingMaterializedWarning(t *testing.T) {
 	}
 	if !strings.Contains(named[0], "dataset materialize") {
 		t.Fatalf("the warning must name the command that rebuilds it: %s", named[0])
+	}
+}
+
+func TestShowListsARecentLogsPullByClass(t *testing.T) {
+	d := newDataset(t)
+	mergeLogs(t, d, 590, logRec("e1", "a"), logRec("e2", "a"))
+	if err := d.UpsertDownload(Download{Type: store.TypeRecentLogs, ClassID: 590, Complete: true, RecentLogs: &RecentLogsPull{Rows: 2}}); err != nil {
+		t.Fatal(err)
+	}
+	s := showJSON(t, d)
+	if s.Totals[store.TypeRecentLogs] != 2 || len(s.Downloads) != 1 || s.Downloads[0].ClassID != 590 {
+		t.Fatalf("show = totals %v, downloads %+v", s.Totals, s.Downloads)
+	}
+	raw, err := json.Marshal(s.Downloads[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entry map[string]any
+	json.Unmarshal(raw, &entry)
+	if _, ok := entry["run_id"]; ok || entry["class_id"] != float64(590) {
+		t.Errorf("show --json entry = %s, want class_id and no run_id", raw)
+	}
+	if len(s.Warnings) != 0 {
+		t.Errorf("warnings: %v", s.Warnings)
 	}
 }

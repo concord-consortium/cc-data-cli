@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -76,6 +77,20 @@ var derivedStoreViews = map[string]func(viewSet) viewStmt{
 	store.TypeClueDocuments: viewSet.clueDocumentsView,
 	store.TypeClueHistory:   viewSet.clueHistoryView,
 	store.TypeClueContent:   viewSet.clueContentView,
+	store.TypeRecentLogs:    viewSet.recentLogsView,
+}
+
+// recentLogsView is the recent_logs store with logs' derived columns. The store's source
+// columns are pinned, so each derived column's source exists in every read.
+func (vs viewSet) recentLogsView() viewStmt {
+	derived := make([]string, 0, len(logDerived))
+	for _, d := range logDerived {
+		derived = append(derived, fmt.Sprintf("%s AS %s", d.expr(sqlIdent(d.src)), sqlIdent(d.name)))
+	}
+	return vs.clueView(store.TypeRecentLogs, func(standIn bool) (string, []string) {
+		src, _, files := vs.clueSource(store.TypeRecentLogs, standIn, true)
+		return "SELECT *, " + strings.Join(derived, ", ") + " FROM " + src, files
+	})
 }
 
 func (vs viewSet) file(rel string) string {
@@ -350,7 +365,7 @@ func (vs viewSet) runMembershipView() viewStmt {
 			continue
 		}
 		kind, known := store.KindOf(typ)
-		if !known {
+		if !known || kind.ClassKeyed {
 			continue
 		}
 		own := map[string]string{}
@@ -406,13 +421,18 @@ func (vs viewSet) runAnswersView() viewStmt {
 // wherever no filter is on disk to derive it from.
 func (vs viewSet) downloadsView() viewStmt {
 	name := vs.prefix + `"downloads"`
-	header := "(run_id, type, slug, report_type, hide_names, complete)"
+	header := "(run_id, class_id, type, slug, report_type, hide_names, complete)"
 	var rows []string
 	for _, dl := range vs.m.Downloads {
-		rows = append(rows, fmt.Sprintf("(%d, %s, %s, %s, %s, %t)",
-			dl.RunID, sqlStr(dl.Type), sqlStr(dl.Slug), sqlStr(dl.ReportType), hideNamesLiteral(dl), dl.Complete))
+		// A bare NULL would type the column "NULL" when no row has a value.
+		runID, classID := strconv.Itoa(dl.RunID), "CAST(NULL AS BIGINT)"
+		if k, ok := store.KindOf(dl.Type); ok && k.ClassKeyed {
+			runID, classID = classID, strconv.Itoa(dl.ClassID)
+		}
+		rows = append(rows, fmt.Sprintf("(%s, %s, %s, %s, %s, %s, %t)",
+			runID, classID, sqlStr(dl.Type), sqlStr(dl.Slug), sqlStr(dl.ReportType), hideNamesLiteral(dl), dl.Complete))
 	}
-	fallback := fmt.Sprintf("CREATE VIEW %s AS SELECT CAST(NULL AS BIGINT) AS run_id, CAST(NULL AS VARCHAR) AS type, CAST(NULL AS VARCHAR) AS slug, CAST(NULL AS VARCHAR) AS report_type, CAST(NULL AS BOOLEAN) AS %s, CAST(NULL AS BOOLEAN) AS complete WHERE false", name, sqlIdent(dimensionHideName))
+	fallback := fmt.Sprintf("CREATE VIEW %s AS SELECT CAST(NULL AS BIGINT) AS run_id, CAST(NULL AS BIGINT) AS class_id, CAST(NULL AS VARCHAR) AS type, CAST(NULL AS VARCHAR) AS slug, CAST(NULL AS VARCHAR) AS report_type, CAST(NULL AS BOOLEAN) AS %s, CAST(NULL AS BOOLEAN) AS complete WHERE false", name, sqlIdent(dimensionHideName))
 	if len(rows) == 0 {
 		return viewStmt{name: name, primary: fallback, fallback: fallback}
 	}
@@ -518,7 +538,7 @@ func (vs viewSet) perDownloadViews() []viewStmt {
 		if !ok {
 			continue
 		}
-		if _, known := store.KindOf(typ); known {
+		if k, known := store.KindOf(typ); known && !k.ClassKeyed {
 			stmts = append(stmts, vs.perStoreView(typ, run))
 		}
 	}

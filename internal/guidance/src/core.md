@@ -116,6 +116,16 @@ like `wildfire_2026.answers`):
   alone distinguishes the five: `logs l JOIN downloads d ON d.run_id = l.run_id AND
   d.type = 'report'`. `hide_names` is NULL where the run's filter is not on disk,
   which the `reports` entry above explains and which is not the same as false.
+- `recent_logs`: a class's log events from the last day or two, from a recent-logs
+  pull, with the same 13 columns as a `student-actions` run and the same four
+  parsed columns as `logs`. It is keyed by `id`: a pull reads from 00:00 UTC
+  yesterday, or from ten minutes before the previous pull of the class, so pulls
+  overlap and an event pulled again replaces its row rather than repeating it. No
+  pull removes a row, so events older than the window stay. `_class_id` is the
+  class the pull asked for and `_fetched_at` when. Order by `received_time`.
+  **An event a log run also holds is in both `logs` and `recent_logs`**: count one
+  view or the other for the hours they share, not their union. CLUE logs only for
+  students launched from the portal, so a CLUE class has rows only for them.
 - `answers`, `history` — the LARA identity-keyed stores (double-decoded
   `report_state`; no dedup needed).
 - `clue_documents`: one row per CLUE document, no dedup needed: its owner (`uid`,
@@ -277,8 +287,10 @@ like `wildfire_2026.answers`):
   recorded filters and any recovered by a reindex with no manifest. The same
   rows also reach `reports`, which has no such column, so name-sensitive work
   belongs on this view or on a type-qualified `downloads` join.
-- `downloads` — a manifest dimension table: `run_id`, `type`, `slug`,
-  `report_type`, `hide_names` and `complete`. A download's `report_type`
+- `downloads` — a manifest dimension table: `run_id`, `class_id`, `type`, `slug`,
+  `report_type`, `hide_names` and `complete`. A `recent_logs` download is one per
+  class pulled, with `class_id` set and `run_id` NULL; `class_id` is NULL for every
+  other download. A download's `report_type`
   (`answers`, `log`, `usage`, `portal`, `recovered`) is cc-data's own, not the
   run's: `portal` is derived from a Portal run's execution, and `recovered` is
   what a reindex assigns to a CSV it cannot classify, which re-fetching the run
@@ -349,6 +361,8 @@ and `question_id`, `history` by those and `history_id`, `clue_documents` and
   `clue_content` and the first half of `clue_history`'s.
 - `entry_id` — one entry of a CLUE document's edit history. Only `clue_history`
   joins need it.
+
+`recent_logs` is keyed by `id` alone and has no `run_membership` rows.
 
 ## Multi-dataset (longitudinal)
 

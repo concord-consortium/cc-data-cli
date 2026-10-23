@@ -301,7 +301,7 @@ func (d *Dataset) UpdateManifest(fn func(*Manifest) error) error {
 }
 
 func sameDownload(a, b Download) bool {
-	if a.Type != b.Type || a.RunID != b.RunID {
+	if a.Type != b.Type || a.RunID != b.RunID || a.ClassID != b.ClassID {
 		return false
 	}
 	if (a.JobID == nil) != (b.JobID == nil) {

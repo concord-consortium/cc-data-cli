@@ -22,7 +22,8 @@ func (d *Dataset) CurrentStore(typ string) (Store, error) {
 
 // openCovered streams the membership of every run of the type except those being
 // merged, whose identity sets replace their old ones wholesale and so need no place in
-// it. The returned function closes the files.
+// it. An accumulating kind keeps a merging key's old identities, so its membership is a
+// source too. The returned function closes the files.
 func (d *Dataset) openCovered(m *Manifest, typ string, merging map[int]*store.SegmentIndex) (*store.Covered, func(), error) {
 	kind := store.MustKind(typ)
 	var readers []*store.MembershipReader
@@ -37,7 +38,7 @@ func (d *Dataset) openCovered(m *Manifest, typ string, merging map[int]*store.Se
 		if !ok || t != typ {
 			continue
 		}
-		if _, isMerging := merging[r]; isMerging {
+		if _, isMerging := merging[r]; isMerging && !kind.Accumulate {
 			continue
 		}
 		// Fail closed: a missing membership file must not silently drop this run's
@@ -54,9 +55,21 @@ func (d *Dataset) openCovered(m *Manifest, typ string, merging map[int]*store.Se
 	return store.NewCovered(srcs...), closeAll, nil
 }
 
-// WriteMembership writes a run's membership version file from its segment index.
-func (d *Dataset) WriteMembership(typ string, runID, version int, idx *store.SegmentIndex) error {
-	return idx.WriteMembership(d.Path(memberFileName(typ, runID, version)))
+// WriteMembership writes a run's membership version file from its segment index. For an
+// accumulating kind it is the union with the run's membership in m; a file m names but
+// the disk lacks fails the merge, as in openCovered.
+func (d *Dataset) WriteMembership(m *Manifest, typ string, runID, version int, idx *store.SegmentIndex) error {
+	path := d.Path(memberFileName(typ, runID, version))
+	ref, ok := m.Membership[MembershipKey(typ, runID)]
+	if !store.MustKind(typ).Accumulate || !ok {
+		return idx.WriteMembership(path)
+	}
+	prev, err := store.OpenMembership(d.Path(ref.File), store.MustKind(typ))
+	if err != nil {
+		return err
+	}
+	defer prev.Close()
+	return idx.WriteMembershipWith(path, prev)
 }
 
 // MergeCompact merges the segment into a new store version under the per-dataset
@@ -157,7 +170,7 @@ func (d *Dataset) mergeUnderLock(typ string, runID int, seg *store.Segment) (sto
 		}
 		testHookAfterWrite(1)
 		for run, idx := range byRun {
-			if err := d.WriteMembership(typ, run, next, idx); err != nil {
+			if err := d.WriteMembership(m, typ, run, next, idx); err != nil {
 				releaseSwept(swept)
 				return store.MergeCounts{}, err // abort before the repoint: segments survive, resume re-merges
 			}
@@ -248,7 +261,7 @@ func (d *Dataset) recordSweptDownloads(m *Manifest, typ string, swept []sweptSeg
 		counts := result.PerRun[s.run]
 		for i := range m.Downloads {
 			dl := &m.Downloads[i]
-			if dl.Type == typ && dl.RunID == s.run && !dl.Complete {
+			if dl.Type == typ && dl.Key() == s.run && !dl.Complete {
 				dl.Complete = true
 				c := counts
 				dl.MergeCounts = &c

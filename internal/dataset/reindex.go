@@ -124,6 +124,9 @@ func (d *Dataset) Reindex() error {
 			Recovered: true,
 			FetchedAt: clock().UTC(),
 		}
+		if store.MustKind(typ).ClassKeyed {
+			dl.RunID, dl.ClassID = 0, run
+		}
 		carryProvenance(&dl, prior[downloadKey(typ, run, nil)])
 		m.Downloads = append(m.Downloads, dl)
 	}
@@ -196,7 +199,8 @@ func (d *Dataset) reindexIdentity() *Manifest {
 	}
 }
 
-// dlKey identifies a download for provenance carry-forward (job -1 means none).
+// dlKey identifies a download for provenance carry-forward: run is Download.Key() (job
+// -1 means none).
 type dlKey struct {
 	typ string
 	run int
@@ -222,7 +226,7 @@ func (d *Dataset) priorDownloadIndex() map[dlKey]Download {
 		return idx
 	}
 	for _, dl := range m.Downloads {
-		idx[downloadKey(dl.Type, dl.RunID, dl.JobID)] = dl
+		idx[downloadKey(dl.Type, dl.Key(), dl.JobID)] = dl
 	}
 	return idx
 }
@@ -265,6 +269,9 @@ func carryProvenance(dl *Download, prior Download) {
 	}
 	if !prior.FetchedAt.IsZero() {
 		dl.FetchedAt = prior.FetchedAt
+	}
+	if prior.RecentLogs != nil {
+		dl.RecentLogs = prior.RecentLogs
 	}
 	if !prior.Recovered {
 		if prior.ReportType != "" {

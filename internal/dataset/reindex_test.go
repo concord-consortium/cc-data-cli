@@ -455,3 +455,39 @@ func TestDerivedSubdirIsInvisible(t *testing.T) {
 		}
 	}
 }
+
+func TestReindexRecoversARecentLogsPull(t *testing.T) {
+	d := newDataset(t)
+	mergeLogs(t, d, 590, logRec("e1", "a"), logRec("e2", "a"))
+	pull := &RecentLogsPull{WindowStart: 1, Since: 2, QueryStartedAt: 3, NightlyThrough: "2026-10-21", Rows: 2, Cursor: "v1.abc"}
+	if err := d.UpsertDownload(Download{Type: store.TypeRecentLogs, ClassID: 590, Complete: true, RecentLogs: pull}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := d.Reindex(); err != nil {
+		t.Fatal(err)
+	}
+	m, _ := d.ReadManifest()
+	if len(m.Downloads) != 1 {
+		t.Fatalf("downloads = %+v", m.Downloads)
+	}
+	dl := m.Downloads[0]
+	if dl.Type != store.TypeRecentLogs || dl.ClassID != 590 || dl.RunID != 0 || dl.Recovered || dl.RecentLogs == nil || dl.RecentLogs.Cursor != "v1.abc" {
+		t.Fatalf("with the manifest: %+v %+v", dl, dl.RecentLogs)
+	}
+
+	if err := os.Remove(d.Path(ManifestFile)); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Reindex(); err != nil {
+		t.Fatal(err)
+	}
+	m, _ = d.ReadManifest()
+	if m.Stores[store.TypeRecentLogs].Count != 2 || len(m.Downloads) != 1 {
+		t.Fatalf("without the manifest: stores %+v, downloads %+v", m.Stores, m.Downloads)
+	}
+	dl = m.Downloads[0]
+	if dl.ClassID != 590 || dl.RunID != 0 || !dl.Recovered || dl.RecentLogs != nil {
+		t.Fatalf("without the manifest: %+v", dl)
+	}
+}

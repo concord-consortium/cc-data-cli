@@ -64,6 +64,7 @@ type MembershipRef struct {
 type Download struct {
 	Type         string            `json:"type"`
 	RunID        int               `json:"run_id"`
+	ClassID      int               `json:"class_id,omitempty"`
 	JobID        *int              `json:"job_id,omitempty"`
 	Slug         string            `json:"slug,omitempty"`
 	ReportType   string            `json:"report_type,omitempty"`
@@ -82,6 +83,29 @@ type Download struct {
 	ColumnOrder  []string          `json:"column_order,omitempty"` // CSVs: file column order (read_csv columns is positional)
 	CSVDialect   *CSVDialect       `json:"csv_dialect,omitempty"`
 	Recovered    bool              `json:"recovered,omitempty"`
+	RecentLogs   *RecentLogsPull   `json:"recent_logs,omitempty"`
+}
+
+// Key is the integer the download's segment and membership are named by: the class
+// for a class-keyed store type, else the run.
+func (dl Download) Key() int {
+	if k, ok := store.KindOf(dl.Type); ok && k.ClassKeyed {
+		return dl.ClassID
+	}
+	return dl.RunID
+}
+
+// RecentLogsPull is the last recent-logs pull of a class: times in epoch milliseconds,
+// NightlyThrough an ISO date, Cursor the server's next_cursor as received.
+type RecentLogsPull struct {
+	WindowStart     int64  `json:"window_start"`
+	NightlyThrough  string `json:"nightly_through"`
+	Since           int64  `json:"since"`
+	Until           *int64 `json:"until"`
+	QueryStartedAt  int64  `json:"query_started_at"`
+	LatestTimestamp *int64 `json:"latest_timestamp"`
+	Rows            int    `json:"rows"`
+	Cursor          string `json:"cursor,omitempty"`
 }
 
 type CSVDialect struct {

@@ -143,7 +143,7 @@ func TestEngineUnknownReportTypeExcluded(t *testing.T) {
 func TestEngineFreshDatasetAllViewsQueryable(t *testing.T) {
 	d := newDS(t, "empty")
 	e := openEngine(t, []DatasetSpec{{DS: d}}, nil)
-	for _, v := range []string{"reports", "report_prompts", "answers", "history", "run_membership", "downloads", "attachment_files", "attachment_states", "attachment_content"} {
+	for _, v := range []string{"reports", "report_prompts", "answers", "history", "recent_logs", "run_membership", "downloads", "attachment_files", "attachment_states", "attachment_content"} {
 		if n := queryInt(t, e, "SELECT count(*) FROM "+v); n != 0 {
 			t.Fatalf("fresh view %s should have 0 rows, got %d", v, n)
 		}
@@ -364,10 +364,11 @@ func TestEnginePortalReportJoinsTheReportsUnion(t *testing.T) {
 	}
 }
 
-// appendPage stamps records and appends them to seg as one fetched page.
-func appendPage(t *testing.T, seg *store.Segment, recs [][]byte, at time.Time, run int) {
+// appendPage stamps records in the segment kind's stamp column and appends them to seg
+// as one fetched page.
+func appendPage(t *testing.T, seg *store.Segment, recs [][]byte, at time.Time, key int) {
 	t.Helper()
-	lines, err := store.StampLines(recs, at, run)
+	lines, err := store.MustKind(seg.Type).StampLines(recs, at, key)
 	if err == nil {
 		err = seg.AppendLines(lines)
 	}

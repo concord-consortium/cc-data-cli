@@ -142,9 +142,10 @@ func readStamp(rec []byte) (stamp, error) {
 	var fields struct {
 		FetchedAt string `json:"_fetched_at"`
 		RunID     int    `json:"_run_id"`
+		ClassID   int    `json:"_class_id"`
 	}
 	if err := json.Unmarshal(bytes.TrimSpace(rec), &fields); err != nil {
 		return stamp{}, err
 	}
-	return stamp{fetchedAt: fields.FetchedAt, runID: fields.RunID}, nil
+	return stamp{fetchedAt: fields.FetchedAt, runID: fields.RunID + fields.ClassID}, nil
 }

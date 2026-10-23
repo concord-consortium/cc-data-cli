@@ -382,14 +382,159 @@ func TestTruncatedMembershipLineFailsTheMergeClosed(t *testing.T) {
 	})
 }
 
-// appendPage stamps records and appends them to seg as one fetched page.
-func appendPage(t *testing.T, seg *store.Segment, recs [][]byte, at time.Time, run int) {
+// appendPage stamps records in the segment kind's stamp column and appends them to seg
+// as one fetched page.
+func appendPage(t *testing.T, seg *store.Segment, recs [][]byte, at time.Time, key int) {
 	t.Helper()
-	lines, err := store.StampLines(recs, at, run)
+	lines, err := store.MustKind(seg.Type).StampLines(recs, at, key)
 	if err == nil {
 		err = seg.AppendLines(lines)
 	}
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func logRec(id, data string) []byte {
+	b, _ := json.Marshal(map[string]any{"id": id, "data": data})
+	return b
+}
+
+func mergeLogs(t *testing.T, d *Dataset, class int, recs ...[]byte) store.MergeCounts {
+	t.Helper()
+	seg := writeFinishedSegment(t, d, store.TypeRecentLogs, class, recs)
+	counts, err := d.MergeCompact(store.TypeRecentLogs, class, seg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return counts
+}
+
+func logIDs(t *testing.T, d *Dataset) string {
+	t.Helper()
+	var ids []string
+	for _, id := range storeIdentities(t, d, store.TypeRecentLogs) {
+		ids = append(ids, id[0])
+	}
+	return strings.Join(ids, ",")
+}
+
+func classMembership(t *testing.T, d *Dataset, class int) string {
+	t.Helper()
+	m, err := d.ReadManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, ok := m.Membership[MembershipKey(store.TypeRecentLogs, class)]
+	if !ok {
+		t.Fatalf("no membership for class %d", class)
+	}
+	ids, err := store.ReadMembershipFile(d.Path(ref.File), store.MustKind(store.TypeRecentLogs))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, id := range ids {
+		out = append(out, id[0])
+	}
+	return strings.Join(out, ",")
+}
+
+func TestRecentLogsMergeAccumulates(t *testing.T) {
+	d := newDataset(t)
+	if c := mergeLogs(t, d, 590, logRec("e1", "a"), logRec("e2", "a")); c != (store.MergeCounts{Fetched: 2, New: 2}) {
+		t.Fatalf("first pull counts = %+v", c)
+	}
+	if c := mergeLogs(t, d, 590, logRec("e2", "b"), logRec("e3", "b")); c != (store.MergeCounts{Fetched: 2, New: 1, Updated: 1}) {
+		t.Fatalf("second pull counts = %+v", c)
+	}
+	if got := logIDs(t, d); got != "e1,e2,e3" {
+		t.Fatalf("store after the second pull = %s", got)
+	}
+	m, _ := d.ReadManifest()
+	if got := readData(t, d.Path(m.Stores[store.TypeRecentLogs].File), store.TypeRecentLogs, store.Identity{"e2"}); got != "b" {
+		t.Errorf("e2 = %q, want the second pull's", got)
+	}
+	if got := classMembership(t, d, 590); got != "e1,e2,e3" {
+		t.Errorf("membership after the second pull = %s", got)
+	}
+	if c := mergeLogs(t, d, 590, logRec("e4", "c")); c != (store.MergeCounts{Fetched: 1, New: 1}) {
+		t.Fatalf("third pull counts = %+v", c)
+	}
+	if got := logIDs(t, d); got != "e1,e2,e3,e4" {
+		t.Fatalf("store after the third pull = %s", got)
+	}
+}
+
+func TestRecentLogsStampsTheClass(t *testing.T) {
+	d := newDataset(t)
+	mergeLogs(t, d, 590, logRec("e1", "a"))
+	m, _ := d.ReadManifest()
+	raw, err := os.ReadFile(d.Path(m.Stores[store.TypeRecentLogs].File))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var row map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(raw), &row); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := row["_run_id"]; ok || row["_class_id"] != float64(590) {
+		t.Errorf("stored row = %v, want _class_id 590 and no _run_id", row)
+	}
+}
+
+func TestRecentLogsClassesKeepEachOthersRowsAcrossASweep(t *testing.T) {
+	d := newDataset(t)
+	mergeLogs(t, d, 590, logRec("a1", "x"), logRec("a2", "x"))
+	writeFinishedSegment(t, d, store.TypeRecentLogs, 591, [][]byte{logRec("b1", "x")})
+	mergeLogs(t, d, 590, logRec("a3", "x"))
+	if got := logIDs(t, d); got != "a1,a2,a3,b1" {
+		t.Fatalf("store after 590's pull swept 591 = %s", got)
+	}
+	if got := classMembership(t, d, 591); got != "b1" {
+		t.Fatalf("591's membership after the sweep = %s", got)
+	}
+	mergeLogs(t, d, 591, logRec("b2", "x"))
+	mergeLogs(t, d, 590, logRec("a4", "x"))
+	if got := logIDs(t, d); got != "a1,a2,a3,a4,b1,b2" {
+		t.Fatalf("store after alternating pulls = %s", got)
+	}
+	if got := classMembership(t, d, 591); got != "b1,b2" {
+		t.Errorf("591's membership = %s", got)
+	}
+}
+
+func TestRecentLogsMergeFailsClosedOnAMissingMembershipFile(t *testing.T) {
+	d := newDataset(t)
+	mergeLogs(t, d, 590, logRec("e1", "a"))
+	m, _ := d.ReadManifest()
+	if err := os.Remove(d.Path(m.Membership[MembershipKey(store.TypeRecentLogs, 590)].File)); err != nil {
+		t.Fatal(err)
+	}
+	seg := writeFinishedSegment(t, d, store.TypeRecentLogs, 590, [][]byte{logRec("e2", "a")})
+	if _, err := d.MergeCompact(store.TypeRecentLogs, 590, seg); err == nil {
+		t.Fatal("the merge succeeded with the class's membership file missing")
+	}
+	if got := logIDs(t, d); got != "e1" {
+		t.Errorf("store after the failed merge = %s", got)
+	}
+}
+
+func TestRecentLogsTieBreaksOnTheClassStamp(t *testing.T) {
+	d := newDataset(t)
+	at := time.Unix(1000, 0).UTC()
+	for class, data := range map[int]string{590: "low", 591: "high"} {
+		seg := store.OpenSegment(d.Dir, store.TypeRecentLogs, class)
+		appendPage(t, seg, [][]byte{logRec("e1", data)}, at, class)
+		if err := seg.WriteCursor(&store.Cursor{Pages: 1, Items: 1}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := d.MergeCompact(store.TypeRecentLogs, 590, store.OpenSegment(d.Dir, store.TypeRecentLogs, 590)); err != nil {
+		t.Fatal(err)
+	}
+	m, _ := d.ReadManifest()
+	if got := readData(t, d.Path(m.Stores[store.TypeRecentLogs].File), store.TypeRecentLogs, store.Identity{"e1"}); got != "high" {
+		t.Errorf("e1 = %q, want the higher class's row on a tied fetch time", got)
 	}
 }

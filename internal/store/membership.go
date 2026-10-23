@@ -61,6 +61,50 @@ func (idx *SegmentIndex) WriteMembership(path string) error {
 	})
 }
 
+// WriteMembershipWith streams the union of the index's identities and prev's to path
+// as key-ordered JSONL, atomically, each key once.
+func (idx *SegmentIndex) WriteMembershipWith(path string, prev *MembershipReader) error {
+	names := columnNames(idx.kind)
+	return fsutil.WriteAtomic0600(path, func(w io.Writer) error {
+		bw := bufio.NewWriterSize(w, 64*1024)
+		var line bytes.Buffer
+		emit := func(key string) error {
+			line.Reset()
+			appendMembershipLine(&line, idx.kind, names, idx.kind.Decode(key))
+			_, err := bw.Write(line.Bytes())
+			return err
+		}
+		pk, pok, err := prev.Next()
+		if err != nil {
+			return err
+		}
+		i := 0
+		for pok || i < len(idx.entries) {
+			var key string
+			switch {
+			case !pok || (i < len(idx.entries) && idx.entries[i].key < pk):
+				key = idx.entries[i].key
+				i++
+			case i < len(idx.entries) && idx.entries[i].key == pk:
+				key = pk
+				i++
+				if pk, pok, err = prev.Next(); err != nil {
+					return err
+				}
+			default:
+				key = pk
+				if pk, pok, err = prev.Next(); err != nil {
+					return err
+				}
+			}
+			if err := emit(key); err != nil {
+				return err
+			}
+		}
+		return bw.Flush()
+	})
+}
+
 // ErrMembershipOrder is a membership file whose keys are not strictly increasing.
 var ErrMembershipOrder = errors.New("not in identity order")
 

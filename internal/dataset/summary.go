@@ -30,7 +30,8 @@ type ShowJSON struct {
 // DownloadJSON is one download in ShowJSON.
 type DownloadJSON struct {
 	Type         string             `json:"type"`
-	RunID        int                `json:"run_id"`
+	RunID        int                `json:"run_id,omitempty"`
+	ClassID      int                `json:"class_id,omitempty"`
 	JobID        *int               `json:"job_id,omitempty"`
 	Slug         string             `json:"slug,omitempty"`
 	ReportType   string             `json:"report_type,omitempty"`
@@ -41,6 +42,7 @@ type DownloadJSON struct {
 	Coverage     *Coverage          `json:"coverage,omitempty"`
 	RowCount     *int               `json:"row_count,omitempty"`
 	Recovered    bool               `json:"recovered,omitempty"`
+	RecentLogs   *RecentLogsPull    `json:"recent_logs,omitempty"`
 	Files        []string           `json:"files,omitempty"`
 }
 
@@ -83,6 +85,7 @@ func (d *Dataset) BuildShowJSON(m *Manifest, full bool) *ShowJSON {
 		dj := DownloadJSON{
 			Type:         dl.Type,
 			RunID:        dl.RunID,
+			ClassID:      dl.ClassID,
 			JobID:        dl.JobID,
 			Slug:         dl.Slug,
 			ReportType:   dl.ReportType,
@@ -93,6 +96,7 @@ func (d *Dataset) BuildShowJSON(m *Manifest, full bool) *ShowJSON {
 			Coverage:     dl.Coverage,
 			RowCount:     dl.RowCount,
 			Recovered:    dl.Recovered,
+			RecentLogs:   dl.RecentLogs,
 		}
 		if full {
 			dj.Files = dl.Files

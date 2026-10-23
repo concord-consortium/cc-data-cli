@@ -65,8 +65,17 @@ func (e *NotObjectError) Error() string { return "record is not a JSON object" }
 // StampLines returns each record as the line a segment stores: re-encoded from a map
 // with _fetched_at and _run_id set, so a key the record repeats keeps its last value.
 func StampLines(records [][]byte, fetchedAt time.Time, runID int) ([][]byte, error) {
+	return stampLines(records, fetchedAt, "_run_id", runID)
+}
+
+// StampLines stamps records as StampLines does, with key in the kind's StampColumn.
+func (k Kind) StampLines(records [][]byte, fetchedAt time.Time, key int) ([][]byte, error) {
+	return stampLines(records, fetchedAt, k.StampColumn(), key)
+}
+
+func stampLines(records [][]byte, fetchedAt time.Time, col string, key int) ([][]byte, error) {
 	stampAt, _ := json.Marshal(fetchedAt.UTC().Format(time.RFC3339))
-	stampRun, _ := json.Marshal(runID)
+	stampRun, _ := json.Marshal(key)
 	lines := make([][]byte, 0, len(records))
 	for i, rec := range records {
 		var obj map[string]json.RawMessage
@@ -74,7 +83,7 @@ func StampLines(records [][]byte, fetchedAt time.Time, runID int) ([][]byte, err
 			return nil, &NotObjectError{Index: i}
 		}
 		obj["_fetched_at"] = stampAt
-		obj["_run_id"] = stampRun
+		obj[col] = stampRun
 		line, err := json.Marshal(obj)
 		if err != nil {
 			return nil, err
