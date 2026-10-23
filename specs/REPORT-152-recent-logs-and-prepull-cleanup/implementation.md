@@ -4,7 +4,7 @@
 **Requirements Spec**: [requirements.md](requirements.md)
 **Status**: **In Development**
 
-The branch stacks on REPORT-111's, which stacks on REPORT-110's. The store and view steps are written against REPORT-110's spec at `ca69b36` (its `store.Kind` registry, its streamed membership and `Covered` walk) and REPORT-111's `derivedStoreViews`; those stories' implementations are the reference where a name here drifts from them. Line numbers are `main` at `7981060`.
+The branch stacks on REPORT-111's, which stacks on REPORT-110's. The store and view steps are written against REPORT-110's spec at `74be60f` (its `store.Kind` registry, its streamed membership and `Covered` walk) and REPORT-111's `derivedStoreViews`; those stories' implementations are the reference where a name here drifts from them. Line numbers are `main` at `7981060`.
 
 The cleanup steps come first: the only file they share with the recent-logs steps is `docs/researcher-guide.md`, where they delete a bullet in section 7 and the guidance step adds a view-table row and a fetching subsection, so they review and revert on their own.
 
@@ -46,7 +46,7 @@ The cleanup steps come first: the only file they share with the recent-logs step
 **Summary**: R7 to R9 and R11's merge half. Declares the store, makes its merge keep every row, gives its download entry a class, and teaches reindex, purge, show and materialize about it. No network code yet; tests drive it with segments written directly, as `merge_test.go` does.
 
 **Files affected**:
-- `internal/store/kind.go` (REPORT-110's registry, `ca69b36`): two fields on `Kind`, each false by default so `answers`, `history` and the CLUE kinds keep their behavior with no edit:
+- `internal/store/kind.go` (REPORT-110's registry, `74be60f`): two fields on `Kind`, each false by default so `answers`, `history` and the CLUE kinds keep their behavior with no edit:
   - `ClassKeyed bool`: the integer in the kind's segment and membership names is a class id, not a run id. `Segment.AppendPage` stamps it as `_class_id` instead of `_run_id`; `run_membership`'s rows and identity columns and the per-run views leave the kind out (REPORT-110's R14 already words its inventory as "every kind that has per-run membership"); `Download.Key()` reads `ClassID`; `isStoreType`'s incomplete-run caveat skips it.
   - `Accumulate bool`: a merge adds to a key's membership instead of replacing it (below).
 
@@ -163,7 +163,7 @@ The cleanup steps come first: the only file they share with the recent-logs step
 **Summary**: R21 and R22, after merge. No code; results go in the PR description.
 
 1. **R21**, once REPORT-150 is on staging: a fresh dataset `learn.portal.staging.concord.org/rl-accept`; a staging test class with a CLUE offering; a test student launched from the portal works for a few minutes; `get recent-logs <class>` (rows, CLUE, the learner's endpoint); more work; `get recent-logs <class>` again (`cursor` sent, `updated` = overlap, `new` = newer, `count(*) = count(DISTINCT id)`); `--start`/`--end` an hour apart (rows in the hour, `cursor: none` in the result, and the entry's stored cursor byte-identical to before).
-2. **R22 laptop**: a scratch package from `cc-data package init`, its `run.py` reading `scope.json`, making or finding the class's Student ID Mapping run (as the template already does), running `cc-data get clue-documents|clue-history|clue-content <run>` and `cc-data get recent-logs <class_id>`, and writing counts from REPORT-111's views and `recent_logs` to `display.md`; `cc-data package run` against staging.
+2. **R22 laptop**: a scratch package from `cc-data package init`, its `run.py` reading `scope.json`, making or finding the class's Student ID Mapping run (as the template already does), running `cc-data get clue-documents <run>`, then `clue-history <run>`, then `clue-content <run>` (documents first: REPORT-110's R12 counts history coverage only when the history lands) and `cc-data get recent-logs <class_id>`, and writing counts from REPORT-111's views and `recent_logs` to `display.md`; `cc-data package run` against staging.
 3. **R22 VM**: once a cc-data pre-release tag carries 110, 111 and 152 and the runner image pins it, `cc-data package publish` the same zip privately to staging and run it from the dashboard for the same class; compare `display.md`.
 
 ## Open Questions
@@ -186,7 +186,7 @@ The cleanup steps come first: the only file they share with the recent-logs step
 **Decision**: the end. An incomplete `recent_logs` entry would have to carry the previous cursor through, raise an INCOMPLETE warning for rows that are all intact, and appear in materialize's incomplete-run caveat, all for a state the next pull clears anyway. Writing once removes the state rather than reporting it.
 
 ### RESOLVED: Judgment call: two fields on `store.Kind`, not three
-**Context**: The stage 8 draft asked REPORT-110 for `StampColumn`, `Accumulate` and `RunViews`; REPORT-110 (`ca69b36`, its open question on the fields) leaves them to this story's steps.
+**Context**: The stage 8 draft asked REPORT-110 for `StampColumn`, `Accumulate` and `RunViews`; REPORT-110 (`74be60f`, its open question on the fields) leaves them to this story's steps.
 **Options considered**:
 - A) The three fields as drafted.
 - B) `ClassKeyed` (which drives the stamp column, the per-run views, `run_membership` and the download key) and `Accumulate`.
