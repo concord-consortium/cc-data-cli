@@ -572,3 +572,18 @@ func TestRecentLogsStopsAfterTwoAttempts(t *testing.T) {
 	}
 	assertNothingLeft(t, d)
 }
+
+func TestRecentLogsBatchesLargeResponses(t *testing.T) {
+	d := newTestDataset(t)
+	s := newRecentLogsServer(t)
+	n := recentLogsBatch*2 + 1
+	rows := make([]string, n)
+	for i := range rows {
+		rows[i] = logRow(fmt.Sprintf("e%04d", i))
+	}
+	s.push(body(logsBody{class: 590, rows: rows, count: -1, nextCursor: "v1.big"}.String()))
+	res := mustPullLogs(t, d, s, RecentLogsOptions{})
+	if res["rows"] != n || storeCount(t, d) != n || res["merge_counts"].(store.MergeCounts) != (store.MergeCounts{Fetched: n, New: n}) {
+		t.Errorf("result %v, store %d, want %d rows", res, storeCount(t, d), n)
+	}
+}
