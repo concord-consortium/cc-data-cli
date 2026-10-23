@@ -31,13 +31,12 @@ type LocalScope struct {
 	Assignments []Assignment `json:"assignments"`
 }
 
-// ScopeFile is scope.json as the runner writes it: ClueSource is its constant "firebase", and
-// Dataset the bare name, as it writes pkg-<id>, while RD_DATASET carries the full ref.
+// ScopeFile is scope.json as the runner writes it: Dataset is the bare name, as it writes
+// pkg-<id>, while RD_DATASET carries the full ref.
 type ScopeFile struct {
 	LocalScope
-	ClueSource string `json:"clue_source"`
-	Dataset    string `json:"dataset"`
-	OutputDir  string `json:"output_dir"`
+	Dataset   string `json:"dataset"`
+	OutputDir string `json:"output_dir"`
 }
 
 // MarshalJSON keeps the runner's key order, so a diff between a local and a VM scope.json is
@@ -48,15 +47,14 @@ func (s ScopeFile) MarshalJSON() ([]byte, error) {
 		ID          string       `json:"id"`
 		Classes     []Class      `json:"classes"`
 		Assignments []Assignment `json:"assignments"`
-		ClueSource  string       `json:"clue_source"`
 		Dataset     string       `json:"dataset"`
 		OutputDir   string       `json:"output_dir"`
 	}
-	return json.Marshal(ordered{s.Kind, s.ID, s.Classes, s.Assignments, s.ClueSource, s.Dataset, s.OutputDir})
+	return json.Marshal(ordered{s.Kind, s.ID, s.Classes, s.Assignments, s.Dataset, s.OutputDir})
 }
 
 // ParseLocalScope reads an author's scope file, refusing any key the four do not name (the
-// other three are the runner's to set) and any shape the runner would never send.
+// other two are the runner's to set) and any shape the runner would never send.
 func ParseLocalScope(data []byte) (LocalScope, error) {
 	var s LocalScope
 	dec := json.NewDecoder(bytes.NewReader(data))

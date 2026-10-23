@@ -153,8 +153,11 @@ echo ok > "$RD_OUTPUT_DIR/display.md"
 	if err := json.Unmarshal(raw, &scope); err != nil {
 		t.Fatal(err)
 	}
-	if scope["dataset"] != "wildfire" || scope["clue_source"] != "firebase" || scope["output_dir"] != filepath.Join(run, "out") {
+	if scope["dataset"] != "wildfire" || scope["output_dir"] != filepath.Join(run, "out") {
 		t.Errorf("scope.json = %v", scope)
+	}
+	if keys := topLevelKeys(t, raw); strings.Join(keys, ",") != "kind,id,classes,assignments,dataset,output_dir" {
+		t.Errorf("scope.json keys = %v", keys)
 	}
 
 	ls, err := os.ReadFile(filepath.Join(run, "ls.txt"))
@@ -193,15 +196,46 @@ func TestRunRefusesBeforeStarting(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, RunDirName, "started")); err == nil {
 		t.Error("the entrypoint started for a package that does not apply")
 	}
+}
 
-	o = runOpts(t, dir, files, nil, &stderr)
-	o.Manifest.CluePrepull = true
-	if _, err := Run(context.Background(), o); !errors.As(err, &refused) {
-		t.Errorf("clue_prepull: err = %v, want Refused", err)
+func TestRunIgnoresCluePrepull(t *testing.T) {
+	skipOnWindows(t, "the entrypoint is a shell script")
+	dir, files := shellPackage(t, `touch "$RD_OUTPUT_DIR/../started"; echo ok > "$RD_OUTPUT_DIR/display.md"`+"\n", nil)
+	m, err := ReadManifest([]byte(`{"name": "x", "clue_prepull": true, "entrypoint": "run.sh", "expected_duration_seconds": 60}`), files.Set())
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(dir, RunDirName, "started")); err == nil {
-		t.Error("the entrypoint started for a clue_prepull package")
+	var stderr bytes.Buffer
+	o := runOpts(t, dir, files, nil, &stderr)
+	o.Manifest = m
+	if _, err := Run(context.Background(), o); err != nil {
+		t.Fatalf("err = %v, stderr = %s", err, stderr.String())
 	}
+	if _, err := os.Stat(filepath.Join(dir, RunDirName, "started")); err != nil {
+		t.Error("the entrypoint did not run for a clue_prepull package")
+	}
+}
+
+// topLevelKeys is a JSON object's keys in the order the file holds them.
+func topLevelKeys(t *testing.T, raw []byte) []string {
+	t.Helper()
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		t.Fatalf("not an object: %v %v", tok, err)
+	}
+	var keys []string
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			t.Fatal(err)
+		}
+		keys = append(keys, tok.(string))
+		var skip json.RawMessage
+		if err := dec.Decode(&skip); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return keys
 }
 
 func TestRunWarnsAndRunsWhenApplicabilityIsUnconfirmed(t *testing.T) {

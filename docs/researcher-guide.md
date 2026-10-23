@@ -705,8 +705,6 @@ What it cannot reproduce:
   one installed elsewhere, and nothing else moves ahead of your `PATH`.
 - **Python.** A `.py` entrypoint runs with `python3.11` when it is on your
   `PATH`, as on the VM, and otherwise with `python3` after a note saying so.
-- **CLUE.** A package with `clue_prepull: true` is refused locally, since
-  `cc-data` does not run a package's CLUE pre-pull yet.
 
 ### Checked against report-server
 
