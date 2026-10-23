@@ -348,7 +348,7 @@ When you (or Claude) query a dataset, the data is exposed as a set of SQL
 | `reports` | Report CSV rows across all runs, with a `run_id` column. Covers both answer reports and log/action reports. |
 | `answers` | Student answers, one current record per learner-question. |
 | `history` | Every interactive-state snapshot, how each answer evolved over time. |
-| `clue_documents` | One row per CLUE document: its owner, class, unit, problem and offering, with the raw Firestore and RTDB metadata. |
+| `clue_documents` | One row per CLUE document: its owner, class, unit, problem and offering, with the raw Firestore and RTDB metadata. `tools` is its tool list, `n_tools` how many, and `created_at` when it was created, as a UTC timestamp; a stored value that is not the right kind is kept in `tools_unparsed` or `created_at_unparsed`. |
 | `clue_history` | Every entry of each CLUE document's edit history, the stored entry kept as text. CLUE document history, not the interactive-state `history` above. |
 | `clue_content` | Each CLUE document's current content, stored as text, joined to the others by `doc_id`. |
 | `report_prompts` | The prompt and correct-answer text for each question. |

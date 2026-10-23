@@ -52,6 +52,10 @@ func (vs viewSet) statements() []viewStmt {
 	stmts = append(stmts, vs.reportPromptsView())
 	stmts = append(stmts, vs.logsView())
 	for _, k := range store.Kinds() {
+		if derived, ok := derivedStoreViews[k.Name]; ok {
+			stmts = append(stmts, derived(vs))
+			continue
+		}
 		stmts = append(stmts, vs.storeView(k))
 	}
 	stmts = append(stmts, vs.runMembershipView())
@@ -63,6 +67,12 @@ func (vs viewSet) statements() []viewStmt {
 	stmts = append(stmts, vs.dimensionViewStmts()...)
 	stmts = append(stmts, vs.perDownloadViews()...)
 	return stmts
+}
+
+// derivedStoreViews replaces a kind's plain storeView with its derived view, under the
+// same name and over the same file.
+var derivedStoreViews = map[string]func(viewSet) viewStmt{
+	store.TypeClueDocuments: viewSet.clueDocumentsView,
 }
 
 func (vs viewSet) file(rel string) string {

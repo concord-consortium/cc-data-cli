@@ -118,17 +118,15 @@ like `wildfire_2026.answers`):
   which the `reports` entry above explains and which is not the same as false.
 - `answers`, `history` — the LARA identity-keyed stores (double-decoded
   `report_state`; no dedup needed).
-- `clue_documents`, `clue_history`, `clue_content` — the CLUE stores, no dedup
-  needed. `clue_documents` has one row per CLUE document: its owner (`uid`,
+- `clue_documents`: one row per CLUE document, no dedup needed: its owner (`uid`,
   `context_id`, `portal_class_id`, `owner_type`), unit and problem, `offering_id`,
-  and the raw Firestore and RTDB metadata. `clue_history` has one row per entry of a
-  document's edit history, with the stored entry string in `entry_json`; it is CLUE
-  **document** history, unrelated to `history`'s interactive-state snapshots.
-  `clue_content` has one row per document with its current content string in
-  `content_json`, NULL when `found` is false or the document has no content. Join
-  the three on `doc_id`. A CLUE row has no `remote_endpoint`, so it never joins the
-  LARA stores. `created_at`, `change_count` and `undoable` are JSON, as stored;
-  cast them, e.g. `TRY_CAST(created_at AS BIGINT)`.
+  and the raw Firestore and RTDB metadata. `tools` is the document's tool list as
+  `VARCHAR[]`, NULL when the document records none, and `n_tools` its length.
+  `created_at` is a UTC `TIMESTAMP` from the stored epoch milliseconds. A stored
+  value of the wrong JSON kind (a `created_at` string, a `tools` object) is NULL
+  there rather than converted, and kept as JSON in `created_at_unparsed` or
+  `tools_unparsed`, which are NULL otherwise. Join the CLUE views on `doc_id`. A
+  CLUE row has no `remote_endpoint`, so it never joins the LARA stores.
   To put CLUE rows in a cohort, `uid` is VARCHAR and is a portal `user_id` only when
   `owner_type = 'user'` (group and class owners have synthetic ids): match it with
   `TRY_CAST(d.uid AS BIGINT) = m.user_id` against `student_id_mapping`, plus
@@ -136,6 +134,13 @@ like `wildfire_2026.answers`):
   which is one per assignment, so that join repeats a document once per assignment
   its student has in the class: test membership with `SEMI JOIN` or `EXISTS`, or add
   `d.offering_id = m.offering_id`, which leaves out documents with no offering.
+- `clue_history`, `clue_content`: the other two CLUE stores, no dedup needed.
+  `clue_history` has one row per entry of a document's edit history, with the
+  stored entry string in `entry_json`; it is CLUE **document** history, unrelated
+  to `history`'s interactive-state snapshots. `clue_content` has one row per
+  document with its current content string in `content_json`, NULL when `found` is
+  false or the document has no content. `change_count` and `undoable` are JSON, as
+  stored; cast them, e.g. `TRY_CAST(change_count AS BIGINT)`.
 - `run_membership` — one row per membership line with `run_id` and `type`. Join
   **type-qualified**: `answers a JOIN run_membership m USING
   (source_key, remote_endpoint, question_id) WHERE m.run_id = 584 AND m.type =
