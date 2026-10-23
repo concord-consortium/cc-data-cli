@@ -3,10 +3,10 @@ package duck
 import (
 	"bufio"
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -111,15 +111,7 @@ func TestV02DatasetOpensQueriesMergesAndReindexes(t *testing.T) {
 
 	e := openEngine(t, []DatasetSpec{{DS: d}}, nil)
 	for view, want := range map[string]int{"answers": 3, "history": 2, "run_membership": 6, "answers_585": 2, "history_584": 2} {
-		rows, err := e.Query(context.Background(), "SELECT count(*) FROM "+view)
-		if err != nil {
-			t.Fatalf("%s: %v", view, err)
-		}
-		var n int
-		rows.Next()
-		rows.Scan(&n)
-		rows.Close()
-		if n != want {
+		if n := queryInt(t, e, "SELECT count(*) FROM "+view); n != want {
 			t.Fatalf("%s has %d rows, want %d", view, n, want)
 		}
 	}
@@ -139,7 +131,7 @@ func TestV02DatasetOpensQueriesMergesAndReindexes(t *testing.T) {
 		if got := m3.Stores[typ].Count; got != want {
 			t.Fatalf("reindexed %s count %d, want %d", typ, got, want)
 		}
-		if !mapsEqual(m3.Stores[typ].Columns, m.Stores[typ].Columns) {
+		if !maps.Equal(m3.Stores[typ].Columns, m.Stores[typ].Columns) {
 			t.Fatalf("reindexed %s columns %v, want %v", typ, m3.Stores[typ].Columns, m.Stores[typ].Columns)
 		}
 	}
@@ -206,16 +198,4 @@ func remergeIsNoOp(t *testing.T, d *dataset.Dataset, typ string, run, wantRecs i
 	if got := readFile(t, d.Path(m2.Membership[dataset.MembershipKey(typ, run)].File)); !bytes.Equal(got, oldMembers) {
 		t.Fatalf("re-merged %s membership differs:\n%s\nwant\n%s", typ, got, oldMembers)
 	}
-}
-
-func mapsEqual(a, b map[string]string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for k, v := range a {
-		if b[k] != v {
-			return false
-		}
-	}
-	return true
 }

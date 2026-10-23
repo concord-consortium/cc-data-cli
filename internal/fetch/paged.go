@@ -2,7 +2,6 @@ package fetch
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"time"
@@ -147,19 +146,25 @@ func (opts PagedOptions) fetchPages(ctx context.Context, seg *store.Segment, tok
 		}
 
 		records := make([][]byte, 0, len(page.Items))
-		for i, item := range page.Items {
-			if kind.Strict {
-				if _, ierr := store.IdentityFromRecord(kind, stored(item)); ierr != nil {
-					return &output.CLIError{ExitCode: output.ExitContract, Code: "MALFORMED_ITEM",
-						Message: fmt.Sprintf("run %d %s: item %d of page %d: %v", opts.RunID, opts.Type, i+1, cur.Pages+1, ierr)}
-				}
-			}
+		for _, item := range page.Items {
 			if kind.DoubleDecode {
 				item = doubleDecode(item)
 			}
 			records = append(records, item)
 		}
-		if err := seg.AppendPage(records, fetchedAt, opts.RunID); err != nil {
+		lines, serr := store.StampLines(records, fetchedAt, opts.RunID)
+		if serr != nil {
+			return output.Internalf("stamping page: %v", serr)
+		}
+		if kind.Strict {
+			for i, line := range lines {
+				if _, ierr := store.IdentityFromRecord(kind, line); ierr != nil {
+					return &output.CLIError{ExitCode: output.ExitContract, Code: "MALFORMED_ITEM",
+						Message: fmt.Sprintf("run %d %s: item %d of page %d: %v", opts.RunID, opts.Type, i+1, cur.Pages+1, ierr)}
+				}
+			}
+		}
+		if err := seg.AppendLines(lines); err != nil {
 			return output.Internalf("appending page: %v", err)
 		}
 
@@ -179,21 +184,6 @@ func (opts PagedOptions) fetchPages(ctx context.Context, seg *store.Segment, tok
 		}
 		token = *page.NextPageToken
 	}
-}
-
-// stored is an item as AppendPage writes it: decoded to a map and re-encoded, so a
-// key the item repeats keeps its last value. The identity check reads this form so it
-// judges the value the segment will hold.
-func stored(item []byte) []byte {
-	var obj map[string]json.RawMessage
-	if err := json.Unmarshal(item, &obj); err != nil {
-		return item
-	}
-	b, err := json.Marshal(obj)
-	if err != nil {
-		return item
-	}
-	return b
 }
 
 // computeCoverage reports the run's coverage and, when CLUE history owners cannot be

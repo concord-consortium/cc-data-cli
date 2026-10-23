@@ -61,6 +61,38 @@ func (s *Segment) Exists() bool {
 // JSONL, and fsyncs the file before the caller persists the cursor (the cursor
 // must never durably name pages whose segment bytes a crash could lose).
 func (s *Segment) AppendPage(records [][]byte, fetchedAt time.Time, runID int) error {
+	lines, err := StampLines(records, fetchedAt, runID)
+	if err != nil {
+		return err
+	}
+	return s.AppendLines(lines)
+}
+
+// StampLines returns each record as the line a segment stores: re-encoded from a map
+// with _fetched_at and _run_id set, so a key the record repeats keeps its last value.
+func StampLines(records [][]byte, fetchedAt time.Time, runID int) ([][]byte, error) {
+	stampAt, _ := json.Marshal(fetchedAt.UTC().Format(time.RFC3339))
+	stampRun, _ := json.Marshal(runID)
+	lines := make([][]byte, 0, len(records))
+	for _, rec := range records {
+		var obj map[string]json.RawMessage
+		if err := json.Unmarshal(rec, &obj); err != nil {
+			return nil, err
+		}
+		obj["_fetched_at"] = stampAt
+		obj["_run_id"] = stampRun
+		line, err := json.Marshal(obj)
+		if err != nil {
+			return nil, err
+		}
+		lines = append(lines, line)
+	}
+	return lines, nil
+}
+
+// AppendLines appends stored lines and fsyncs the file before the caller persists the
+// cursor.
+func (s *Segment) AppendLines(lines [][]byte) error {
 	if err := os.MkdirAll(s.dir, 0o700); err != nil {
 		return err
 	}
@@ -68,22 +100,8 @@ func (s *Segment) AppendPage(records [][]byte, fetchedAt time.Time, runID int) e
 	if err != nil {
 		return err
 	}
-	stampAt, _ := json.Marshal(fetchedAt.UTC().Format(time.RFC3339))
-	stampRun, _ := json.Marshal(runID)
 	w := bufio.NewWriter(f)
-	for _, rec := range records {
-		var obj map[string]json.RawMessage
-		if err := json.Unmarshal(rec, &obj); err != nil {
-			f.Close()
-			return err
-		}
-		obj["_fetched_at"] = stampAt
-		obj["_run_id"] = stampRun
-		line, err := json.Marshal(obj)
-		if err != nil {
-			f.Close()
-			return err
-		}
+	for _, line := range lines {
 		w.Write(line)
 		w.WriteByte('\n')
 	}
