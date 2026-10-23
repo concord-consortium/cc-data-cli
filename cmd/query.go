@@ -16,7 +16,6 @@ import (
 // same reason the catalog and the researcher guide are checked against StaticViewNames.
 func staticViewList() string { return wrapNames(duck.StaticViewNames()) }
 
-// wrapNames lists names comma-separated and indented, wrapped for help output.
 // perRunStoreNames is the store types that get a <type>_<run> view: every one keyed by run.
 func perRunStoreNames() []string {
 	var names []string
@@ -28,6 +27,7 @@ func perRunStoreNames() []string {
 	return names
 }
 
+// wrapNames lists names comma-separated and indented, wrapped for help output.
 func wrapNames(names []string) string {
 	const width = 76
 	var lines []string

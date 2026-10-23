@@ -153,6 +153,19 @@ func (d *Dataset) Reindex() error {
 	sort.Slice(attach, func(i, j int) bool { return attach[i].RunID < attach[j].RunID })
 	m.Downloads = append(m.Downloads, attach...)
 
+	// Carry forward a class-keyed download with no membership on disk: a pull that returned no
+	// rows merges nothing, but its entry holds the class's cursor.
+	var classes []Download
+	for k, dl := range prior {
+		if kind, ok := store.KindOf(k.typ); ok && kind.ClassKeyed {
+			if _, held := newestMember[MembershipKey(k.typ, k.run)]; !held {
+				classes = append(classes, dl)
+			}
+		}
+	}
+	sort.Slice(classes, func(i, j int) bool { return classes[i].ClassID < classes[j].ClassID })
+	m.Downloads = append(m.Downloads, classes...)
+
 	if err := d.RebuildAttachmentIndex(m); err != nil {
 		return err
 	}
