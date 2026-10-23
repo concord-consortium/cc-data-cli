@@ -21,6 +21,11 @@
   duplicating the run.
 - `get_answers`, `get_history` — a run's student answers, and the full series of
   how each answer's interactive state evolved, into a dataset.
+- `get_clue_documents`, `get_clue_history`, `get_clue_content` — a run's CLUE
+  documents, each document's edit history, and each document's current content,
+  into a dataset; a Student ID Mapping run is the intended source. Fetch the
+  documents before the history, which needs them to count owners.
+  `get_clue_history` is CLUE document history, not `get_history`'s.
 - `get_attachments` — a run's file attachments, into a dataset. Fetch that run's
   answers or history first; attachments are reached through those records.
 - `dataset_create` — a new, empty dataset to pull runs into.

@@ -106,7 +106,8 @@ func TestMCPToolSurface(t *testing.T) {
 	}
 	want := []string{"auth_status", "version", "reports_list", "reports_jobs",
 		"reports_filter_options", "reports_create", "reports_duplicate", "get_report",
-		"get_answers", "get_history", "get_attachments", "dataset_create", "dataset_list",
+		"get_answers", "get_history", "get_attachments", "get_clue_documents", "get_clue_history",
+		"get_clue_content", "dataset_create", "dataset_list",
 		"dataset_show", "dataset_rename", "dataset_edit", "dataset_delete", "dataset_purge",
 		"dataset_reindex", "dataset_materialize", "query"}
 	for _, n := range want {
@@ -728,20 +729,68 @@ func TestToolDescriptionsCarryTheirPortalFacts(t *testing.T) {
 	for _, tl := range res.Tools {
 		desc[tl.Name] = tl.Description
 	}
-	for tool, fact := range map[string]string{
-		"reports_list":           "execution tells an Athena run from a Portal one",
-		"reports_filter_options": "Student ID Mapping run's filter is assembled",
-		"get_report":             "re-read it by passing refresh",
-		"get_answers":            "Student ID Mapping run id is a valid source",
-		"get_history":            "Student ID Mapping run id is a valid source",
-		"get_attachments":        "Student ID Mapping run id is a valid source",
+	for tool, facts := range map[string][]string{
+		"reports_list":           {"execution tells an Athena run from a Portal one"},
+		"reports_filter_options": {"Student ID Mapping run's filter is assembled"},
+		"get_report":             {"re-read it by passing refresh"},
+		"get_answers":            {"Student ID Mapping run id is a valid source"},
+		"get_history":            {"Student ID Mapping run id is a valid source"},
+		"get_attachments":        {"Student ID Mapping run id is a valid source"},
+		"get_clue_documents":     {"Student ID Mapping run id is the intended source"},
+		"get_clue_content":       {"Student ID Mapping run id is the intended source"},
+		"get_clue_history":       {"Student ID Mapping run id is the intended source", "not get_history's interactive-state history", "Fetch get_clue_documents for the run first"},
 	} {
 		if _, ok := desc[tool]; !ok {
 			t.Errorf("%s is not registered", tool)
 			continue
 		}
-		if !strings.Contains(desc[tool], fact) {
-			t.Errorf("%s description lost %q", tool, fact)
+		for _, fact := range facts {
+			if !strings.Contains(desc[tool], fact) {
+				t.Errorf("%s description lost %q", tool, fact)
+			}
+		}
+	}
+}
+
+// The clue tools and `cc-data get clue-*` share one fetch, so each tool's result carries
+// what the CLI's result line does.
+func TestMCPGetClueToolsReturnTheCLIResult(t *testing.T) {
+	for tool, rt := range map[string]struct{ route, typ, items string }{
+		"get_clue_documents": {"documents", "clue_documents", `[{"doc_id":"-Nd1","uid":"1234","context_id":"c"},{"doc_id":"-Nd2","uid":"1234","context_id":"c"}]`},
+		"get_clue_history":   {"history", "clue_history", `[{"doc_id":"-Nd1","entry_id":"e1","idx":0,"entry_json":"{}"},{"doc_id":"-Nd1","entry_id":"e2","idx":1,"entry_json":"{}"}]`},
+		"get_clue_content":   {"content", "clue_content", `[{"doc_id":"-Nd1","uid":"1234","context_id":"c","found":true},{"doc_id":"-Nd2","uid":"1234","context_id":"c","found":false}]`},
+	} {
+		setupEnv(t)
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/api/v1/reports/584/clue/"+rt.route {
+				http.NotFound(w, r)
+				return
+			}
+			fmt.Fprintf(w, `{"items":%s,"next_page_token":null,"total_endpoints":4}`, rt.items)
+		}))
+		if err := (creds.Store{}).Save(config.MustPortal("learn.concord.org"), "test-token", srv.URL); err != nil {
+			t.Fatal(err)
+		}
+		cs := connect(t)
+		if res, _ := callJSON(t, cs, "dataset_create", map[string]any{"portal": "learn.concord.org", "name": "ds"}); res.IsError {
+			t.Fatalf("dataset_create failed: %s", errorText(res))
+		}
+		res, out := callJSON(t, cs, tool, map[string]any{"dataset": "learn.concord.org/ds", "run_id": 584})
+		srv.Close()
+		if res.IsError {
+			t.Fatalf("%s failed: %s", tool, errorText(res))
+		}
+		counts, _ := out["merge_counts"].(map[string]any)
+		if out["type"] != rt.typ || out["run_id"] != float64(584) || out["complete"] != true || counts["fetched"] != float64(2) || counts["new"] != float64(2) {
+			t.Fatalf("%s result %v", tool, out)
+		}
+		cov, hasCov := out["coverage"]
+		if rt.typ == "clue_history" {
+			if note, _ := out["coverage_note"].(string); !hasCov || cov != nil || !strings.Contains(note, "fetch clue-documents for run 584") {
+				t.Fatalf("history coverage %v, note %v", cov, out["coverage_note"])
+			}
+		} else if c, _ := cov.(map[string]any); c["with_data"] != float64(1) {
+			t.Fatalf("%s coverage %v, want one owner", tool, cov)
 		}
 	}
 }
