@@ -10,10 +10,10 @@ import (
 )
 
 // TestBuildIndexPropagatesReadError verifies that a non-EOF read error during the
-// segment scan is returned rather than swallowed into a partial index (finding
-// #43). A partial index feeds a truncated identity set to `covered`, and
-// StreamMerge then drops any old-store record whose key is absent from it, which
-// silently deletes durable records and violates the never-lose contract.
+// segment scan is returned rather than swallowed into a partial index. A partial index
+// gives the merge and the run's membership a truncated identity set, so StreamMerge
+// drops old-store records the run still holds, which silently deletes durable records
+// and violates the never-lose contract.
 //
 // The read error is injected by making the segment path a directory: os.Open
 // succeeds, but the first Read returns EISDIR, which is not io.EOF. (The happy

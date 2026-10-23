@@ -20,43 +20,43 @@ func (d *Dataset) CurrentStore(typ string) (Store, error) {
 	return m.Stores[typ], nil
 }
 
-// membershipUnionMulti loads every membership set for the type except the runs
-// being merged (whose identity sets replace them wholesale), unions them with
-// all the new identities, and returns the covered key set.
-func (d *Dataset) membershipUnionMulti(m *Manifest, typ string, idsByRun map[int][]store.Identity) (map[string]bool, error) {
+// openCovered streams the membership of every run of the type except those being
+// merged, whose identity sets replace their old ones wholesale and so need no place in
+// it. The returned function closes the files.
+func (d *Dataset) openCovered(m *Manifest, typ string, merging map[int]*store.SegmentIndex) (*store.Covered, func(), error) {
 	kind := store.MustKind(typ)
-	covered := map[string]bool{}
+	var readers []*store.MembershipReader
+	closeAll := func() {
+		for _, r := range readers {
+			r.Close()
+		}
+	}
+	var srcs []store.KeySource
 	for key, ref := range m.Membership {
 		t, r, ok := parseMembershipKey(key)
 		if !ok || t != typ {
 			continue
 		}
-		if _, merging := idsByRun[r]; merging {
+		if _, isMerging := merging[r]; isMerging {
 			continue
 		}
 		// Fail closed: a missing membership file must not silently drop this run's
 		// identities from covered, or the next merge would delete still-owned
 		// records (the sibling ScanRunAttachments fails closed for the same reason).
-		ids, err := store.ReadMembershipFile(d.Path(ref.File), kind)
+		mr, err := store.OpenMembership(d.Path(ref.File), kind)
 		if err != nil {
-			return nil, err
+			closeAll()
+			return nil, nil, err
 		}
-		for _, id := range ids {
-			covered[kind.Key(id)] = true
-		}
+		readers = append(readers, mr)
+		srcs = append(srcs, mr)
 	}
-	for _, ids := range idsByRun {
-		for _, id := range ids {
-			covered[kind.Key(id)] = true
-		}
-	}
-	return covered, nil
+	return store.NewCovered(srcs...), closeAll, nil
 }
 
-// WriteMembership writes a run's membership version file.
-func (d *Dataset) WriteMembership(typ string, runID, version int, ids []store.Identity) error {
-	file := memberFileName(typ, runID, version)
-	return store.WriteMembershipFile(d.Path(file), store.MustKind(typ), ids)
+// WriteMembership writes a run's membership version file from its segment index.
+func (d *Dataset) WriteMembership(typ string, runID, version int, idx *store.SegmentIndex) error {
+	return idx.WriteMembership(d.Path(memberFileName(typ, runID, version)))
 }
 
 // MergeCompact merges the segment into a new store version under the per-dataset
@@ -103,13 +103,11 @@ func (d *Dataset) mergeUnderLock(typ string, runID int, seg *store.Segment) (sto
 		// per-download lock is free, folding them into one store rewrite.
 		swept := d.discoverSweep(typ, runID, cur.Version)
 		byRun := map[int]*store.SegmentIndex{runID: primaryIdx}
-		idsByRun := map[int][]store.Identity{runID: primaryIdx.Identities()}
 		for _, s := range swept {
 			byRun[s.run] = s.idx
-			idsByRun[s.run] = s.idx.Identities()
 		}
 
-		covered, err := d.membershipUnionMulti(m, typ, idsByRun)
+		covered, closeCovered, err := d.openCovered(m, typ, byRun)
 		if err != nil {
 			closeAll(byRun)
 			releaseSwept(swept)
@@ -128,6 +126,7 @@ func (d *Dataset) mergeUnderLock(typ string, runID int, seg *store.Segment) (sto
 			oldPath = d.Path(cur.File)
 		}
 		result, err := store.StreamMerge(oldPath, store.MustKind(typ), tmp, src, covered)
+		closeCovered()
 		closeAll(byRun)
 		if err != nil {
 			os.Remove(tmp)
@@ -157,15 +156,15 @@ func (d *Dataset) mergeUnderLock(typ string, runID int, seg *store.Segment) (sto
 			return store.MergeCounts{}, err
 		}
 		testHookAfterWrite(1)
-		for run, ids := range idsByRun {
-			if err := d.WriteMembership(typ, run, next, ids); err != nil {
+		for run, idx := range byRun {
+			if err := d.WriteMembership(typ, run, next, idx); err != nil {
 				releaseSwept(swept)
 				return store.MergeCounts{}, err // abort before the repoint: segments survive, resume re-merges
 			}
 		}
 		testHookAfterWrite(2)
 		m.Stores[typ] = Store{File: filepath.Base(final), Version: next, Count: result.Total, Columns: result.Columns}
-		for run := range idsByRun {
+		for run := range byRun {
 			m.SetMembershipRef(typ, run, next)
 		}
 		d.recordSweptDownloads(m, typ, swept, result)
@@ -174,7 +173,7 @@ func (d *Dataset) mergeUnderLock(typ string, runID int, seg *store.Segment) (sto
 			return store.MergeCounts{}, err
 		}
 		testHookAfterWrite(3)
-		for run := range idsByRun {
+		for run := range byRun {
 			d.cleanupOldVersions(typ, run, next)
 		}
 		for run := range byRun {

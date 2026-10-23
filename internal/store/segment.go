@@ -211,9 +211,9 @@ func (s *Segment) BuildIndex() (*SegmentIndex, error) {
 			if err == io.EOF {
 				break
 			}
-			// A real read error must not be mistaken for end-of-file: returning a
-			// partial index here would feed a truncated identity set to covered and
-			// silently drop old-store records in StreamMerge.
+			// A real read error must not be mistaken for end-of-file: a partial index
+			// would give the merge and this run's membership a truncated identity set,
+			// silently dropping old-store records the run still holds.
 			f.Close()
 			return nil, err
 		}
@@ -248,15 +248,6 @@ func (idx *SegmentIndex) record(i int) ([]byte, error) {
 		return nil, err
 	}
 	return buf, nil
-}
-
-// Identities returns the segment's identity set in key order.
-func (idx *SegmentIndex) Identities() []Identity {
-	out := make([]Identity, 0, len(idx.entries))
-	for _, e := range idx.entries {
-		out = append(out, idx.kind.Decode(e.key))
-	}
-	return out
 }
 
 // Close releases the segment file handle.

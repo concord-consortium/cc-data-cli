@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"sort"
@@ -205,6 +206,10 @@ func TestNeverDuplicateAcceptance(t *testing.T) {
 	if counts.Removed != 0 {
 		t.Fatalf("a2 still covered by B; removed should be 0, got %+v", counts)
 	}
+	m, _ := d.ReadManifest()
+	if got := readData(t, d.Path(m.Stores["answers"].File), "answers", identityFor("answers", "s", "e2", "q2", "")); got != "B" {
+		t.Fatalf("a2 = %q, want B's copy", got)
+	}
 	assertDistinct(t, d, "answers")
 	ids := storeIdentities(t, d, "answers")
 	if len(ids) != 3 {
@@ -305,4 +310,62 @@ func TestATornSegmentLineFailsTheMergeAndKeepsTheStore(t *testing.T) {
 	if !seg2.Exists() {
 		t.Fatal("the segment must survive a failed merge")
 	}
+}
+
+// overwriteMembership replaces a run's current membership file with the given lines.
+func overwriteMembership(t *testing.T, d *Dataset, typ string, run int, lines ...string) {
+	t.Helper()
+	m, _ := d.ReadManifest()
+	path := d.Path(m.Membership[MembershipKey(typ, run)].File)
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func memberLine(qid string) string {
+	return `{"source_key":"s","remote_endpoint":"e","question_id":"` + qid + `"}`
+}
+
+func assertMergeFailsClosed(t *testing.T, d *Dataset, setup func()) {
+	t.Helper()
+	setup()
+	before, _ := d.ReadManifest()
+	storeBytes, _ := os.ReadFile(d.Path(before.Stores["answers"].File))
+	seg := writeFinishedSegment(t, d, "answers", 612, [][]byte{rec("s", "e", "qm", "", "new")})
+	if _, err := d.MergeCompact("answers", 612, seg); !errors.Is(err, store.ErrMembershipOrder) {
+		t.Fatalf("err = %v, want a membership order error", err)
+	}
+	after, _ := d.ReadManifest()
+	if after.Stores["answers"].Version != before.Stores["answers"].Version || len(after.Membership) != len(before.Membership) {
+		t.Fatalf("manifest moved: %+v -> %+v", before.Stores["answers"], after.Stores["answers"])
+	}
+	if got, _ := os.ReadFile(d.Path(after.Stores["answers"].File)); !bytes.Equal(got, storeBytes) {
+		t.Fatal("the store's bytes changed")
+	}
+	if !seg.Exists() {
+		t.Fatal("the segment must survive a failed merge")
+	}
+}
+
+func TestMembershipOutOfOrderFailsTheMergeClosed(t *testing.T) {
+	d := newDataset(t)
+	assertMergeFailsClosed(t, d, func() {
+		segA := writeFinishedSegment(t, d, "answers", 584, [][]byte{rec("s", "e", "qa", "", "a"), rec("s", "e", "qb", "", "b"), rec("s", "e", "qc", "", "c"), rec("s", "e", "qd", "", "d")})
+		if _, err := d.MergeCompact("answers", 584, segA); err != nil {
+			t.Fatal(err)
+		}
+		// The disorder sits before the last old key, so the walk itself reads it.
+		overwriteMembership(t, d, "answers", 584, memberLine("qa"), memberLine("qc"), memberLine("qb"), memberLine("qd"))
+	})
+}
+
+func TestMembershipDisorderPastTheLastOldKeyFailsTheMergeClosed(t *testing.T) {
+	d := newDataset(t)
+	assertMergeFailsClosed(t, d, func() {
+		segA := writeFinishedSegment(t, d, "answers", 584, [][]byte{rec("s", "e", "qa", "", "a")})
+		if _, err := d.MergeCompact("answers", 584, segA); err != nil {
+			t.Fatal(err)
+		}
+		overwriteMembership(t, d, "answers", 584, memberLine("qa"), memberLine("qz"), memberLine("qy"))
+	})
 }

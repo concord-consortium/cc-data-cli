@@ -1,6 +1,8 @@
 package fsutil
 
 import (
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -113,5 +115,26 @@ func TestRenameAtomic(t *testing.T) {
 	data, err := ReadReplaceTarget(dst)
 	if err != nil || string(data) != "hi" {
 		t.Fatalf("read after rename: %q %v", data, err)
+	}
+}
+
+func TestWriteAtomic0600KeepsTargetOnWriteError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "members.jsonl")
+	if err := WriteFileAtomic0600(path, []byte("old")); err != nil {
+		t.Fatal(err)
+	}
+	boom := errors.New("boom")
+	err := WriteAtomic0600(path, func(w io.Writer) error {
+		io.WriteString(w, "partial")
+		return boom
+	})
+	if !errors.Is(err, boom) {
+		t.Fatalf("err = %v, want the callback's error", err)
+	}
+	if got, _ := os.ReadFile(path); string(got) != "old" {
+		t.Fatalf("target = %q, want it untouched", got)
+	}
+	if tmps, _ := filepath.Glob(path + ".tmp-*"); len(tmps) != 0 {
+		t.Fatalf("temp files left behind: %v", tmps)
 	}
 }

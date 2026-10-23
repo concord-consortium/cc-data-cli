@@ -4,6 +4,10 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
 
 	"github.com/concord-consortium/cc-data-cli/internal/fsutil"
 )
@@ -39,36 +43,90 @@ func columnNames(k Kind) [][]byte {
 	return names
 }
 
-// WriteMembershipFile writes an identity set as JSONL atomically.
-func WriteMembershipFile(path string, k Kind, ids []Identity) error {
-	var buf bytes.Buffer
-	names := columnNames(k)
-	for _, id := range ids {
-		appendMembershipLine(&buf, k, names, id)
-	}
-	return fsutil.WriteFileAtomic0600(path, buf.Bytes())
+// WriteMembership streams the index's identities to path as key-ordered JSONL,
+// atomically.
+func (idx *SegmentIndex) WriteMembership(path string) error {
+	names := columnNames(idx.kind)
+	return fsutil.WriteAtomic0600(path, func(w io.Writer) error {
+		bw := bufio.NewWriterSize(w, 64*1024)
+		var line bytes.Buffer
+		for _, e := range idx.entries {
+			line.Reset()
+			appendMembershipLine(&line, idx.kind, names, idx.kind.Decode(e.key))
+			if _, err := bw.Write(line.Bytes()); err != nil {
+				return err
+			}
+		}
+		return bw.Flush()
+	})
 }
 
-// ReadMembershipFile reads an identity set from a membership JSONL file.
-func ReadMembershipFile(path string, k Kind) ([]Identity, error) {
+// ErrMembershipOrder is a membership file whose keys are not strictly increasing.
+var ErrMembershipOrder = errors.New("not in identity order")
+
+// MembershipReader streams a membership file's identity keys and fails on a key that
+// is not above the one before it, which the covered walk relies on to never drop a held
+// record.
+type MembershipReader struct {
+	f    *os.File
+	sc   *bufio.Scanner
+	k    Kind
+	path string
+	last string
+	read bool
+}
+
+// OpenMembership opens a membership file for streaming.
+func OpenMembership(path string, k Kind) (*MembershipReader, error) {
 	f, err := fsutil.OpenReplaceTarget(path)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
-	var ids []Identity
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-	for sc.Scan() {
-		line := bytes.TrimSpace(sc.Bytes())
+	return &MembershipReader{f: f, sc: sc, k: k, path: path}, nil
+}
+
+// Next returns the next identity key; ok is false at the end of the file.
+func (r *MembershipReader) Next() (key string, ok bool, err error) {
+	for r.sc.Scan() {
+		line := bytes.TrimSpace(r.sc.Bytes())
 		if len(line) == 0 {
 			continue
 		}
-		id, err := IdentityFromRecord(k, line)
+		id, err := IdentityFromRecord(r.k, line)
+		if err != nil {
+			return "", false, fmt.Errorf("membership %s: %w", r.path, err)
+		}
+		key := r.k.Key(id)
+		if r.read && key <= r.last {
+			return "", false, fmt.Errorf("membership %s: %w", r.path, ErrMembershipOrder)
+		}
+		r.last, r.read = key, true
+		return key, true, nil
+	}
+	return "", false, r.sc.Err()
+}
+
+// Close releases the file.
+func (r *MembershipReader) Close() error { return r.f.Close() }
+
+// ReadMembershipFile reads a whole membership file's identity set.
+func ReadMembershipFile(path string, k Kind) ([]Identity, error) {
+	r, err := OpenMembership(path, k)
+	if err != nil {
+		return nil, err
+	}
+	defer r.Close()
+	var ids []Identity
+	for {
+		key, ok, err := r.Next()
 		if err != nil {
 			return nil, err
 		}
-		ids = append(ids, id)
+		if !ok {
+			return ids, nil
+		}
+		ids = append(ids, k.Decode(key))
 	}
-	return ids, sc.Err()
 }

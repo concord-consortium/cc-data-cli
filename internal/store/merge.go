@@ -28,7 +28,7 @@ type MergeResult struct {
 // store to tmpPath and fsyncing it. The source beats the store on equal keys;
 // old-store identities not in covered are dropped and counted as removed. Counts
 // are attributed per owning run.
-func StreamMerge(oldStorePath string, k Kind, tmpPath string, src MergeSource, covered map[string]bool) (MergeResult, error) {
+func StreamMerge(oldStorePath string, k Kind, tmpPath string, src MergeSource, covered *Covered) (MergeResult, error) {
 	res := MergeResult{PerRun: map[int]MergeCounts{}}
 	for _, run := range src.Runs() {
 		res.PerRun[run] = MergeCounts{Fetched: src.RawCount(run)}
@@ -86,7 +86,11 @@ func StreamMerge(oldStorePath string, k Kind, tmpPath string, src MergeSource, c
 	for oldOK || segOK {
 		switch {
 		case oldOK && (!segOK || oldKey < segKey):
-			if covered[oldKey] {
+			held, err := covered.Has(oldKey)
+			if err != nil {
+				return fail(err)
+			}
+			if held {
 				if err := write(oldRec); err != nil {
 					return fail(err)
 				}
@@ -113,6 +117,9 @@ func StreamMerge(oldStorePath string, k Kind, tmpPath string, src MergeSource, c
 		}
 	}
 
+	if err := covered.Drain(); err != nil {
+		return fail(err)
+	}
 	if err := w.Flush(); err != nil {
 		out.Close()
 		return res, err

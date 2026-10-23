@@ -149,7 +149,12 @@ func (k Kind) Field(id Identity, col string) string {
 }
 
 func encodeFields(fields ...string) string {
+	n := 0
+	for _, f := range fields {
+		n += len(strconv.Itoa(len(f))) + 1 + len(f)
+	}
 	var b strings.Builder
+	b.Grow(n)
 	for _, f := range fields {
 		b.WriteString(strconv.Itoa(len(f)))
 		b.WriteByte(':')

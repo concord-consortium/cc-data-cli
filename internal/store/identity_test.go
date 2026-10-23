@@ -4,8 +4,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 var answersKind, historyKind = MustKind(TypeAnswers), MustKind(TypeHistory)
@@ -132,5 +137,63 @@ func TestMembershipLineMatchesTheLegacyEncoder(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func TestStreamedMembershipMatchesTheLegacyEncoder(t *testing.T) {
+	dir := t.TempDir()
+	var lines []string
+	var want []legacyIdentity
+	// Invalid UTF-8 is left out: the segment stores it as U+FFFD before membership sees it.
+	valid := slices.DeleteFunc(slices.Clone(hostile), func(s string) bool { return !utf8.ValidString(s) })
+	for i, a := range valid {
+		for j, b := range valid {
+			rec, _ := json.Marshal(map[string]any{"source_key": a, "remote_endpoint": b, "question_id": fmt.Sprint(i, ".", j), "history_id": b})
+			lines = append(lines, string(rec))
+			want = append(want, legacyIdentity{SourceKey: a, RemoteEndpoint: b, QuestionID: fmt.Sprint(i, ".", j), HistoryID: b})
+		}
+	}
+	idx := writeSegment(t, dir, TypeHistory, 1, lines...)
+	path := filepath.Join(dir, "members.jsonl")
+	if err := idx.WriteMembership(path); err != nil {
+		t.Fatal(err)
+	}
+	slices.SortFunc(want, func(x, y legacyIdentity) int {
+		return strings.Compare(historyKind.Key(Identity{x.SourceKey, x.RemoteEndpoint, x.QuestionID, x.HistoryID}),
+			historyKind.Key(Identity{y.SourceKey, y.RemoteEndpoint, y.QuestionID, y.HistoryID}))
+	})
+	var legacy bytes.Buffer
+	enc := json.NewEncoder(&legacy)
+	for _, id := range want {
+		enc.Encode(id)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, legacy.Bytes()) {
+		t.Fatalf("streamed membership differs from the legacy encoder:\n%s\nwant\n%s", got, legacy.Bytes())
+	}
+}
+
+func TestMembershipReaderRefusesKeysOutOfOrder(t *testing.T) {
+	b := `{"source_key":"s","remote_endpoint":"r","question_id":"b"}`
+	a := `{"source_key":"s","remote_endpoint":"r","question_id":"a"}`
+	for name, body := range map[string]string{"descending": b + "\n" + a + "\n", "repeated": b + "\n" + b + "\n"} {
+		path := filepath.Join(t.TempDir(), "members.jsonl")
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		r, err := OpenMembership(path, answersKind)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := r.Next(); err != nil {
+			t.Fatalf("%s: first key: %v", name, err)
+		}
+		if _, _, err := r.Next(); !errors.Is(err, ErrMembershipOrder) {
+			t.Fatalf("%s: err = %v, want a membership order error", name, err)
+		}
+		r.Close()
 	}
 }

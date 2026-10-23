@@ -113,7 +113,7 @@ A segment line that is not valid JSON fails `BuildIndex`, as the struct unmarsha
 
 **Files affected**:
 - `internal/fsutil/fsutil.go`: `WriteAtomic0600(path, func(io.Writer) error)`, with `WriteFileAtomic0600` rebased onto it so the temp, fsync and rename sequence lives once.
-- `internal/store/membership.go`: `MembershipWriter` (buffered, line by line, through `fsutil.WriteAtomic0600`) and `MembershipReader` (a scanner yielding keys, checking each line's key is above the previous one).
+- `internal/store/membership.go`: `(*SegmentIndex).WriteMembership(path)` (buffered, line by line, through `fsutil.WriteAtomic0600`) and `MembershipReader` (a scanner yielding keys, checking each line's key is above the previous one).
 - `internal/store/covered.go` (new): the walker.
 - `internal/store/merge.go`: `StreamMerge(oldStorePath string, k Kind, tmpPath string, src MergeSource, covered *Covered)`.
 - `internal/dataset/merge.go`: `membershipUnionMulti` becomes `openCovered`, opening one reader per non-merging run's membership file of the kind; `WriteMembership` streams `SegmentIndex` keys through `Kind.Decode`.
