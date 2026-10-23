@@ -166,8 +166,45 @@ like `wildfire_2026.answers`):
   the entry's `action`, `tile_id` (the tile in the patch's own `path`, else the
   entry's), `is_revert`, `rec_idx` and `patch_idx` (the patch's 0-based positions in
   the entry's `records` and in that record's `patches`), `op`, `path`, and `value`
-  as JSON. `(doc_id, idx, entry_id, rec_idx, patch_idx)` is unique. The view
-  applies no order, so order output and windows by that key.
+  as JSON. `(doc_id, idx, entry_id, rec_idx, patch_idx)` is unique.
+- Working with the CLUE views:
+  - **Two clocks.** `created` is the client's clock and `server_created`
+    Firestore's, both UTC `TIMESTAMP`s. Use `created` for durations within one
+    document and `server_created` across documents: the two differ by about a
+    minute either way (-55 s to +53 s at the 1st and 99th percentiles in one
+    corpus).
+  - **Entry order is `(idx, entry_id)`, not `idx` alone.** Many documents have
+    duplicate or gapped `idx` values that are distinct entries, and an entry whose
+    `idx` is NULL (an index the export could not carry as an integer) sorts after
+    its document's indexed entries.
+  - **`clue_patches` promises no order.** Order output by `doc_id, idx, entry_id,
+    rec_idx, patch_idx`, and order every window over it by that whole key: a
+    window ordered by less leaves ties, which DuckDB breaks differently between
+    runs, so one operation can split into two.
+  - **`action` is not the edit.** Most documents record their edits as one
+    catch-all action ending in `setProgram`, and only a minority record granular
+    actions,
+    so per-edit questions read `clue_patches`, not `clue_history.action`.
+  - **Runtime output is not student work.** Patch paths containing
+    `program/values/`, `demoOutput` or `tickEntries/` are written by a running
+    program, and actions ending in `content/step` or `tickAndProcess` are most
+    history entries. `action` and `path` are full paths, so match these with
+    `LIKE` (`action LIKE '%content/step'`), not equality. No view filters them;
+    leave them out where the question is about the student.
+  - **A `replace` patch carries only the new value**, so telling whether a student
+    revisited a parameter needs the sequence of patches on that path.
+  - **`value IS NULL` is a patch with no value** (a `remove`); a patch that sets
+    null has a non-NULL `value` whose `json_type(value)` is `'NULL'`. Query output
+    shows both as `null`, so make the distinction in the SQL.
+  - **Unparseable payloads** are in `entry_json_unparsed` and
+    `content_json_unparsed`. `clue_history`'s stored `parse_ok` is the server's
+    `JSON.parse` verdict and `entry_json IS NOT NULL` is DuckDB's, and
+    `clue_patches` explodes by DuckDB's. They disagree on a lone surrogate escape
+    (JavaScript accepts it, DuckDB does not) and on trailing commas, `NaN` and
+    `Infinity` (DuckDB accepts them, JavaScript does not).
+  - **There is no per-run `clue_patches`.** Scope it to a run through that run's
+    entries: `WHERE (doc_id, entry_id) IN (SELECT doc_id, entry_id FROM
+    clue_history_<run>)`.
 - `run_membership` — one row per membership line with `run_id` and `type`. Join
   **type-qualified**: `answers a JOIN run_membership m USING
   (source_key, remote_endpoint, question_id) WHERE m.run_id = 584 AND m.type =
@@ -340,6 +377,10 @@ writes each view to a Parquet file that queries read instead, while it is fresh.
 - A dataset with only some of its views materialized is an ordinary state, not a
   fault: freshness is per view, and a view can also be refused when a file it
   reads is missing from disk.
+- A large CLUE dataset is worth materializing, since `clue_patches` explodes every
+  history entry on each raw read. A window over the whole patch table sorts it, so
+  at scale read only the columns the window needs, leaving `value` out unless it
+  uses it.
 
 ## Sensitive data
 

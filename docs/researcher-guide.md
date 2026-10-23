@@ -362,6 +362,49 @@ When you (or Claude) query a dataset, the data is exposed as a set of SQL
 | `run_answers` | Every answer with the `run_id` of each run that holds it: `SELECT count(*) FROM run_answers WHERE run_id = 584` counts one run's answers. Join it to `student_id_mapping` on `remote_endpoint = run_remote_endpoint` to count learners by `user_id`. |
 | `run_membership`, `downloads` | Provenance: which run's fetch covered which records, and what each download was, including whether its run hid names. |
 
+A few things to know before analyzing CLUE documents with these views:
+
+- **Each entry has two clocks.** `created` is the student's device clock and
+  `server_created` is the server's. Use `created` for how long things took inside
+  one document, and `server_created` to compare documents, since device clocks
+  can be off by about a minute either way.
+- **Put entries in order by `idx` and then `entry_id`.** Some documents repeat or
+  skip `idx` values for entries that are really different, and an entry with no
+  `idx` comes after the rest of its document.
+- **Always sort patches yourself.** `clue_patches` comes in no particular order.
+  Sort by `doc_id, idx, entry_id, rec_idx, patch_idx`, and use that whole list in
+  any window function (such as `lag`), or results can change from one run to the
+  next.
+- **The action is not the edit.** Most documents record their edits under one
+  catch-all action ending in `setProgram`, so questions about individual edits
+  belong on `clue_patches`.
+- **Some patches are the program running, not the student.** Paths containing
+  `program/values/`, `demoOutput` or `tickEntries/`, and actions ending in
+  `content/step` or `tickAndProcess`, which make up most history entries, are
+  written while a program runs. Actions and paths are full paths, so match them
+  with `LIKE` (`action LIKE '%content/step'`). No view filters them out, so leave
+  them out yourself when the question is about what the student did.
+- **A `replace` patch shows only the new value**, so whether a student came back
+  to a setting shows up only in the sequence of patches.
+- **A missing value is not a null value.** A patch with no value at all (a
+  `remove`) has `value IS NULL`; a patch that sets something to null has a
+  `value` whose `json_type` is `'NULL'`. Both print as `null`, so test for the
+  difference in your query.
+- **An entry that will not parse keeps its text, but has no patches.** The
+  original text is in `entry_json_unparsed` or `content_json_unparsed`, and
+  `clue_patches` has no rows for that entry. The stored `parse_ok` is the server's
+  verdict; the query engine's is whether `entry_json` is filled in, and
+  `clue_patches` follows the query engine. The two can disagree: `entry_json` is empty for
+  a split emoji the server accepted, and filled in for text with a trailing comma,
+  `NaN` or `Infinity` that the server rejected.
+- **There is no per-run `clue_patches`.** To look at one run's patches, keep the
+  entries that run's `clue_history_<run>` view holds: `WHERE (doc_id, entry_id) IN (SELECT
+  doc_id, entry_id FROM clue_history_584)`.
+- **A big CLUE dataset is worth materializing** (below), since `clue_patches`
+  unpacks every entry each time it is read. A window over all the patches has to
+  sort them, so on a big dataset select only the columns the window needs, and
+  leave out `value` unless it uses it.
+
 ### Speeding up a large dataset
 
 Every query re-reads the JSONL and CSV files your downloads produced. That is
