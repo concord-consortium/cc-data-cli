@@ -145,7 +145,7 @@ func TestClueStringsAreStoredByteForByte(t *testing.T) {
 			want[e["entry_id"].(string)] = md5hex(e["entry_json"].(string))
 		}
 	}
-	got := queryStrings(t, d, "SELECT entry_id, md5(entry_json) FROM clue_history")
+	got := queryStrings(t, d, "SELECT entry_id, md5(coalesce(entry_json::VARCHAR, entry_json_unparsed)) FROM clue_history")
 	if len(got) != len(want) {
 		t.Fatalf("stored %d entries, want %d", len(got), len(want))
 	}
@@ -163,7 +163,7 @@ func TestClueStringsAreStoredByteForByte(t *testing.T) {
 
 func storedIdentities(t *testing.T, d *dataset.Dataset) []string {
 	t.Helper()
-	out := queryStrings(t, d, "SELECT doc_id || '/' || entry_id, md5(entry_json) FROM clue_history")
+	out := queryStrings(t, d, "SELECT doc_id || '/' || entry_id, md5(coalesce(entry_json::VARCHAR, entry_json_unparsed)) FROM clue_history")
 	sort.Strings(out)
 	return out
 }

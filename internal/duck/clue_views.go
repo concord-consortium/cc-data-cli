@@ -8,6 +8,11 @@ import (
 	"github.com/concord-consortium/cc-data-cli/internal/store"
 )
 
+// clueDocColumns are the documents-store columns joined onto every clue_history and
+// clue_content row, so a recipe written against one document-level file finds them
+// on either view. Their types are the documents store's own.
+var clueDocColumns = []string{"portal_class_id", "unit", "investigation", "problem", "offering_id"}
+
 // clueSource is a CLUE store as a relation: its file when the store has one on disk,
 // otherwise a typed-empty stand-in. Its columns are the store's recorded ones, as
 // storeView reads them, so a field the export adds later passes through; with no store,
@@ -77,7 +82,11 @@ func unparsedColumn(raw, typed, name string) string {
 var (
 	clueTools     = typedScalar{"tools", []string{"ARRAY"}, func(c string) string { return fmt.Sprintf("TRY_CAST(%s AS VARCHAR[])", c) }}
 	clueCreatedAt = typedScalar{"created_at", []string{"BIGINT", "UBIGINT", "DOUBLE"}, epochExpr(1000)}
+	clueUndoable  = typedScalar{"undoable", []string{"BOOLEAN"}, func(c string) string { return fmt.Sprintf("CAST(%s AS BOOLEAN)", c) }}
 )
+
+// jsonPayload parses a stored payload string; the cast keeps the bytes when it parses.
+func jsonPayload(col string) string { return fmt.Sprintf("TRY_CAST(%s AS JSON)", col) }
 
 func cluePins(typ string) map[string]string {
 	return store.MustKind(typ).Pinned
@@ -89,5 +98,48 @@ func (vs viewSet) clueDocumentsView() viewStmt {
 		return fmt.Sprintf("SELECT d.* REPLACE (%s, %s), len(%s) AS n_tools, %s, %s FROM %s d",
 			clueTools.replace("d.tools"), clueCreatedAt.replace("d.created_at"), clueTools.typed("d.tools"),
 			clueTools.unparsed("d.tools"), clueCreatedAt.unparsed("d.created_at"), src), files
+	})
+}
+
+// clueActionExprs normalizes an MST action path as CLUE's normalizeAction does:
+// each substitution replaces the first match only, as a non-global JavaScript regex does.
+func clueActionExprs(col string) (action, tileID, sharedModelID string) {
+	col = fmt.Sprintf("nullif(%s, '')", col) // normalizeAction returns nulls for any falsy raw
+	action = fmt.Sprintf("regexp_replace(regexp_replace(regexp_replace(%s, '/tileMap/[^/]+', '/tileMap/{tile}'), '/sharedModelMap/[^/]+', '/sharedModelMap/{sharedModel}'), '/rowMap/[^/]+', '/rowMap/{row}')", col)
+	tileID = fmt.Sprintf("nullif(regexp_extract(%s, '/tileMap/([^/]+)', 1), '')", col)
+	sharedModelID = fmt.Sprintf("nullif(regexp_extract(%s, '/sharedModelMap/([^/]+)', 1), '')", col)
+	return action, tileID, sharedModelID
+}
+
+// clueDocJoin is the documents store narrowed to the joined columns, for a LEFT JOIN
+// USING (doc_id). The store holds one row per doc_id, so the join keeps the row count.
+func (vs viewSet) clueDocJoin(standIn bool, extra ...string) (rel string, files []string) {
+	src, files := vs.clueSource(store.TypeClueDocuments, standIn, false)
+	cols := append([]string{"doc_id"}, extra...)
+	for _, c := range clueDocColumns {
+		cols = append(cols, sqlIdent(c))
+	}
+	return fmt.Sprintf("(SELECT %s FROM %s)", strings.Join(cols, ", "), src), files
+}
+
+func docColumnRefs(alias string) string {
+	refs := make([]string, len(clueDocColumns))
+	for i, c := range clueDocColumns {
+		refs[i] = alias + "." + sqlIdent(c)
+	}
+	return strings.Join(refs, ", ")
+}
+
+func (vs viewSet) clueHistoryView() viewStmt {
+	return vs.clueView(store.TypeClueHistory, func(standIn bool) (string, []string) {
+		h, files := vs.clueSource(store.TypeClueHistory, standIn, true)
+		d, docFiles := vs.clueDocJoin(standIn, "uid AS doc_uid")
+		action, tileID, sharedModelID := clueActionExprs("h.action_raw")
+		entry := jsonPayload("h.entry_json")
+		return fmt.Sprintf(`SELECT h.* REPLACE (%s AS entry_json, %s), %s, %s,
+  %s AS action, %s AS tile_id, %s AS shared_model_id, d.doc_uid, %s
+FROM %s h LEFT JOIN %s d USING (doc_id)`,
+			entry, clueUndoable.replace("h.undoable"), unparsedColumn("h.entry_json", entry, "entry_json"), clueUndoable.unparsed("h.undoable"),
+			action, tileID, sharedModelID, docColumnRefs("d"), h, d), append(files, docFiles...)
 	})
 }

@@ -349,7 +349,7 @@ When you (or Claude) query a dataset, the data is exposed as a set of SQL
 | `answers` | Student answers, one current record per learner-question. |
 | `history` | Every interactive-state snapshot, how each answer evolved over time. |
 | `clue_documents` | One row per CLUE document: its owner, class, unit, problem and offering, with the raw Firestore and RTDB metadata. `tools` is its tool list, `n_tools` how many, and `created_at` when it was created, as a UTC timestamp; a stored value that is not the right kind is kept in `tools_unparsed` or `created_at_unparsed`. |
-| `clue_history` | Every entry of each CLUE document's edit history, the stored entry kept as text. CLUE document history, not the interactive-state `history` above. |
+| `clue_history` | Every entry of each CLUE document's edit history, with its action normalized (`action`, `tile_id`, `shared_model_id`), the stored entry as JSON in `entry_json`, and its document's owner (`doc_uid`), class, unit, investigation, problem and offering. CLUE document history, not the interactive-state `history` above. |
 | `clue_content` | Each CLUE document's current content, stored as text, joined to the others by `doc_id`. |
 | `report_prompts` | The prompt and correct-answer text for each question. |
 | `logs` | Log/action report rows with `parameters` and `extras` parsed as JSON, and both of the row's clocks as UTC timestamps: `event_time` from the client device's clock, `received_time` from the server's. |

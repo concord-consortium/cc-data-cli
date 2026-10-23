@@ -134,13 +134,23 @@ like `wildfire_2026.answers`):
   which is one per assignment, so that join repeats a document once per assignment
   its student has in the class: test membership with `SEMI JOIN` or `EXISTS`, or add
   `d.offering_id = m.offering_id`, which leaves out documents with no offering.
-- `clue_history`, `clue_content`: the other two CLUE stores, no dedup needed.
-  `clue_history` has one row per entry of a document's edit history, with the
-  stored entry string in `entry_json`; it is CLUE **document** history, unrelated
-  to `history`'s interactive-state snapshots. `clue_content` has one row per
-  document with its current content string in `content_json`, NULL when `found` is
-  false or the document has no content. `change_count` and `undoable` are JSON, as
-  stored; cast them, e.g. `TRY_CAST(change_count AS BIGINT)`.
+- `clue_history`: one row per entry of a CLUE document's edit history, no dedup
+  needed; it is CLUE **document** history, unrelated to `history`'s
+  interactive-state snapshots. `action` is `action_raw` with its ids taken out, so one
+  kind of edit reads the same on every tile (the first `/tileMap/<id>`, `/sharedModelMap/<id>` and `/rowMap/<id>`
+  segments become `{tile}`, `{sharedModel}` and `{row}`), with the ids in `tile_id`
+  and `shared_model_id`; all three are NULL for an empty or NULL `action_raw`.
+  `entry_json` is the stored entry as JSON, byte for byte, so `->>` on it is always
+  safe; an entry DuckDB cannot parse is NULL there and kept as text in
+  `entry_json_unparsed`. `undoable` is a BOOLEAN, with a stored value of any other
+  JSON kind in `undoable_unparsed`. Every row carries its document's `doc_uid` (the
+  document's `uid`) and its `portal_class_id`, `unit`, `investigation`, `problem`
+  and `offering_id`, NULL when the document is not in `clue_documents`; the join
+  never adds or drops an entry.
+- `clue_content`: one row per CLUE document with its current content string in
+  `content_json`, NULL when `found` is false or the document has no content, no
+  dedup needed. `change_count` is JSON, as stored; cast it, e.g.
+  `TRY_CAST(change_count AS BIGINT)`.
 - `run_membership` — one row per membership line with `run_id` and `type`. Join
   **type-qualified**: `answers a JOIN run_membership m USING
   (source_key, remote_endpoint, question_id) WHERE m.run_id = 584 AND m.type =

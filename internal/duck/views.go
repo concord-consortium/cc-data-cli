@@ -73,6 +73,7 @@ func (vs viewSet) statements() []viewStmt {
 // same name and over the same file.
 var derivedStoreViews = map[string]func(viewSet) viewStmt{
 	store.TypeClueDocuments: viewSet.clueDocumentsView,
+	store.TypeClueHistory:   viewSet.clueHistoryView,
 }
 
 func (vs viewSet) file(rel string) string {

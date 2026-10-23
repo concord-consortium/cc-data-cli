@@ -3,7 +3,9 @@ package duck
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"maps"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -45,6 +47,11 @@ var clueDerived = map[string]map[string]string{
 	store.TypeClueDocuments: {
 		"tools": "VARCHAR[]", "n_tools": "BIGINT", "tools_unparsed": "JSON",
 		"created_at": "TIMESTAMP", "created_at_unparsed": "JSON",
+	},
+	store.TypeClueHistory: {
+		"entry_json": "JSON", "entry_json_unparsed": "VARCHAR", "undoable": "BOOLEAN", "undoable_unparsed": "JSON",
+		"action": "VARCHAR", "tile_id": "VARCHAR", "shared_model_id": "VARCHAR", "doc_uid": "VARCHAR",
+		"portal_class_id": "BIGINT", "unit": "VARCHAR", "investigation": "VARCHAR", "problem": "VARCHAR", "offering_id": "BIGINT",
 	},
 }
 
@@ -466,6 +473,172 @@ func TestClueViewsPassWidenedColumns(t *testing.T) {
 		}
 		if got := clueFallbackColumns(t, e, d, typ); !maps.Equal(got, cols) {
 			t.Fatalf("%s fallback columns %v, want the primary's %v", typ, got, cols)
+		}
+	}
+}
+
+func TestClueHistoryNormalizesActions(t *testing.T) {
+	e := openEngine(t, []DatasetSpec{{DS: clueFixture(t)}}, nil)
+	for entry, want := range map[string][]string{
+		"a-03": {"/content/tileMap/T1/content/setText", "/content/tileMap/{tile}/content/setText", "T1", "<NULL>"},
+		"a-01": {"/content/sharedModelMap/S1/sharedModel/setX", "/content/sharedModelMap/{sharedModel}/sharedModel/setX", "<NULL>", "S1"},
+		"b-1":  {"/content/rowMap/R1/setValue", "/content/rowMap/{row}/setValue", "<NULL>", "<NULL>"},
+		"b-4":  {"/content/tileMap/A/content/tileMap/B/x", "/content/tileMap/{tile}/content/tileMap/B/x", "A", "<NULL>"},
+		"a-00": {"/addTile", "/addTile", "<NULL>", "<NULL>"},
+		"b-2":  {"", "<NULL>", "<NULL>", "<NULL>"},
+		"b-3":  {"<NULL>", "<NULL>", "<NULL>", "<NULL>"},
+	} {
+		got := queryRow(t, e, "SELECT action_raw, action, tile_id, shared_model_id FROM clue_history WHERE entry_id = '"+entry+"'")
+		if !slices.Equal(got, want) {
+			t.Errorf("%s action_raw, action, tile_id, shared_model_id = %v, want %v", entry, got, want)
+		}
+	}
+}
+
+// clueDocColumnsQuery selects a row's joined document columns, in clueDocColumns order after
+// doc_uid when the view has it.
+func clueDocColumnsQuery(withUID bool) string {
+	cols := "portal_class_id::VARCHAR, unit, investigation, problem, offering_id::VARCHAR"
+	if withUID {
+		cols = "doc_uid, " + cols
+	}
+	return cols
+}
+
+func clueDocWant(doc string, withUID bool) []string {
+	var want []string
+	for _, d := range clueFixtureDocs {
+		if d.id == doc {
+			want = []string{fmt.Sprint(d.class), d.unit, d.investigation, d.problem, fmt.Sprint(d.offering)}
+			if withUID {
+				want = append([]string{d.uid}, want...)
+			}
+			return want
+		}
+	}
+	n := len(clueDocColumns)
+	if withUID {
+		n++
+	}
+	return slices.Repeat([]string{"<NULL>"}, n)
+}
+
+func TestClueHistoryCarriesItsDocumentsColumns(t *testing.T) {
+	d := clueFixture(t)
+	e := openEngine(t, []DatasetSpec{{DS: d}}, nil)
+	for _, en := range clueFixtureEntries {
+		got := queryRow(t, e, "SELECT "+clueDocColumnsQuery(true)+" FROM clue_history WHERE doc_id = '"+en.doc+"' AND entry_id = '"+en.id+"'")
+		if want := clueDocWant(en.doc, true); !slices.Equal(got, want) {
+			t.Errorf("%s/%s document columns %v, want %v", en.doc, en.id, got, want)
+		}
+	}
+	want := mustManifest(t, d).Stores[store.TypeClueHistory].Count
+	if n := queryInt(t, e, "SELECT count(*) FROM clue_history"); n != want || n != len(clueFixtureEntries) {
+		t.Fatalf("clue_history has %d rows, want the store's %d", n, want)
+	}
+}
+
+func TestClueHistoryWithoutADocumentsStore(t *testing.T) {
+	check := func(t *testing.T, d *dataset.Dataset, wantWarning string) {
+		t.Helper()
+		e, warn := openWithWarnings(t, d)
+		if n := queryInt(t, e, "SELECT count(*) FROM clue_history"); n != len(clueFixtureEntries) {
+			t.Fatalf("clue_history has %d rows without its documents, want %d", n, len(clueFixtureEntries))
+		}
+		if n := queryInt(t, e, "SELECT count(*) FROM clue_history WHERE coalesce(doc_uid, unit, investigation, problem, portal_class_id::VARCHAR, offering_id::VARCHAR) IS NOT NULL"); n != 0 {
+			t.Fatalf("%d clue_history rows carry document columns with no documents store", n)
+		}
+		if got := strings.Count(warn, "clue_documents.v"); wantWarning != "" && got != 1 || wantWarning == "" && got != 0 {
+			t.Fatalf("warnings name the documents file %d times: %q", got, warn)
+		}
+		if !strings.Contains(warn, wantWarning) {
+			t.Fatalf("warnings %q do not name %q", warn, wantWarning)
+		}
+	}
+	t.Run("absent from the manifest", func(t *testing.T) {
+		d := clueFixture(t)
+		if err := d.UpdateManifest(func(m *dataset.Manifest) error {
+			delete(m.Stores, store.TypeClueDocuments)
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		check(t, d, "")
+	})
+	t.Run("file missing on disk", func(t *testing.T) {
+		d := clueFixture(t)
+		file := mustManifest(t, d).Stores[store.TypeClueDocuments].File
+		if err := os.Remove(d.Path(file)); err != nil {
+			t.Fatal(err)
+		}
+		check(t, d, file)
+
+		res, _ := materialize(t, d, MaterializeOptions{})
+		for _, view := range []string{store.TypeClueDocuments, store.TypeClueHistory} {
+			if r, ok := res.Refused()[view]; !ok || !strings.Contains(r, file) {
+				t.Fatalf("%s outcome %q, want refused naming %s", view, outcomeReason(res, view), file)
+			}
+		}
+		res, _ = materialize(t, d, MaterializeOptions{AllowPartial: true})
+		if r := outcomeReason(res, store.TypeClueHistory); !slices.Contains(res.Written(), store.TypeClueHistory) || !strings.Contains(r, "built from 1 of 2 declared inputs") || !strings.Contains(r, file) {
+			t.Fatalf("clue_history with partial copies allowed: written %v, reason %q", res.Written(), r)
+		}
+	})
+}
+
+func TestClueHistoryFallbackDeclaresEveryColumn(t *testing.T) {
+	assertClueFallback(t, store.TypeClueHistory)
+}
+
+func TestClueHistoryPayloads(t *testing.T) {
+	d := clueFixture(t)
+	e := openEngine(t, []DatasetSpec{{DS: d}}, nil)
+	for _, en := range clueFixtureEntries {
+		got := queryRow(t, e, "SELECT entry_json::VARCHAR, entry_json_unparsed, parse_ok::VARCHAR FROM clue_history WHERE entry_id = '"+en.id+"'")
+		want := []string{en.entryJSON(), "<NULL>", fmt.Sprint(en.parseOK)}
+		if !en.parseable {
+			want = []string{"<NULL>", en.entryJSON(), fmt.Sprint(en.parseOK)}
+		}
+		if !slices.Equal(got, want) {
+			t.Errorf("%s entry_json, entry_json_unparsed, parse_ok = %v, want %v", en.id, got, want)
+		}
+	}
+	if n := queryInt(t, e, "SELECT count(entry_json ->> '$.records') FROM clue_history"); n == 0 {
+		t.Fatal("->> over entry_json read nothing")
+	}
+	for entry, want := range map[string][]string{
+		"a-03": {"true", "<NULL>"},
+		"a-00": {"false", "<NULL>"},
+		"a-01": {"<NULL>", `"yes"`},
+		"b-1":  {"<NULL>", "1"},
+		"a-02": {"<NULL>", "<NULL>"},
+	} {
+		if got := queryRow(t, e, "SELECT undoable::VARCHAR, undoable_unparsed::VARCHAR FROM clue_history WHERE entry_id = '"+entry+"'"); !slices.Equal(got, want) {
+			t.Errorf("%s undoable, undoable_unparsed = %v, want %v", entry, got, want)
+		}
+	}
+}
+
+func TestClueViewsCaveatIncompleteStores(t *testing.T) {
+	d := clueFixture(t)
+	if err := d.UpdateManifest(func(m *dataset.Manifest) error {
+		m.Downloads = append(m.Downloads,
+			dataset.Download{Type: store.TypeClueDocuments, RunID: 801, Complete: false},
+			dataset.Download{Type: store.TypeClueHistory, RunID: 802, Complete: false})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	res, _ := materialize(t, d, MaterializeOptions{})
+	for view, want := range map[string][]int{
+		store.TypeClueDocuments: {801},
+		store.TypeClueHistory:   {801, 802},
+	} {
+		r := outcomeReason(res, view)
+		for _, run := range []int{801, 802} {
+			if named := strings.Contains(r, fmt.Sprint(run)); named != slices.Contains(want, run) {
+				t.Errorf("%s outcome %q: names run %d %v, want %v", view, r, run, named, !named)
+			}
 		}
 	}
 }
