@@ -7,14 +7,17 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
 
+	"github.com/concord-consortium/cc-data-cli/internal/api"
 	"github.com/concord-consortium/cc-data-cli/internal/config"
 	"github.com/concord-consortium/cc-data-cli/internal/creds"
 	"github.com/concord-consortium/cc-data-cli/internal/dataset"
 	"github.com/concord-consortium/cc-data-cli/internal/duck"
+	"github.com/concord-consortium/cc-data-cli/internal/fetch"
 	"github.com/concord-consortium/cc-data-cli/internal/guidance"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/zalando/go-keyring"
@@ -776,9 +779,23 @@ func TestMCPGetClueToolsReturnTheCLIResult(t *testing.T) {
 			t.Fatalf("dataset_create failed: %s", errorText(res))
 		}
 		res, out := callJSON(t, cs, tool, map[string]any{"dataset": "learn.concord.org/ds", "run_id": 584})
-		srv.Close()
 		if res.IsError {
 			t.Fatalf("%s failed: %s", tool, errorText(res))
+		}
+		direct, err := dataset.Create(t.TempDir(), dataset.Ref{Portal: config.MustPortal("learn.concord.org"), Name: "direct"}, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		cli, err := fetch.FetchPaged(context.Background(), fetch.PagedOptions{DS: direct, Client: api.New(srv.URL, "test-token"), RunID: 584, Type: rt.typ, Progress: io.Discard})
+		srv.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var want map[string]any
+		b, _ := json.Marshal(cli)
+		json.Unmarshal(b, &want)
+		if !reflect.DeepEqual(out, want) {
+			t.Fatalf("%s result %v, want the fetch's %v", tool, out, want)
 		}
 		counts, _ := out["merge_counts"].(map[string]any)
 		if out["type"] != rt.typ || out["run_id"] != float64(584) || out["complete"] != true || counts["fetched"] != float64(2) || counts["new"] != float64(2) {

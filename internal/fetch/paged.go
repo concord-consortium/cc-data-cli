@@ -2,6 +2,7 @@ package fetch
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"time"
@@ -148,7 +149,7 @@ func (opts PagedOptions) fetchPages(ctx context.Context, seg *store.Segment, tok
 		records := make([][]byte, 0, len(page.Items))
 		for i, item := range page.Items {
 			if kind.Strict {
-				if _, ierr := store.IdentityFromRecord(kind, item); ierr != nil {
+				if _, ierr := store.IdentityFromRecord(kind, stored(item)); ierr != nil {
 					return &output.CLIError{ExitCode: output.ExitContract, Code: "MALFORMED_ITEM",
 						Message: fmt.Sprintf("run %d %s: item %d of page %d: %v", opts.RunID, opts.Type, i+1, cur.Pages+1, ierr)}
 				}
@@ -178,6 +179,21 @@ func (opts PagedOptions) fetchPages(ctx context.Context, seg *store.Segment, tok
 		}
 		token = *page.NextPageToken
 	}
+}
+
+// stored is an item as AppendPage writes it: decoded to a map and re-encoded, so a
+// key the item repeats keeps its last value. The identity check reads this form so it
+// judges the value the segment will hold.
+func stored(item []byte) []byte {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(item, &obj); err != nil {
+		return item
+	}
+	b, err := json.Marshal(obj)
+	if err != nil {
+		return item
+	}
+	return b
 }
 
 // computeCoverage reports the run's coverage and, when CLUE history owners cannot be

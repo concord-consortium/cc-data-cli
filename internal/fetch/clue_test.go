@@ -244,14 +244,20 @@ func TestClueDocumentSharedByTwoRuns(t *testing.T) {
 
 func TestClueItemWithoutItsIdentityIsRefused(t *testing.T) {
 	for name, bad := range map[string]map[string]any{
-		"missing entry_id": {"doc_id": "-Nd1", "entry_json": "{}"},
-		"null doc_id":      {"doc_id": nil, "entry_id": "e1", "entry_json": "{}"},
-		"numeric doc_id":   {"doc_id": 7, "entry_id": "e1", "entry_json": "{}"},
+		"missing entry_id":  {"doc_id": "-Nd1", "entry_json": "{}"},
+		"null doc_id":       {"doc_id": nil, "entry_id": "e1", "entry_json": "{}"},
+		"numeric doc_id":    {"doc_id": 7, "entry_id": "e1", "entry_json": "{}"},
+		"repeated entry_id": nil,
 	} {
 		d := newTestDataset(t)
 		first := fixture(t, "history_page1.json")
 		second := append(fixture(t, "history_page2.json"), bad)
-		_, err := pullClue(t, d, clueServer(t, 3, first, second), store.TypeClueHistory, 584)
+		srv := clueServer(t, 3, first, second)
+		if bad == nil {
+			body := pageBody(t, fixture(t, "history_page2.json"))
+			srv.pages[1] = strings.TrimSuffix(body, "]") + `,{"doc_id":"-Nd1","entry_id":"e9","entry_id":null,"entry_json":"{}"}]`
+		}
+		_, err := pullClue(t, d, srv, store.TypeClueHistory, 584)
 		var cerr *output.CLIError
 		if !errors.As(err, &cerr) || cerr.Code != "MALFORMED_ITEM" || cerr.ExitCode != output.ExitContract {
 			t.Fatalf("%s: err = %v, want MALFORMED_ITEM", name, err)
