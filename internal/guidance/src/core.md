@@ -120,7 +120,7 @@ like `wildfire_2026.answers`):
   `report_state`; no dedup needed).
 - `clue_documents`, `clue_history`, `clue_content` — the CLUE stores, no dedup
   needed. `clue_documents` has one row per CLUE document: its owner (`uid`,
-  `context_id`, `portal_class_id`, `owner_kind`), unit and problem, `offering_id`,
+  `context_id`, `portal_class_id`, `owner_type`), unit and problem, `offering_id`,
   and the raw Firestore and RTDB metadata. `clue_history` has one row per entry of a
   document's edit history, with the stored entry string in `entry_json`; it is CLUE
   **document** history, unrelated to `history`'s interactive-state snapshots.
@@ -131,7 +131,7 @@ like `wildfire_2026.answers`):
   `change_count` and `undoable` are JSON, as stored; cast them, e.g.
   `TRY_CAST(created_at AS BIGINT)`.
   To put CLUE rows in a cohort, `uid` is VARCHAR and is a portal `user_id` only when
-  `owner_kind = 'student'` (group and class owners have synthetic ids): match it with
+  `owner_type = 'user'` (group and class owners have synthetic ids): match it with
   `TRY_CAST(d.uid AS BIGINT) = m.user_id` against `student_id_mapping`, plus
   `d.portal_class_id = m.class_id`. `student_id_mapping` has one row per learner,
   which is one per assignment, so that join repeats a document once per assignment

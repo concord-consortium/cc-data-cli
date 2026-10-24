@@ -16,7 +16,7 @@ var clueKinds = []string{store.TypeClueDocuments, store.TypeClueHistory, store.T
 var clueColumns = map[string]map[string]string{
 	store.TypeClueDocuments: {
 		"doc_id": "VARCHAR", "uid": "VARCHAR", "context_id": "VARCHAR", "portal_class_id": "BIGINT",
-		"owner_kind": "VARCHAR", "type": "VARCHAR", "visibility": "VARCHAR", "title": "VARCHAR",
+		"owner_type": "VARCHAR", "type": "VARCHAR", "visibility": "VARCHAR", "title": "VARCHAR",
 		"unit": "VARCHAR", "investigation": "VARCHAR", "problem": "VARCHAR", "group_id": "VARCHAR",
 		"network": "VARCHAR", "offering_id": "BIGINT", "tools": "JSON", "created_at": "JSON",
 		"metadata_sources": "JSON", "firestore_metadata": "JSON", "rtdb_metadata": "JSON",
@@ -74,8 +74,8 @@ func TestClueStoresViewsAndMembership(t *testing.T) {
 	d := newDS(t, "clue")
 	buildStore(t, d, 584, [][]byte{answerRec("s", "e1", "q1", "hi")})
 	land(t, d, store.TypeClueDocuments, 700,
-		map[string]any{"doc_id": "d1", "uid": "1234", "context_id": "c", "owner_kind": "student", "created_at": 1700000000001, "offering_id": nil},
-		map[string]any{"doc_id": "d2", "uid": "group_701_a", "context_id": "c", "owner_kind": "group", "created_at": 1700000000000, "offering_id": nil})
+		map[string]any{"doc_id": "d1", "uid": "1234", "context_id": "c", "owner_type": "user", "created_at": 1700000000001, "offering_id": nil},
+		map[string]any{"doc_id": "d2", "uid": "group_701_a", "context_id": "c", "owner_type": "group", "created_at": 1700000000000, "offering_id": nil})
 	land(t, d, store.TypeClueHistory, 700,
 		map[string]any{"doc_id": "d1", "entry_id": "e1", "idx": 0, "entry_json": `{"a":1}`},
 		map[string]any{"doc_id": "d1", "entry_id": "e2", "idx": 1, "entry_json": `{"a":2}`})

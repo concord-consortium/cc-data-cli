@@ -78,7 +78,7 @@ var kinds = []Kind{
 			"uid":                TypeVARCHAR,
 			"context_id":         TypeVARCHAR,
 			"portal_class_id":    TypeBIGINT,
-			"owner_kind":         TypeVARCHAR,
+			"owner_type":         TypeVARCHAR,
 			"type":               TypeVARCHAR,
 			"visibility":         TypeVARCHAR,
 			"title":              TypeVARCHAR,

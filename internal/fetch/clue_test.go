@@ -242,6 +242,19 @@ func TestClueDocumentSharedByTwoRuns(t *testing.T) {
 	}
 }
 
+func TestClueGroupDocumentWithNoOfferingIsKept(t *testing.T) {
+	d := newTestDataset(t)
+	mustPull(t, d, clueServer(t, 3, fixture(t, "documents.json")), store.TypeClueDocuments, 584)
+	got := queryStrings(t, d, "SELECT doc_id, owner_type || '/' || coalesce(offering_id::VARCHAR, 'NULL') FROM clue_documents ORDER BY doc_id")
+	want := "-Nd1=user/701,-Nd2=group/NULL,-Nd3=class/NULL,-Nd4=user/701"
+	if strings.Join(got, ",") != want {
+		t.Fatalf("clue_documents %v, want %s", got, want)
+	}
+	if got := queryStrings(t, d, "SELECT typeof(offering_id), typeof(owner_type) FROM clue_documents LIMIT 1"); len(got) != 1 || got[0] != "BIGINT=VARCHAR" {
+		t.Fatalf("column types %v, want BIGINT and VARCHAR", got)
+	}
+}
+
 func TestClueItemWithoutItsIdentityIsRefused(t *testing.T) {
 	for name, bad := range map[string]map[string]any{
 		"missing entry_id":  {"doc_id": "-Nd1", "entry_json": "{}"},
