@@ -766,6 +766,7 @@ func TestToolDescriptionsCarryTheirPortalFacts(t *testing.T) {
 		desc[tl.Name] = tl.Description
 	}
 	for tool, facts := range map[string][]string{
+		"guide":                  {"cc-data's full guidance", "call this once before the first fetch or query"},
 		"reports_list":           {"execution tells an Athena run from a Portal one"},
 		"reports_filter_options": {"Student ID Mapping run's filter is assembled"},
 		"get_report":             {"re-read it by passing refresh"},
