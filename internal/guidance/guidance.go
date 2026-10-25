@@ -27,8 +27,8 @@ var mcpHeader string
 //go:embed src/mcp_guide.md
 var mcpGuide string
 
-// Core is the shared data-model prose both surfaces render, and the only prose the drift
-// guard reads.
+// Core is the shared data-model prose the skill and the guide tool render, and the only
+// prose the drift guard reads.
 func Core() string { return datasets + "\n" + core + "\n" + sensitive }
 
 // Tools is the tool catalog the guide tool renders after the core.

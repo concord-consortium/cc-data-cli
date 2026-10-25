@@ -350,8 +350,11 @@ Re-read any Portal run later by re-pulling the same run id; do not duplicate it.
   `logs` and `recent_logs` add what the student had on screen between edits (the
   `logs` entry describes CLUE's `extras`).
 - Leave runtime output out when the question is about the student (the Working
-  with the CLUE views entry lists the patterns). Order a document's edits by the
-  entry key, never by a clock, and say which clock a reported time, duration or
+  with the CLUE views entry lists the patterns), excluding with
+  `coalesce(action, '') NOT LIKE ...`: `action` is NULL for an entry with an
+  empty `action_raw`, and `NULL NOT LIKE` drops that entry's patches. Order a
+  document's edits by the entry key, and its patches by `clue_patches`' whole
+  key, never by a clock, and say which clock a reported time, duration or
   cross-document ordering used: `created` within one document, `server_created`
   across documents.
 - Before a dataset is materialized, `clue_patches` unpacks every history entry in

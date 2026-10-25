@@ -271,6 +271,8 @@ func TestInstructionsFitTheMCPCap(t *testing.T) {
 
 // Earlier Claude Code builds kept only 2,048 characters, so everything before the dataset
 // rules, which the guide repeats, has to end by then.
+const essentialsCap = 2048
+
 func TestInstructionsPutTheEssentialsFirst(t *testing.T) {
 	ins := guidance.Instructions()
 	last := -1
@@ -281,16 +283,18 @@ func TestInstructionsPutTheEssentialsFirst(t *testing.T) {
 		}
 		last = i
 	}
-	if last > 2048 {
-		t.Errorf("the dataset rules start at byte %d, so the sections before them run past 2,048", last)
+	if last > essentialsCap {
+		t.Errorf("the dataset rules start at byte %d, so the sections before them run past %d", last, essentialsCap)
 	}
 }
 
 // Claude Code caps a tool result at 25,000 tokens by default, which is 75,000 bytes at a
 // pessimistic three bytes per token.
+const guideCap = 75000
+
 func TestGuideFitsAToolResult(t *testing.T) {
-	if n := len(guidance.Guide()); n > 75000 {
-		t.Errorf("guide text is %d bytes, over the 75,000 a tool result keeps", n)
+	if n := len(guidance.Guide()); n > guideCap {
+		t.Errorf("guide text is %d bytes, over the %d a tool result keeps", n, guideCap)
 	}
 }
 
