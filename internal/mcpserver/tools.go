@@ -149,7 +149,7 @@ func registerTools(s *mcp.Server, opts Options) {
 	addTool(s, &mcp.Tool{Name: "get_clue_content", Description: "Download the current content of a run's CLUE documents into a dataset, one row per document. A Student ID Mapping run id is the intended source."},
 		pagedHandler(store.TypeClueContent))
 
-	addTool(s, &mcp.Tool{Name: "get_recent_logs", Description: "Pull a class's log events from the last day or two into a dataset's recent_logs view, not logs. Each later pull asks only for what is new; pass refresh to re-read the whole window. Earlier days come from a Student Actions run. An event a log run also holds appears in both logs and recent_logs, so count one view or the other, not their union; order rows by received_time."},
+	addTool(s, &mcp.Tool{Name: "get_recent_logs", Description: "Pull a class's log events from the last day or two into a dataset's recent_logs view, not logs. Each later pull asks only for what is new; pass refresh to re-read the whole window. Earlier days come from a Student Actions run. An event a log run also holds appears in both logs and recent_logs; count events from log_events, which has each once; order rows by received_time."},
 		func(ctx context.Context, req *mcp.CallToolRequest, in getRecentLogsIn) (*mcp.CallToolResult, mapOut, error) {
 			d, client, err := openForFetch(in.Dataset)
 			if err != nil {

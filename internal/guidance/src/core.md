@@ -1,7 +1,9 @@
 ## Runs and their data
 
 - Datasets are duplicate-free by construction: re-fetching a run replaces its
-  records. Create a dataset per point-in-time pull to compare over time.
+  records. Two log runs whose windows overlap each keep their copy of an event in
+  `logs`; `log_events` has it once. Create a dataset per point-in-time pull to
+  compare over time.
 - Reports come in two families. **Athena** reports are computed in the background
   from the log archive: a run has a query state and its result never changes once
   it succeeds, so a fresh snapshot means duplicating the run. **Portal** reports
@@ -11,9 +13,10 @@
 - Report runs have a `report_type` (`answers`, `log`, `usage`). A Portal run has
   none: its `report_type` is null and `execution` is what identifies it. Log runs
   (slug `student-actions`) are fetchable as a report too and yield a clickstream
-  event log (columns include `session`, `application`, `activity`, `event`,
-  `event_value`, `time`, `parameters`, `extras`, `run_remote_endpoint`,
-  `timestamp`, `user_id`, `primary_user_id`): process, timing, and sequence data.
+  event log (columns include `id`, the event's id, the same in every copy of it,
+  then `session`, `application`, `activity`, `event`, `event_value`, `time`,
+  `parameters`, `extras`, `run_remote_endpoint`, `timestamp`, `user_id`,
+  `primary_user_id`): process, timing, and sequence data.
   A dataset's summary lists each download's `report_type`, so the run kind is
   obvious.
   - The two time columns are in different units: `time` is epoch **seconds**
@@ -68,8 +71,9 @@ like `wildfire_2026.answers`):
   `res_<N>_<question_id>_*` columns.
 - `logs`: the log-type report CSVs, all Athena (`student-actions`,
   `student-actions-with-metadata`, `teacher-actions`), unioned with `run_id`, plus
-  four parsed columns. The original `parameters`, `extras`, `time` and `timestamp`
-  columns are retained unchanged alongside them.
+  four parsed columns. Two overlapping runs each hold their copy of an event here;
+  count events from `log_events`. The original `parameters`, `extras`, `time` and
+  `timestamp` columns are retained unchanged alongside them.
   `parameters_json` and `extras_json` are the payload and the UI-state snapshot as
   JSON, so `extras_json->>'selectedNavTab'` works directly, and `->>` on them is
   always safe. Each parsed column keeps its source string beside it, and that is the
@@ -112,9 +116,9 @@ like `wildfire_2026.answers`):
   repeating it. No pull removes a row, so events older than the window stay.
   `_class_id` is the class the pull asked for and `_fetched_at` when. Order by
   `received_time`.
-  **An event a log run also holds is in both `logs` and `recent_logs`**: count one
-  view or the other for the hours they share, not their union. CLUE logs only for
-  students launched from the portal, so a CLUE class has rows only for them.
+  An event a log run also holds is in both `logs` and `recent_logs`; `log_events`
+  has it once, so count from there. CLUE logs only for students launched from the
+  portal, so a CLUE class has rows only for them.
 - `log_events`: one row per log event across every log run and `recent_logs`,
   matched on `id`, which the log ingester gives an event and every copy of it
   carries. **Count events from `log_events`**, never from `logs`, where two
@@ -366,8 +370,8 @@ Re-read any Portal run later by re-pulling the same run id; do not duplicate it.
 - `clue_patches` answers what a student changed and in what order,
   `clue_content` what a document holds now, `clue_documents` which documents
   exist and whose they are, and `clue_history` entry-level timing and counts.
-  `logs` and `recent_logs` add what the student had on screen between edits (the
-  `logs` entry describes CLUE's `extras`).
+  `log_events` adds what the student had on screen between edits, each event once
+  across log runs and recent pulls (the `logs` entry describes CLUE's `extras`).
 - Leave runtime output out when the question is about the student (the Working
   with the CLUE views entry lists the patterns), excluding with
   `coalesce(action, '') NOT LIKE ...`: `action` is NULL for an entry with an
