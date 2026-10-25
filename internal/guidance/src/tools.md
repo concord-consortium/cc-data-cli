@@ -1,5 +1,8 @@
 ## Tools
 
+- `guide` — cc-data's full guidance: this text, the data model, every view with
+  its columns and traps, the report slugs, the recipes and this tool catalog. The
+  server's instructions are an index of it.
 - `version` — the cc-data binary version.
 - `auth_status` — the portals with stored credentials; `check=true` validates each
   token over the network, one call per portal.

@@ -22,9 +22,10 @@ var commandRefs = regexp.MustCompile("`cc-data((?: [a-z][a-z-]*)+)")
 func TestGuidanceNamesOnlyRealCommands(t *testing.T) {
 	root := newRootCmd()
 	seen := map[string]bool{}
-	// Both rendered surfaces: the skill spells out the CLI, and the MCP header
-	// relays the login remedy, which is the one command an agent passes on.
-	both := guidance.Skill() + "\n" + guidance.Instructions()
+	// Every rendered surface: the skill spells out the CLI, the MCP header relays
+	// the login remedy, which is the one command an agent passes on, and the guide
+	// tool returns the rest of what an MCP client reads.
+	both := guidance.Skill() + "\n" + guidance.Instructions() + "\n" + guidance.Guide()
 	for _, m := range commandRefs.FindAllStringSubmatch(both, -1) {
 		words := strings.Fields(m[1])
 		if seen[strings.Join(words, " ")] {

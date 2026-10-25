@@ -104,7 +104,7 @@ func TestBothSurfacesCarryTheAuthRemedy(t *testing.T) {
 	}
 }
 
-// The core renders into the MCP instructions, where the model has tools and no shell, so
+// The core renders into the guide tool's text, where the model has tools and no shell, so
 // a command written there would be an instruction it cannot carry out. Command spellings
 // belong in the per-surface wrappers.
 func TestCoreNamesNoCommand(t *testing.T) {
@@ -253,7 +253,51 @@ func TestBothSurfacesCarryTheRePullMechanism(t *testing.T) {
 	if !strings.Contains(guidance.Skill(), "--refresh") {
 		t.Error("skill: the --refresh spelling is missing")
 	}
-	if !strings.Contains(guidance.Instructions(), "passing `refresh`") {
-		t.Error("instructions: the refresh parameter is missing")
+	if !strings.Contains(guidance.Guide(), "passing `refresh`") {
+		t.Error("guide: the refresh parameter is missing")
+	}
+}
+
+// Claude Code keeps only the first 4,096 characters of a server's instructions and drops
+// the rest. A byte count is never below the character count, so a byte bound is the
+// conservative test.
+const instructionsCap = 4096
+
+func TestInstructionsFitTheMCPCap(t *testing.T) {
+	if n := len(guidance.Instructions()); n > instructionsCap {
+		t.Errorf("instructions are %d bytes, over the %d a client keeps", n, instructionsCap)
+	}
+}
+
+// Earlier Claude Code builds kept only 2,048 characters, so the pointer to the guide and
+// the sensitive-data norm have to end before then.
+func TestInstructionsPutTheEssentialsFirst(t *testing.T) {
+	ins := guidance.Instructions()
+	head := ins[:min(len(ins), 2048)]
+	for _, want := range []string{"## Full guidance", "and need not call it.", "## Sensitive data", "drives."} {
+		if !strings.Contains(head, want) {
+			t.Errorf("%q is not within the first 2,048 bytes of the instructions", want)
+		}
+	}
+}
+
+// Claude Code caps a tool result at 25,000 tokens by default, which is 75,000 bytes at a
+// pessimistic three bytes per token.
+func TestGuideFitsAToolResult(t *testing.T) {
+	if n := len(guidance.Guide()); n > 75000 {
+		t.Errorf("guide text is %d bytes, over the 75,000 a tool result keeps", n)
+	}
+}
+
+func TestInstructionsIndexTheGuide(t *testing.T) {
+	ins := guidance.Instructions()
+	for _, want := range []string{"## Datasets and portals", "check the dataset's portal is a\n  hostname",
+		"## Sensitive data", "Suggest purging a\ndataset", "cc-data's `guide` tool"} {
+		if !strings.Contains(ins, want) {
+			t.Errorf("instructions do not carry %q", want)
+		}
+	}
+	if strings.Contains(ins, "## Views") {
+		t.Error("instructions carry the views catalog, which belongs to the guide")
 	}
 }

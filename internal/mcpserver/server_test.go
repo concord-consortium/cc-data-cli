@@ -61,7 +61,7 @@ func TestMCPInstructionsArriveInInitialize(t *testing.T) {
 	if got == "" {
 		t.Fatal("no instructions in the initialize response")
 	}
-	for _, want := range []string{"run_membership", "NOT_AUTHENTICATED", "auth_status"} {
+	for _, want := range []string{"NOT_AUTHENTICATED", "auth_status", "`guide`"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("instructions do not carry %q", want)
 		}
@@ -71,6 +71,37 @@ func TestMCPInstructionsArriveInInitialize(t *testing.T) {
 	}
 	if strings.Contains(got, "--help") {
 		t.Error("instructions point at --help, which an MCP client cannot read")
+	}
+}
+
+func TestMCPGuideReturnsTheFullGuidance(t *testing.T) {
+	setupEnv(t)
+	res, err := connect(t).CallTool(context.Background(), &mcp.CallToolParams{Name: "guide"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Content) != 1 {
+		t.Fatalf("guide returned %d content blocks, want 1", len(res.Content))
+	}
+	tc, ok := res.Content[0].(*mcp.TextContent)
+	if !ok {
+		t.Fatalf("guide returned %T, want text", res.Content[0])
+	}
+	got := tc.Text
+	if got != guidance.Guide() {
+		t.Error("guide text is not guidance.Guide()")
+	}
+	if !strings.Contains(got, guidance.Core()) {
+		t.Error("guide text does not carry the whole core")
+	}
+	if !strings.Contains(got, guidance.Tools()) {
+		t.Error("guide text does not carry the whole tool catalog")
+	}
+	if strings.HasPrefix(got, "---") {
+		t.Error("guide text opens with frontmatter, which is meaningless to an MCP client")
+	}
+	if strings.Contains(got, "--help") {
+		t.Error("guide text points at --help, which an MCP client cannot read")
 	}
 }
 
@@ -109,7 +140,7 @@ func TestMCPToolSurface(t *testing.T) {
 	for _, tool := range res.Tools {
 		names[tool.Name] = tool
 	}
-	want := []string{"auth_status", "version", "reports_list", "reports_jobs",
+	want := []string{"guide", "auth_status", "version", "reports_list", "reports_jobs",
 		"reports_filter_options", "reports_create", "reports_duplicate", "get_report",
 		"get_answers", "get_history", "get_attachments", "get_clue_documents", "get_clue_history",
 		"get_clue_content", "get_recent_logs", "dataset_create", "dataset_list",
@@ -131,7 +162,7 @@ func TestMCPToolSurface(t *testing.T) {
 	}
 
 	// Annotations: read-only on listings/show/query/status/version.
-	for _, n := range []string{"query", "reports_filter_options"} {
+	for _, n := range []string{"guide", "query", "reports_filter_options"} {
 		if names[n].Annotations == nil || !names[n].Annotations.ReadOnlyHint {
 			t.Fatalf("%s should be read-only", n)
 		}
@@ -421,7 +452,7 @@ func TestMCPQueryDescriptionCarriesTheQueryRules(t *testing.T) {
 	if desc == "" {
 		t.Fatal("no query tool")
 	}
-	for _, want := range append(duck.StaticViewNames(), "TRY_CAST", "UNION ALL BY NAME") {
+	for _, want := range append(duck.StaticViewNames(), "TRY_CAST", "UNION ALL BY NAME", "cc-data's guide tool: call it before the first query") {
 		if !strings.Contains(desc, want) {
 			t.Errorf("query description does not mention %q", want)
 		}
