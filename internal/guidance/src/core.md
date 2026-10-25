@@ -120,10 +120,11 @@ like `wildfire_2026.answers`):
 - `recent_logs`: a class's log events from the last day or two, from a recent-logs
   pull, with the same 13 columns as a `student-actions` run and the same four
   parsed columns as `logs`. It is keyed by `id`: a pull reads from 00:00 UTC
-  yesterday, or from ten minutes before the previous pull of the class, so pulls
-  overlap and an event pulled again replaces its row rather than repeating it. No
-  pull removes a row, so events older than the window stay. `_class_id` is the
-  class the pull asked for and `_fetched_at` when. Order by `received_time`.
+  yesterday, or from ten minutes before the class's last pull with no start or
+  end, so pulls overlap and an event pulled again replaces its row rather than
+  repeating it. No pull removes a row, so events older than the window stay.
+  `_class_id` is the class the pull asked for and `_fetched_at` when. Order by
+  `received_time`.
   **An event a log run also holds is in both `logs` and `recent_logs`**: count one
   view or the other for the hours they share, not their union. CLUE logs only for
   students launched from the portal, so a CLUE class has rows only for them.
