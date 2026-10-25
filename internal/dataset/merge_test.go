@@ -539,6 +539,26 @@ func TestRecentLogsKeepsAClassWhoseMembershipWasLost(t *testing.T) {
 	}
 }
 
+func TestRecentLogsReindexKeepsTheStoreWhenTheNewestMembershipIsLost(t *testing.T) {
+	d := newDataset(t)
+	mergeLogs(t, d, 591, logRec("b1", "x"))
+	mergeLogs(t, d, 590, logRec("a1", "x"), logRec("a2", "x"))
+	m, _ := d.ReadManifest()
+	if err := os.Remove(d.Path(m.Membership[MembershipKey(store.TypeRecentLogs, 590)].File)); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Reindex(); err != nil {
+		t.Fatal(err)
+	}
+	if m, _ := d.ReadManifest(); m.Stores[store.TypeRecentLogs].Count != 3 {
+		t.Fatalf("reindexed store = %+v, want the 3 rows on disk", m.Stores[store.TypeRecentLogs])
+	}
+	mergeLogs(t, d, 591, logRec("b2", "x"))
+	if got := logIDs(t, d); got != "a1,a2,b1,b2" {
+		t.Errorf("store after 591's pull = %s, want every row kept", got)
+	}
+}
+
 func TestRecentLogsTieBreaksOnTheClassStamp(t *testing.T) {
 	d := newDataset(t)
 	at := time.Unix(1000, 0).UTC()

@@ -60,7 +60,7 @@ func (d *Dataset) openCovered(m *Manifest, typ string, merging map[int]*store.Se
 
 // WriteMembership writes a run's membership version file from its segment index. For an
 // accumulating kind it is the union with the run's membership in m; a file m names but
-// the disk lacks fails the merge, as in openCovered.
+// the disk lacks fails the merge.
 func (d *Dataset) WriteMembership(m *Manifest, typ string, runID, version int, idx *store.SegmentIndex) error {
 	path := d.Path(memberFileName(typ, runID, version))
 	ref, ok := m.Membership[MembershipKey(typ, runID)]

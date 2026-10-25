@@ -80,10 +80,15 @@ func (d *Dataset) Reindex() error {
 	// Only adopt a store version proven committed by a matching membership file
 	// at the same version; otherwise fall back to the newest such generation. If
 	// none committed (e.g. a crashed first merge), skip the store so a resume
-	// rebuilds it from the surviving segment.
+	// rebuilds it from the surviving segment. An accumulating kind removes nothing,
+	// so its newest version holds every older one's rows and is adopted whatever
+	// membership is present; a resume re-merges the segment, which only replaces.
 	m.Stores = map[string]Store{}
 	for typ, versFiles := range storeVersFiles {
 		v := newestCommittedStoreVersion(versFiles, memberVersPresent[typ])
+		if store.MustKind(typ).Accumulate {
+			v = newestStoreVersion(versFiles)
+		}
 		if v == 0 {
 			continue
 		}
@@ -413,6 +418,15 @@ func newestCommittedStoreVersion(versFiles map[int]string, memberVers map[int]bo
 		if memberVers[v] && v > best {
 			best = v
 		}
+	}
+	return best
+}
+
+// newestStoreVersion returns the highest store version on disk.
+func newestStoreVersion(versFiles map[int]string) int {
+	best := 0
+	for v := range versFiles {
+		best = max(best, v)
 	}
 	return best
 }

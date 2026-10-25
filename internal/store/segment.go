@@ -68,7 +68,8 @@ func StampLines(records [][]byte, fetchedAt time.Time, runID int) ([][]byte, err
 	return stampLines(records, fetchedAt, "_run_id", runID)
 }
 
-// StampLines stamps records as StampLines does, with key in the kind's StampColumn.
+// StampLines stamps records as the package-level StampLines does, with key in the
+// kind's StampColumn.
 func (k Kind) StampLines(records [][]byte, fetchedAt time.Time, key int) ([][]byte, error) {
 	return stampLines(records, fetchedAt, k.StampColumn(), key)
 }
