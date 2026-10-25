@@ -111,6 +111,9 @@ func TestDownloadsNamesTheClass(t *testing.T) {
 	if got := queryString(t, e, "SELECT coalesce(run_id::VARCHAR, '<null>') || '|' || class_id FROM downloads WHERE type = 'recent_logs'"); got != "<null>|590" {
 		t.Errorf("the recent_logs download = %s", got)
 	}
+	if got := queryString(t, e, "SELECT typeof(run_id) FROM downloads"); got != "BIGINT" {
+		t.Errorf("run_id with only recent_logs downloads is %s", got)
+	}
 
 	fresh := openEngine(t, []DatasetSpec{{DS: newDS(t, "fresh")}}, nil)
 	if got := columnTypes(t, fresh, "downloads")["class_id"]; got != "BIGINT" {

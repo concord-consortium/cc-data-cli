@@ -27,7 +27,7 @@ A command-line tool for [Concord Consortium](https://concord.org) researchers to
 
 ## Datasets
 
-A dataset is a named, single-portal, user-managed workspace meant to combine many downloads (classes, activities, time periods) so you can query across them in one place. Answer, history, CLUE and recent-log records live in identity-keyed stores (exactly one current record per identity); report CSVs stay per-run files; small membership files record which identities each run's fetch (or each class's recent-logs pulls) covered:
+A dataset is a named, single-portal, user-managed workspace meant to combine many downloads (classes, activities, time periods) so you can query across them in one place. Answer, history, CLUE and recent-log records live in identity-keyed stores (exactly one current record per identity); report CSVs stay per-run files; small membership files record which identities each run's fetch (or a class's last recent-logs pull) covered:
 
 ```
 ~/cc-data/

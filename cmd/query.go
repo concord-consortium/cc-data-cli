@@ -56,7 +56,7 @@ func newQueryCmd() *cobra.Command {
 
 Views (single dataset: unqualified; multiple: schema-qualified per dataset):
 ` + staticViewList() + `
-  plus per-run views: report_<run>, and <type>_<run> for each store type:
+  plus per-run views: report_<run>, and <type>_<run> for each run-keyed store type:
 ` + wrapNames(perRunStoreNames()) + `
 
 The session is sandboxed to the named dataset folders. --allow-dir adds a

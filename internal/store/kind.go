@@ -51,7 +51,7 @@ var laraPins = withStamps(map[string]string{
 	"answer":                TypeJSON,
 })
 
-// withStamps adds the _fetched_at and _run_id stamps every store record carries.
+// withStamps adds the _fetched_at and _run_id stamps every run-keyed store record carries.
 func withStamps(fields map[string]string) map[string]string {
 	pins := map[string]string{"_fetched_at": TypeTIMESTAMP, "_run_id": TypeBIGINT}
 	for c, t := range fields {

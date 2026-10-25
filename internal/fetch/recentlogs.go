@@ -195,9 +195,9 @@ func FetchRecentLogs(ctx context.Context, o RecentLogsOptions) (map[string]any, 
 	}, nil
 }
 
-// mergeLeftover merges a segment an earlier pull parsed whole but did not merge, and removes
-// any other segment. The leftover's rows are good and the stored cursor still predates them,
-// so nothing is skipped.
+// mergeLeftover merges this class's segment if an earlier pull parsed it whole but did not
+// merge it, and otherwise discards it. The leftover's rows are good and the stored cursor
+// still predates them, so nothing is skipped.
 func (o RecentLogsOptions) mergeLeftover(seg *store.Segment) error {
 	cur, ok, err := seg.ReadCursor()
 	if err != nil {
