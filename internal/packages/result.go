@@ -55,7 +55,6 @@ func ReadResult(outDir string) (Result, error) {
 	}
 	res.DisplayPath = filepath.Join(outDir, "display.md")
 	res.DisplayBytes = size
-	// The runner reads summary.txt and counts.json only to OutputReadLimitBytes, truncating them.
 	if text, _, err := readOwnFile(outDir, "summary.txt", OutputReadLimitBytes); err == nil {
 		line := strings.TrimSpace(strings.SplitN(strings.ReplaceAll(text, "\r\n", "\n"), "\n", 2)[0])
 		if line != "" {
