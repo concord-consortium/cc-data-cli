@@ -455,7 +455,7 @@ func TestRecentLogsMergeAccumulates(t *testing.T) {
 	if got := readData(t, d.Path(m.Stores[store.TypeRecentLogs].File), store.TypeRecentLogs, store.Identity{"e2"}); got != "b" {
 		t.Errorf("e2 = %q, want the second pull's", got)
 	}
-	if got := classMembership(t, d, 590); got != "e1,e2,e3" {
+	if got := classMembership(t, d, 590); got != "e2,e3" {
 		t.Errorf("membership after the second pull = %s", got)
 	}
 	if c := mergeLogs(t, d, 590, logRec("e4", "c")); c != (store.MergeCounts{Fetched: 1, New: 1}) {
@@ -499,7 +499,7 @@ func TestRecentLogsClassesKeepEachOthersRowsAcrossASweep(t *testing.T) {
 	if got := logIDs(t, d); got != "a1,a2,a3,a4,b1,b2" {
 		t.Fatalf("store after alternating pulls = %s", got)
 	}
-	if got := classMembership(t, d, 591); got != "b1,b2" {
+	if got := classMembership(t, d, 591); got != "b2" {
 		t.Errorf("591's membership = %s", got)
 	}
 }

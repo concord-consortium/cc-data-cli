@@ -334,6 +334,7 @@ func decodeRecentLogs(r io.Reader, sink func([][]byte) error) (recentLogsEnvelop
 		return env, err
 	}
 	fields := map[string]json.RawMessage{}
+	sawRows := false
 	for dec.More() {
 		tok, err := dec.Token()
 		if err != nil {
@@ -348,6 +349,10 @@ func decodeRecentLogs(r io.Reader, sink func([][]byte) error) (recentLogsEnvelop
 			fields[key] = v
 			continue
 		}
+		if sawRows {
+			return env, &shapeError{errors.New("the response has rows twice")}
+		}
+		sawRows = true
 		if err := expectDelim(dec, '['); err != nil {
 			return env, err
 		}

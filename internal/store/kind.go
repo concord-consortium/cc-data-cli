@@ -27,7 +27,7 @@ type Kind struct {
 	DoubleDecode bool              // double-decode report_state (LARA answers and history)
 	OwnerStore   string            // store whose records carry each record's (context_id, uid) owner; "" counts remote_endpoints
 	ClassKeyed   bool              // the integer in segment and membership names is a class id, not a run id
-	Accumulate   bool              // a merge never removes a stored record, and a key's membership grows by union
+	Accumulate   bool              // a merge never removes a stored record
 }
 
 // StampColumn is the column a segment record's integer key is stamped into.

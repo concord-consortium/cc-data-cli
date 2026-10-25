@@ -424,6 +424,7 @@ func TestRecentLogsWrongShapesAreBadResponses(t *testing.T) {
 		"a string class_id":   strings.Replace(full, `"class_id":590`, `"class_id":"590"`, 1),
 		"rows not an array":   strings.Replace(full, `"rows":[`+logRow("e2")+`]`, `"rows":{}`, 1),
 		"a top-level array":   "[" + full + "]",
+		"rows twice":          strings.Replace(full, `"count"`, `"rows":[],"count"`, 1),
 		"no cursor unbounded": logsBody{class: 590, rows: []string{logRow("e2")}, count: -1}.String(),
 	} {
 		t.Run(name, func(t *testing.T) {

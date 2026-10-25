@@ -387,7 +387,7 @@ func (vs viewSet) runMembershipView() viewStmt {
 	return viewStmt{name: name, primary: primary, fallback: fallback, files: files}
 }
 
-// membershipSelect lists every registered identity column, NULL for those not in own.
+// membershipSelect lists every run-keyed identity column, NULL for those not in own.
 func membershipSelect(own map[string]string) string {
 	cols := make([]string, 0, len(store.IdentityColumns()))
 	for _, c := range store.IdentityColumns() {

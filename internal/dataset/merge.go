@@ -1,9 +1,7 @@
 package dataset
 
 import (
-	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -60,25 +58,9 @@ func (d *Dataset) openCovered(m *Manifest, typ string, merging map[int]*store.Se
 	return store.NewCovered(srcs...), closeAll, nil
 }
 
-// WriteMembership writes a run's membership version file from its segment index. For an
-// accumulating kind it is the union with the run's membership in m, or the index alone
-// when that file is gone: the kind removes nothing, so its membership only records which
-// keys the run's pulls brought.
-func (d *Dataset) WriteMembership(m *Manifest, typ string, runID, version int, idx *store.SegmentIndex) error {
-	path := d.Path(memberFileName(typ, runID, version))
-	ref, ok := m.Membership[MembershipKey(typ, runID)]
-	if !store.MustKind(typ).Accumulate || !ok {
-		return idx.WriteMembership(path)
-	}
-	prev, err := store.OpenMembership(d.Path(ref.File), store.MustKind(typ))
-	if errors.Is(err, fs.ErrNotExist) {
-		return idx.WriteMembership(path)
-	}
-	if err != nil {
-		return err
-	}
-	defer prev.Close()
-	return idx.WriteMembershipWith(path, prev)
+// WriteMembership writes a run's membership version file from its segment index.
+func (d *Dataset) WriteMembership(typ string, runID, version int, idx *store.SegmentIndex) error {
+	return idx.WriteMembership(d.Path(memberFileName(typ, runID, version)))
 }
 
 // MergeCompact merges the segment into a new store version under the per-dataset
@@ -179,7 +161,7 @@ func (d *Dataset) mergeUnderLock(typ string, runID int, seg *store.Segment) (sto
 		}
 		testHookAfterWrite(1)
 		for run, idx := range byRun {
-			if err := d.WriteMembership(m, typ, run, next, idx); err != nil {
+			if err := d.WriteMembership(typ, run, next, idx); err != nil {
 				releaseSwept(swept)
 				return store.MergeCounts{}, err // abort before the repoint: segments survive, resume re-merges
 			}

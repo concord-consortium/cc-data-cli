@@ -45,7 +45,7 @@ A dataset is a named, single-portal, user-managed workspace meant to combine man
         recent_logs.v4.jsonl           # one record per log event from recent-logs pulls (id)
         members_answers_584.v3.jsonl   # which identities run 584's answers fetch covered
         members_clue_history_584.v2.jsonl  # which (doc_id, entry_id) pairs run 584's clue-history fetch covered
-        members_recent_logs_590.v4.jsonl   # which events class 590's recent-logs pulls hold
+        members_recent_logs_590.v4.jsonl   # the events class 590's last recent-logs pull brought
         attachments/                   # audio .mp3, offloaded CODAP/SageModeler .json state
 ```
 
