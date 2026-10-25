@@ -57,6 +57,9 @@ func withMetadataRow(id string) string {
 
 // logEventsFixture holds three overlapping student runs, a Teacher Actions run and a recent_logs
 // pull. fetched dates each run from its day number.
+// logEventsClass is the class whose recent-logs pull the fixture lands.
+const logEventsClass = 590
+
 func logEventsFixture(t *testing.T, name string, fetched func(day int) time.Time) *dataset.Dataset {
 	t.Helper()
 	d := newDS(t, name)
@@ -72,8 +75,8 @@ func logEventsFixture(t *testing.T, name string, fetched func(day int) time.Time
 	teacher := teacherActionsSlug
 	addLogCSV(t, d, logFixture{run: 4, slug: &teacher, fetchedAt: fetched(9), csv: teacherActionsCSV +
 		logColumnsRow("t", "v", sec, "") + ",9@learn.concord.org\n"})
-	land(t, d, store.TypeRecentLogs, 590, logEvent("b", "{}", pinnedMillis), logEvent("r", "{}", pinnedMillis))
-	if err := d.UpsertDownload(dataset.Download{Type: store.TypeRecentLogs, ClassID: 590, Complete: true}); err != nil {
+	land(t, d, store.TypeRecentLogs, logEventsClass, logEvent("b", "{}", pinnedMillis), logEvent("r", "{}", pinnedMillis))
+	if err := d.UpsertDownload(dataset.Download{Type: store.TypeRecentLogs, ClassID: logEventsClass, Complete: true}); err != nil {
 		t.Fatal(err)
 	}
 	return d
@@ -81,7 +84,7 @@ func logEventsFixture(t *testing.T, name string, fetched func(day int) time.Time
 
 func septemberNoon(day int) time.Time { return time.Date(2026, 9, day, 12, 0, 0, 0, time.UTC) }
 
-// The store stamps its rows at time.Unix(590, 0), so runs fetched at time.Unix(1, 0) are older.
+// land stamps a store's rows at time.Unix(<class id>, 0), so runs fetched at time.Unix(1, 0) are older.
 func beforeTheStore(int) time.Time { return time.Unix(1, 0) }
 
 func fetchedAllAt(at time.Time) func(int) time.Time { return func(int) time.Time { return at } }
@@ -129,9 +132,9 @@ func TestLogEventsKeepsRowsWithNoID(t *testing.T) {
 func TestLogEventsListsWhereAnEventIs(t *testing.T) {
 	e := openLogEvents(t)
 	for id, want := range map[string]string{
-		"b":   "[1, 2]|590",
+		"b":   fmt.Sprint("[1, 2]|", logEventsClass),
 		"c":   "[2, 3]|<NULL>",
-		"r":   "[]|590",
+		"r":   fmt.Sprint("[]|", logEventsClass),
 		"007": "[3]|<NULL>",
 	} {
 		got := queryString(t, e, "SELECT coalesce(run_ids::VARCHAR, '<NULL>') || '|' || coalesce(_class_id::VARCHAR, '<NULL>') FROM log_events WHERE id = '"+id+"'")
@@ -147,7 +150,7 @@ func TestLogEventsShowsTheNewestCopy(t *testing.T) {
 		t.Errorf("b shows the copy fetched %s, want run 2's", got)
 	}
 	early := openEngine(t, []DatasetSpec{{DS: logEventsFixture(t, "early", beforeTheStore)}}, nil)
-	if got := queryString(t, early, query); got != "1970-01-01 00:09:50" {
+	if got := queryString(t, early, query); got != time.Unix(logEventsClass, 0).UTC().Format(time.DateTime) {
 		t.Errorf("b shows the copy fetched %s, want the store's", got)
 	}
 }
@@ -158,7 +161,7 @@ func TestLogEventsBreaksTiesOnRunID(t *testing.T) {
 	const query = "SELECT coalesce(event_value, '<NULL>') FROM log_events WHERE id = 'b'"
 	for name, at := range map[string]time.Time{
 		"runs tied after the store": septemberNoon(10),
-		"runs tied with the store":  time.Unix(590, 0),
+		"runs tied with the store":  time.Unix(logEventsClass, 0),
 	} {
 		e := openEngine(t, []DatasetSpec{{DS: logEventsFixture(t, "tied", fetchedAllAt(at))}}, nil)
 		if got := queryString(t, e, query); got != "v" {
