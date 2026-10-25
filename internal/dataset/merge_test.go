@@ -324,14 +324,15 @@ func memberLine(qid string) string {
 	return `{"source_key":"s","remote_endpoint":"e","question_id":"` + qid + `"}`
 }
 
-func assertMergeFailsClosed(t *testing.T, d *Dataset, setup func()) {
+// assertMergeFailsClosed checks a merge fails, with want when it is non-nil, and moves nothing.
+func assertMergeFailsClosed(t *testing.T, d *Dataset, want error, setup func()) {
 	t.Helper()
 	setup()
 	before, _ := d.ReadManifest()
 	storeBytes, _ := os.ReadFile(d.Path(before.Stores["answers"].File))
 	seg := writeFinishedSegment(t, d, "answers", 612, [][]byte{rec("s", "e", "qm", "", "new")})
-	if _, err := d.MergeCompact("answers", 612, seg); !errors.Is(err, store.ErrMembershipOrder) {
-		t.Fatalf("err = %v, want a membership order error", err)
+	if _, err := d.MergeCompact("answers", 612, seg); err == nil || want != nil && !errors.Is(err, want) {
+		t.Fatalf("err = %v, want %v", err, want)
 	}
 	after, _ := d.ReadManifest()
 	if after.Stores["answers"].Version != before.Stores["answers"].Version || len(after.Membership) != len(before.Membership) {
@@ -347,7 +348,7 @@ func assertMergeFailsClosed(t *testing.T, d *Dataset, setup func()) {
 
 func TestMembershipOutOfOrderFailsTheMergeClosed(t *testing.T) {
 	d := newDataset(t)
-	assertMergeFailsClosed(t, d, func() {
+	assertMergeFailsClosed(t, d, store.ErrMembershipOrder, func() {
 		segA := writeFinishedSegment(t, d, "answers", 584, [][]byte{rec("s", "e", "qa", "", "a"), rec("s", "e", "qb", "", "b"), rec("s", "e", "qc", "", "c"), rec("s", "e", "qd", "", "d")})
 		if _, err := d.MergeCompact("answers", 584, segA); err != nil {
 			t.Fatal(err)
@@ -359,12 +360,25 @@ func TestMembershipOutOfOrderFailsTheMergeClosed(t *testing.T) {
 
 func TestMembershipDisorderPastTheLastOldKeyFailsTheMergeClosed(t *testing.T) {
 	d := newDataset(t)
-	assertMergeFailsClosed(t, d, func() {
+	assertMergeFailsClosed(t, d, store.ErrMembershipOrder, func() {
 		segA := writeFinishedSegment(t, d, "answers", 584, [][]byte{rec("s", "e", "qa", "", "a")})
 		if _, err := d.MergeCompact("answers", 584, segA); err != nil {
 			t.Fatal(err)
 		}
 		overwriteMembership(t, d, "answers", 584, memberLine("qa"), memberLine("qz"), memberLine("qy"))
+	})
+}
+
+func TestTruncatedMembershipLineFailsTheMergeClosed(t *testing.T) {
+	d := newDataset(t)
+	assertMergeFailsClosed(t, d, nil, func() {
+		segA := writeFinishedSegment(t, d, "answers", 584, [][]byte{rec("s", "e", "qa", "", "a"), rec("s", "e", "qb", "", "b")})
+		if _, err := d.MergeCompact("answers", 584, segA); err != nil {
+			t.Fatal(err)
+		}
+		// Read as ("s", "e", ""), the cut first line would still be in order and leave qa held
+		// by no run.
+		overwriteMembership(t, d, "answers", 584, `{"source_key":"s","remote_endpoint":"e"`, memberLine("qb"))
 	})
 }
 

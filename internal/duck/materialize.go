@@ -2,6 +2,7 @@ package duck
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -618,16 +619,37 @@ func largeUnmaterialized(d *dataset.Dataset, m *dataset.Manifest, stale []string
 		if err != nil || fi.Size() <= largeStoreBytes {
 			continue
 		}
-		if mat, ok := m.Materialized[k.Name]; ok && !slices.Contains(stale, k.Name) {
-			if _, err := os.Stat(d.Path(mat.File)); err == nil {
-				continue
-			}
+		if mat, ok := m.Materialized[k.Name]; ok && !slices.Contains(stale, k.Name) && parquetIntact(d.Path(mat.File)) {
+			continue
 		}
 		out = append(out, fmt.Sprintf(
 			"LARGE_UNMATERIALIZED: view %s reads a %s GiB store; run cc-data dataset materialize %s to query a Parquet copy instead",
 			k.Name, gib(fi.Size()), d.Ref.String()))
 	}
 	return out
+}
+
+// parquetIntact reports whether a file starts and ends with Parquet's magic bytes and its
+// footer length fits, which is as far as dataset show can check without opening an engine.
+func parquetIntact(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil || fi.Size() < 12 {
+		return false
+	}
+	head, tail := make([]byte, 4), make([]byte, 8)
+	if _, err := f.ReadAt(head, 0); err != nil {
+		return false
+	}
+	if _, err := f.ReadAt(tail, fi.Size()-8); err != nil {
+		return false
+	}
+	footer := int64(binary.LittleEndian.Uint32(tail[:4]))
+	return string(head) == "PAR1" && string(tail[4:]) == "PAR1" && footer <= fi.Size()-12
 }
 
 // ShowJSON builds a dataset's summary from one manifest read, with the warnings

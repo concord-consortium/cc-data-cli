@@ -952,6 +952,14 @@ func TestShowSuggestsMaterializingALargeStore(t *testing.T) {
 	if got := largeWarnings(t, d); len(got) != 1 {
 		t.Fatalf("a deleted Parquet copy must warn: %v", got)
 	}
+	for name, damaged := range map[string][]byte{"truncated": parquetBytes[:len(parquetBytes)/2], "magic only": []byte("PAR1")} {
+		if err := os.WriteFile(parquet, damaged, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if got := largeWarnings(t, d); len(got) != 1 {
+			t.Fatalf("a %s Parquet copy must warn: %v", name, got)
+		}
+	}
 	if err := os.WriteFile(parquet, parquetBytes, 0o600); err != nil {
 		t.Fatal(err)
 	}
