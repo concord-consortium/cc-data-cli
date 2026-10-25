@@ -73,9 +73,7 @@ func seedAnswers(t *testing.T, run int, recs ...[]byte) *dataset.Dataset {
 	t.Helper()
 	d := newTestDataset(t)
 	seg := store.OpenSegment(d.Dir, store.TypeAnswers, run)
-	if err := seg.AppendPage(recs, timeZero(), run); err != nil {
-		t.Fatal(err)
-	}
+	appendPage(t, seg, recs, timeZero(), run)
 	seg.WriteCursor(&store.Cursor{Items: len(recs)})
 	if _, err := d.MergeCompact(store.TypeAnswers, run, seg); err != nil {
 		t.Fatal(err)

@@ -127,9 +127,8 @@ like `wildfire_2026.answers`):
   `clue_content` has one row per document with its current content string in
   `content_json`, NULL when `found` is false or the document has no content. Join
   the three on `doc_id`. A CLUE row has no `remote_endpoint`, so it never joins the
-  LARA stores. `created_at`,
-  `change_count` and `undoable` are JSON, as stored; cast them, e.g.
-  `TRY_CAST(created_at AS BIGINT)`.
+  LARA stores. `created_at`, `change_count` and `undoable` are JSON, as stored;
+  cast them, e.g. `TRY_CAST(created_at AS BIGINT)`.
   To put CLUE rows in a cohort, `uid` is VARCHAR and is a portal `user_id` only when
   `owner_type = 'user'` (group and class owners have synthetic ids): match it with
   `TRY_CAST(d.uid AS BIGINT) = m.user_id` against `student_id_mapping`, plus

@@ -184,7 +184,7 @@ func TestPagedResumeFromCursor(t *testing.T) {
 	d := newTestDataset(t)
 	// Pre-seed a segment + cursor as if page 1 was fetched and the process died.
 	seg := store.OpenSegment(d.Dir, store.TypeAnswers, 584)
-	seg.AppendPage([][]byte{[]byte(answerItem("s", "e1", "q1"))}, timeZero(), 584)
+	appendPage(t, seg, [][]byte{[]byte(answerItem("s", "e1", "q1"))}, timeZero(), 584)
 	tok := "tok1"
 	seg.WriteCursor(&store.Cursor{NextPageToken: &tok, Pages: 1, Items: 1})
 
@@ -208,7 +208,7 @@ func TestPagedStaleSegmentDiscarded(t *testing.T) {
 	d := newTestDataset(t)
 	// A segment with no cursor is stale.
 	seg := store.OpenSegment(d.Dir, store.TypeAnswers, 584)
-	seg.AppendPage([][]byte{[]byte(answerItem("s", "stale", "q"))}, timeZero(), 584)
+	appendPage(t, seg, [][]byte{[]byte(answerItem("s", "stale", "q"))}, timeZero(), 584)
 
 	srv := newBulkServer(t, &bulkServer{
 		pages:  []string{"[" + answerItem("s", "e1", "q1") + "]"},
@@ -351,5 +351,17 @@ func TestPagedANonLearnerReportRefusalIsReadable(t *testing.T) {
 	}
 	if cliErr.ExitCode != output.ExitContract {
 		t.Errorf("exit code = %d, want contract", cliErr.ExitCode)
+	}
+}
+
+// appendPage stamps records and appends them to seg as one fetched page.
+func appendPage(t *testing.T, seg *store.Segment, recs [][]byte, at time.Time, run int) {
+	t.Helper()
+	lines, err := store.StampLines(recs, at, run)
+	if err == nil {
+		err = seg.AppendLines(lines)
+	}
+	if err != nil {
+		t.Fatal(err)
 	}
 }

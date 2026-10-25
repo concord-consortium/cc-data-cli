@@ -2,6 +2,7 @@ package fetch
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"time"
@@ -152,15 +153,22 @@ func (opts PagedOptions) fetchPages(ctx context.Context, seg *store.Segment, tok
 			}
 			records = append(records, item)
 		}
+		malformed := func(i int, err error) *output.CLIError {
+			return &output.CLIError{ExitCode: output.ExitContract, Code: "MALFORMED_ITEM",
+				Message: fmt.Sprintf("run %d %s: item %d of page %d: %v", opts.RunID, opts.Type, i+1, cur.Pages+1, err)}
+		}
 		lines, serr := store.StampLines(records, fetchedAt, opts.RunID)
+		var nerr *store.NotObjectError
+		if kind.Strict && errors.As(serr, &nerr) {
+			return malformed(nerr.Index, serr)
+		}
 		if serr != nil {
 			return output.Internalf("stamping page: %v", serr)
 		}
 		if kind.Strict {
 			for i, line := range lines {
 				if _, ierr := store.IdentityFromRecord(kind, line); ierr != nil {
-					return &output.CLIError{ExitCode: output.ExitContract, Code: "MALFORMED_ITEM",
-						Message: fmt.Sprintf("run %d %s: item %d of page %d: %v", opts.RunID, opts.Type, i+1, cur.Pages+1, ierr)}
+					return malformed(i, ierr)
 				}
 			}
 		}

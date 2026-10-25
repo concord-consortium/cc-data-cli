@@ -256,20 +256,18 @@ func TestClueGroupDocumentWithNoOfferingIsKept(t *testing.T) {
 }
 
 func TestClueItemWithoutItsIdentityIsRefused(t *testing.T) {
-	for name, bad := range map[string]map[string]any{
-		"missing entry_id":  {"doc_id": "-Nd1", "entry_json": "{}"},
-		"null doc_id":       {"doc_id": nil, "entry_id": "e1", "entry_json": "{}"},
-		"numeric doc_id":    {"doc_id": 7, "entry_id": "e1", "entry_json": "{}"},
-		"repeated entry_id": nil,
+	for name, bad := range map[string]string{
+		"missing entry_id":  `{"doc_id":"-Nd1","entry_json":"{}"}`,
+		"null doc_id":       `{"doc_id":null,"entry_id":"e1","entry_json":"{}"}`,
+		"numeric doc_id":    `{"doc_id":7,"entry_id":"e1","entry_json":"{}"}`,
+		"repeated entry_id": `{"doc_id":"-Nd1","entry_id":"e9","entry_id":null,"entry_json":"{}"}`,
+		"null item":         `null`,
+		"string item":       `"-Nd1"`,
 	} {
 		d := newTestDataset(t)
 		first := fixture(t, "history_page1.json")
-		second := append(fixture(t, "history_page2.json"), bad)
-		srv := clueServer(t, 3, first, second)
-		if bad == nil {
-			body := pageBody(t, fixture(t, "history_page2.json"))
-			srv.pages[1] = strings.TrimSuffix(body, "]") + `,{"doc_id":"-Nd1","entry_id":"e9","entry_id":null,"entry_json":"{}"}]`
-		}
+		srv := clueServer(t, 3, first, fixture(t, "history_page2.json"))
+		srv.pages[1] = strings.TrimSuffix(pageBody(t, fixture(t, "history_page2.json")), "]") + "," + bad + "]"
 		_, err := pullClue(t, d, srv, store.TypeClueHistory, 584)
 		var cerr *output.CLIError
 		if !errors.As(err, &cerr) || cerr.Code != "MALFORMED_ITEM" || cerr.ExitCode != output.ExitContract {
@@ -279,6 +277,9 @@ func TestClueItemWithoutItsIdentityIsRefused(t *testing.T) {
 			t.Fatalf("%s: message %q does not locate the item", name, cerr.Message)
 		}
 		if name == "missing entry_id" && cerr.Message != "run 584 clue_history: item 3 of page 2: entry_id is missing" {
+			t.Fatalf("message %q", cerr.Message)
+		}
+		if name == "null item" && cerr.Message != "run 584 clue_history: item 3 of page 2: record is not a JSON object" {
 			t.Fatalf("message %q", cerr.Message)
 		}
 		seg := store.OpenSegment(d.Dir, store.TypeClueHistory, 584)

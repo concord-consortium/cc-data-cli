@@ -39,9 +39,7 @@ func rec(sk, re, qid, hid, data string) []byte {
 func writeFinishedSegment(t *testing.T, d *Dataset, typ string, run int, recs [][]byte) *store.Segment {
 	t.Helper()
 	seg := store.OpenSegment(d.Dir, typ, run)
-	if err := seg.AppendPage(recs, time.Unix(int64(run), 0).UTC(), run); err != nil {
-		t.Fatal(err)
-	}
+	appendPage(t, seg, recs, time.Unix(int64(run), 0).UTC(), run)
 	if err := seg.WriteCursor(&store.Cursor{NextPageToken: nil, Pages: 1, Items: len(recs)}); err != nil {
 		t.Fatal(err)
 	}
@@ -368,4 +366,16 @@ func TestMembershipDisorderPastTheLastOldKeyFailsTheMergeClosed(t *testing.T) {
 		}
 		overwriteMembership(t, d, "answers", 584, memberLine("qa"), memberLine("qz"), memberLine("qy"))
 	})
+}
+
+// appendPage stamps records and appends them to seg as one fetched page.
+func appendPage(t *testing.T, seg *store.Segment, recs [][]byte, at time.Time, run int) {
+	t.Helper()
+	lines, err := store.StampLines(recs, at, run)
+	if err == nil {
+		err = seg.AppendLines(lines)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
 }

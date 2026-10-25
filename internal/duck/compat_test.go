@@ -176,9 +176,7 @@ func remergeIsNoOp(t *testing.T, d *dataset.Dataset, typ string, run, wantRecs i
 		t.Fatal(err)
 	}
 	seg := store.OpenSegment(d.Dir, typ, run)
-	if err := seg.AppendPage(recs, stamp.FetchedAt, run); err != nil {
-		t.Fatal(err)
-	}
+	appendPage(t, seg, recs, stamp.FetchedAt, run)
 	seg.WriteCursor(&store.Cursor{Items: len(recs)})
 	counts, err := d.MergeCompact(typ, run, seg)
 	if err != nil {

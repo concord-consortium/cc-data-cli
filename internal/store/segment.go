@@ -57,16 +57,10 @@ func (s *Segment) Exists() bool {
 	return err == nil
 }
 
-// AppendPage stamps each record with _fetched_at and _run_id, appends them as
-// JSONL, and fsyncs the file before the caller persists the cursor (the cursor
-// must never durably name pages whose segment bytes a crash could lose).
-func (s *Segment) AppendPage(records [][]byte, fetchedAt time.Time, runID int) error {
-	lines, err := StampLines(records, fetchedAt, runID)
-	if err != nil {
-		return err
-	}
-	return s.AppendLines(lines)
-}
+// NotObjectError reports a record that is not a JSON object, by its index in the page.
+type NotObjectError struct{ Index int }
+
+func (e *NotObjectError) Error() string { return "record is not a JSON object" }
 
 // StampLines returns each record as the line a segment stores: re-encoded from a map
 // with _fetched_at and _run_id set, so a key the record repeats keeps its last value.
@@ -74,10 +68,10 @@ func StampLines(records [][]byte, fetchedAt time.Time, runID int) ([][]byte, err
 	stampAt, _ := json.Marshal(fetchedAt.UTC().Format(time.RFC3339))
 	stampRun, _ := json.Marshal(runID)
 	lines := make([][]byte, 0, len(records))
-	for _, rec := range records {
+	for i, rec := range records {
 		var obj map[string]json.RawMessage
-		if err := json.Unmarshal(rec, &obj); err != nil {
-			return nil, err
+		if err := json.Unmarshal(rec, &obj); err != nil || obj == nil {
+			return nil, &NotObjectError{Index: i}
 		}
 		obj["_fetched_at"] = stampAt
 		obj["_run_id"] = stampRun

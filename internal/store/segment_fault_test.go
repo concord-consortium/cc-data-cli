@@ -47,9 +47,7 @@ func TestBuildIndexHappyPathStillWorks(t *testing.T) {
 		[]byte(`{"source_key":"s","remote_endpoint":"e1","question_id":"q1","data":"A"}`),
 		[]byte(`{"source_key":"s","remote_endpoint":"e2","question_id":"q2","data":"A"}`),
 	}
-	if err := seg.AppendPage(recs, time.Unix(584, 0).UTC(), 584); err != nil {
-		t.Fatal(err)
-	}
+	appendPage(t, seg, recs, time.Unix(584, 0).UTC(), 584)
 	idx, err := seg.BuildIndex()
 	if err != nil {
 		t.Fatal(err)
@@ -76,5 +74,17 @@ func TestBuildIndexRefusesATornLine(t *testing.T) {
 	if idx, err := seg.BuildIndex(); err == nil {
 		idx.Close()
 		t.Fatal("BuildIndex accepted a torn segment line")
+	}
+}
+
+// appendPage stamps records and appends them to seg as one fetched page.
+func appendPage(t *testing.T, seg *Segment, recs [][]byte, at time.Time, run int) {
+	t.Helper()
+	lines, err := StampLines(recs, at, run)
+	if err == nil {
+		err = seg.AppendLines(lines)
+	}
+	if err != nil {
+		t.Fatal(err)
 	}
 }

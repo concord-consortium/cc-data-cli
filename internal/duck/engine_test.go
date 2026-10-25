@@ -32,9 +32,7 @@ func buildStore(t *testing.T, d *dataset.Dataset, run int, recs [][]byte) {
 func landRaw(t *testing.T, d *dataset.Dataset, typ string, run int, recs [][]byte) {
 	t.Helper()
 	seg := store.OpenSegment(d.Dir, typ, run)
-	if err := seg.AppendPage(recs, time.Unix(int64(run), 0).UTC(), run); err != nil {
-		t.Fatal(err)
-	}
+	appendPage(t, seg, recs, time.Unix(int64(run), 0).UTC(), run)
 	if err := seg.WriteCursor(&store.Cursor{Pages: 1, Items: len(recs)}); err != nil {
 		t.Fatal(err)
 	}
@@ -363,5 +361,17 @@ func TestEnginePortalReportJoinsTheReportsUnion(t *testing.T) {
 	}
 	if n := queryInt(t, e, "SELECT count(*) FROM reports WHERE student_id IS NOT NULL"); n != 1 {
 		t.Fatalf("the answers columns did not survive the union, got %d", n)
+	}
+}
+
+// appendPage stamps records and appends them to seg as one fetched page.
+func appendPage(t *testing.T, seg *store.Segment, recs [][]byte, at time.Time, run int) {
+	t.Helper()
+	lines, err := store.StampLines(recs, at, run)
+	if err == nil {
+		err = seg.AppendLines(lines)
+	}
+	if err != nil {
+		t.Fatal(err)
 	}
 }
