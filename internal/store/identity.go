@@ -67,6 +67,12 @@ func IdentityFromRecord(k Kind, rec []byte) (Identity, error) {
 		}
 		id[i] = s
 	}
+	// A column left unseen must be absent from a complete object, never cut off by the line's end.
+	if remaining > 0 {
+		if tok, err := dec.Token(); err != nil || tok != json.Delim('}') {
+			return nil, errors.New("record is truncated")
+		}
+	}
 	if k.Strict {
 		for i, ok := range seen {
 			if !ok {

@@ -98,6 +98,21 @@ func TestIdentityFromRecordLenientAndStrict(t *testing.T) {
 	}
 }
 
+func TestIdentityFromRecordRefusesATruncatedRecord(t *testing.T) {
+	for kind, rec := range map[*Kind]string{
+		&answersKind: `{"source_key":"s","remote_endpoint":"e"`,
+		&historyKind: `{"source_key":"s","remote_endpoint":"e","question_id":"q"`,
+	} {
+		if id, err := IdentityFromRecord(*kind, []byte(rec)); err == nil {
+			t.Fatalf("%s: a record cut before an identity column read as %q", kind.Name, id)
+		}
+	}
+	id, err := IdentityFromRecord(historyKind, []byte(`{"source_key":"s","remote_endpoint":"e","question_id":"q"}`))
+	if err != nil || !slices.Equal(id, Identity{"s", "e", "q", ""}) {
+		t.Fatalf("a complete record without its optional history_id = %q, %v", id, err)
+	}
+}
+
 var hostile = []string{"", "a", "<&>", `q"uote\`, "\x1f\x00", "héllo 🎉", "\xff\xfe", "\u2028\u2029", "12:3"}
 
 func TestKeyDecodeRoundTrips(t *testing.T) {
