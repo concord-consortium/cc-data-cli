@@ -210,6 +210,19 @@ func TestSummaryAndCountsAreReadOnlyTo64KiB(t *testing.T) {
 	if len(res.Counts) != 0 {
 		t.Errorf("counts = %v, want none from a counts.json cut at 64 KiB", res.Counts)
 	}
+
+	whole := `{"answers": 3, "pad": "` + strings.Repeat("x", 65512) + `"}`
+	if len(whole) != 65537 {
+		t.Fatalf("counts.json is %d bytes, want 65537", len(whole))
+	}
+	writeTree(t, out, map[string]string{"counts.json": whole})
+	res, err = ReadResult(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Counts["answers"] != float64(3) {
+		t.Errorf("counts = %v, want answers 3 from a counts.json of 64 KiB and a byte, read whole", res.Counts)
+	}
 }
 
 func TestResultReadsOnlyTheRunnersKeys(t *testing.T) {

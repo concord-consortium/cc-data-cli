@@ -720,9 +720,10 @@ such as `.scope.json`, so `build` never ships a class hash in the zip.
 `<dir>/.cc-data-run/pkg/` and runs the package from there, writes the runner's
 `scope.json`, sets the runner's environment variables (`RD_DATASET`,
 `RD_SCOPE_FILE`, `RD_OUTPUT_DIR` and the rest), applies the same time limit, and
-reads the result as the runner does, including the 450,560-byte (440 KiB) cap
-on `display.md`. A package that reads a file `build` leaves out, such as
-something under `local-data/`, fails locally as it would on the VM.
+reads the result as the runner does, including the 450,560-byte (440 KiB) cap on
+`display.md` and reading `summary.txt` and `counts.json` only to 64 KiB, so a
+larger `counts.json` gives no counts. A package that reads a file `build` leaves
+out, such as something under `local-data/`, fails locally as it would on the VM.
 
 What it cannot reproduce:
 
