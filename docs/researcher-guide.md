@@ -364,8 +364,9 @@ dataset named `wildfire` on `learn.concord.org` lives in
   question; one snapshot in that answer's history; one CLUE document, one entry of
   its edit history, or a document's current content) and updated in place: the
   freshly downloaded copy wins. So you can pull freely without creating duplicates.
-  Log runs are the exception: each run's CSV is kept whole, so two overlapping log
-  runs each hold their copy of an event in `logs`, and `log_events` has it once.
+  Report CSVs are the exception: each run's CSV is kept whole, so two overlapping
+  report runs each hold their copy of a row in `reports`, and two overlapping log
+  runs each hold their copy of an event in `logs`; `log_events` has it once.
 - Because of that, to **compare data over time** (e.g. answers in the fall vs. the
   spring), make a **separate dataset per pull** and query across them.
 - Datasets are **purely local** and can contain **sensitive student data**:

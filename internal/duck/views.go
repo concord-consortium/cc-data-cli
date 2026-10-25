@@ -81,17 +81,22 @@ var derivedStoreViews = map[string]func(viewSet) viewStmt{
 	store.TypeRecentLogs:    viewSet.recentLogsView,
 }
 
-// recentLogsView is the recent_logs store with logs' derived columns. The store's source
-// columns are pinned, so each derived column's source exists in every read.
+// recentLogsView is the recent_logs store with logs' derived columns.
 func (vs viewSet) recentLogsView() viewStmt {
+	return vs.clueView(store.TypeRecentLogs, func(standIn bool) (string, []string) {
+		src, _, files := vs.clueSource(store.TypeRecentLogs, standIn, true)
+		return "SELECT *, " + strings.Join(pinnedLogDerived(), ", ") + " FROM " + src, files
+	})
+}
+
+// pinnedLogDerived renders logDerived over a source whose columns have the recent_logs
+// store's pinned types, so each derived column's source is always there.
+func pinnedLogDerived() []string {
 	derived := make([]string, 0, len(logDerived))
 	for _, d := range logDerived {
 		derived = append(derived, fmt.Sprintf("%s AS %s", d.expr(sqlIdent(d.src)), sqlIdent(d.name)))
 	}
-	return vs.clueView(store.TypeRecentLogs, func(standIn bool) (string, []string) {
-		src, _, files := vs.clueSource(store.TypeRecentLogs, standIn, true)
-		return "SELECT *, " + strings.Join(derived, ", ") + " FROM " + src, files
-	})
+	return derived
 }
 
 func (vs viewSet) file(rel string) string {

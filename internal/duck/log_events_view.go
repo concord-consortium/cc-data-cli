@@ -96,9 +96,7 @@ func logEventsSelect(union string) string {
 			"ELSE coalesce(list_sort(list(DISTINCT run_id) FILTER (WHERE run_id IS NOT NULL) OVER (PARTITION BY id)), CAST([] AS BIGINT[])) END AS run_ids",
 		"max(_class_id) OVER (PARTITION BY id) AS _class_id",
 		"_fetched_at")
-	for _, d := range logDerived {
-		cols = append(cols, fmt.Sprintf("%s AS %s", d.expr(sqlIdent(d.src)), sqlIdent(d.name)))
-	}
+	cols = append(cols, pinnedLogDerived()...)
 	return fmt.Sprintf("SELECT %s FROM (\n%s\n) QUALIFY id IS NULL OR ROW_NUMBER() OVER (PARTITION BY id ORDER BY _fetched_at DESC, run_id DESC NULLS LAST) = 1",
 		strings.Join(cols, ", "), union)
 }

@@ -55,10 +55,11 @@ func withMetadataRow(id string) string {
 		",1,590,https://act/1,81,Class,School,7,,70,,hash,81,Teacher,2026-09-01\n"
 }
 
-// logEventsFixture holds three overlapping student runs, a Teacher Actions run and a recent_logs
-// pull. fetched dates each run from its day number.
 // logEventsClass is the class whose recent-logs pull the fixture lands.
 const logEventsClass = 590
+
+// logEventsFixture holds three overlapping student runs, a Teacher Actions run and a recent_logs
+// pull. fetched dates each run from its day number.
 
 func logEventsFixture(t *testing.T, name string, fetched func(day int) time.Time) *dataset.Dataset {
 	t.Helper()
@@ -84,7 +85,8 @@ func logEventsFixture(t *testing.T, name string, fetched func(day int) time.Time
 
 func septemberNoon(day int) time.Time { return time.Date(2026, 9, day, 12, 0, 0, 0, time.UTC) }
 
-// land stamps a store's rows at time.Unix(<class id>, 0), so runs fetched at time.Unix(1, 0) are older.
+// beforeTheStore dates every run before the store's rows, which land stamps at
+// time.Unix(logEventsClass, 0).
 func beforeTheStore(int) time.Time { return time.Unix(1, 0) }
 
 func fetchedAllAt(at time.Time) func(int) time.Time { return func(int) time.Time { return at } }
