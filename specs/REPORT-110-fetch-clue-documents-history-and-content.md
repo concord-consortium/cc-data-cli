@@ -49,7 +49,7 @@ The story also sets the contract REPORT-111 (derived CLUE view columns and `clue
 
 - **R12. Coverage counts owners.** For the CLUE types, `queried` is `total_endpoints` (scope owners: users, groups and class owners), `with_data` the distinct `(context_id, uid)` owners holding a record in the run's membership, `empty = queried - with_data`.
   - `clue_documents` and `clue_content` read the owner from their own records.
-  - `clue_history` resolves owners through the `clue_documents` store by `doc_id`. When any of the run's history documents is absent there, the download has no `coverage` and the result carries `coverage_note` "owners not counted: fetch clue-documents for run N before clue-history". Coverage is computed only when history lands, so a later documents pull doesn't add it.
+  - `clue_history` resolves owners through the `clue_documents` store by `doc_id`. When any of the run's history documents is absent there, the download has no `coverage` and the result carries `coverage_note` "owners not counted: fetch run N's clue_documents, then its clue_history again". Coverage is computed only when history lands, so a later documents pull doesn't add it.
   - Coverage streams membership against the store in key order under the per-dataset lock, so another run's merge cannot remove the store version being read.
 
 ### Views

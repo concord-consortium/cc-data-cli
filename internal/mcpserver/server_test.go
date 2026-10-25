@@ -803,7 +803,7 @@ func TestMCPGetClueToolsReturnTheCLIResult(t *testing.T) {
 		}
 		cov, hasCov := out["coverage"]
 		if rt.typ == "clue_history" {
-			if note, _ := out["coverage_note"].(string); !hasCov || cov != nil || !strings.Contains(note, "fetch clue-documents for run 584") {
+			if note, _ := out["coverage_note"].(string); !hasCov || cov != nil || !strings.Contains(note, "fetch run 584's clue_documents, then its clue_history again") {
 				t.Fatalf("history coverage %v, note %v", cov, out["coverage_note"])
 			}
 		} else if c, _ := cov.(map[string]any); c["with_data"] != float64(1) {

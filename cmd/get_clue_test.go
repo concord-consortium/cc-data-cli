@@ -81,7 +81,7 @@ func TestGetClueCommandsEmitTheirResultLines(t *testing.T) {
 			t.Fatalf("%s requested %v", rt.verb, paths)
 		}
 		if rt.typ == "clue_history" {
-			if string(res.Coverage) != "null" || !strings.Contains(res.CoverageNote, "fetch clue-documents for run 584") {
+			if string(res.Coverage) != "null" || !strings.Contains(res.CoverageNote, "fetch run 584's clue_documents, then its clue_history again") {
 				t.Fatalf("history coverage %s, note %q", res.Coverage, res.CoverageNote)
 			}
 		} else if !strings.Contains(string(res.Coverage), `"with_data":1`) {

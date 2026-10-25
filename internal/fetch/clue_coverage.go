@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
 
 	"github.com/concord-consortium/cc-data-cli/internal/dataset"
 	"github.com/concord-consortium/cc-data-cli/internal/store"
@@ -39,7 +38,7 @@ func (opts PagedOptions) ownerCoverage(kind store.Kind, totalEndpoints *int) (*d
 	ownerStore := kind.OwnerStore
 	note := ""
 	if ownerStore != kind.Name {
-		note = fmt.Sprintf("owners not counted: fetch %s for run %d before %s", cliVerb(ownerStore), opts.RunID, cliVerb(kind.Name))
+		note = fmt.Sprintf("owners not counted: fetch run %d's %s, then its %s again", opts.RunID, ownerStore, kind.Name)
 	}
 	owners, resolved, err := walkOwners(opts.DS.Path(ref.File), kind, m.Stores[ownerStore].File, opts.DS, store.MustKind(ownerStore))
 	if err != nil {
@@ -56,9 +55,6 @@ func (opts PagedOptions) ownerCoverage(kind store.Kind, totalEndpoints *int) (*d
 	}
 	return cov, ""
 }
-
-// cliVerb is a store type's get command name, clue_documents -> clue-documents.
-func cliVerb(typ string) string { return strings.ReplaceAll(typ, "_", "-") }
 
 // walkOwners counts the distinct owners of the membership's records, reading each from
 // the owner store's record with the same doc_id. resolved is false when a member has no

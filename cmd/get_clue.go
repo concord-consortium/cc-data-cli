@@ -9,8 +9,8 @@ func newGetClueDocumentsCmd() *cobra.Command {
 	return newPagedGetCmd("clue-documents", store.TypeClueDocuments, "Download a run's CLUE documents into a dataset",
 		"Download the CLUE documents of a run's students, groups and classes: one row per\n"+
 			"document with its owner, unit, problem, offering and raw metadata. A Student ID\n"+
-			"Mapping run is the intended source. Fetch it before clue-history, which needs the\n"+
-			"run's documents to count owners.")
+			"Mapping run is the intended source. Fetch the documents before clue-history, which\n"+
+			"needs them to count owners.")
 }
 
 func newGetClueHistoryCmd() *cobra.Command {

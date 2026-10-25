@@ -343,7 +343,7 @@ func TestClueHistoryCoverageNeedsTheDocumentsFirst(t *testing.T) {
 	if cov := coverageOf(t, res); cov != nil {
 		t.Fatalf("history coverage %+v with no documents fetched, want none", cov)
 	}
-	if note, _ := res["coverage_note"].(string); !strings.Contains(note, "fetch clue-documents for run 584 before clue-history") {
+	if note, _ := res["coverage_note"].(string); note != "owners not counted: fetch run 584's clue_documents, then its clue_history again" {
 		t.Fatalf("coverage_note = %q", note)
 	}
 	m, err := d.ReadManifest()
