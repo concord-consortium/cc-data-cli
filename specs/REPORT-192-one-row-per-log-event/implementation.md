@@ -236,7 +236,7 @@ Tests, each naming the requirement and the change that would make it fail:
 - `docs/researcher-guide.md`: the "A dataset never holds duplicate data" bullet, the `recent_logs` table row, the Recent logs "Days before the window" bullet, the Materializing "It is bigger" bullet, the "Comparing over time means separate datasets" bullet.
 - `internal/mcpserver/tools.go` and `internal/mcpserver/server_test.go`: the `get_recent_logs` description and its pinned fact.
 - `cmd/get_recent_logs.go`: `getRecentLogsLong`'s last sentence.
-- `README.md`: the query bullet's view list and the "A dataset never contains duplicate data" bullet.
+- `README.md`: the query bullet's view list, the "A dataset never contains duplicate data" bullet, and the atomic-writes bullet.
 
 **Estimated diff size**: ~50 lines.
 
@@ -257,6 +257,7 @@ Edits (before, then after):
 
 - `README.md`, the query bullet: after "`recent_logs` (a class's log events from recent-logs pulls, kept apart from the log reports)," add "`log_events` (each log event once, across the log reports and recent-logs pulls),".
 - `README.md`, "A dataset never contains duplicate data" bullet: after "Overlapping runs, regenerated reports, and repeated pulls simply update records in place," add "except that report CSVs stay one file per run, so two overlapping log runs each hold their copy of an event and `log_events` is where each event appears once;". (The sentence goes on "and every `get` reports its counts".)
+- `README.md`, the "Writes are atomic" bullet: "queries only ever see complete, duplicate-free data." becomes "queries only ever see complete data, never a page twice.", since it is about resumed downloads and would otherwise contradict the bullet above.
 
 After the edits, `grep -rn "one view or the\|view or the other\|one or the other" internal docs cmd README.md` returns nothing. (`core.md` wraps "count one / view or the other" across lines, which only the middle pattern sees.)
 
