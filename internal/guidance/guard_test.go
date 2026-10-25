@@ -269,15 +269,20 @@ func TestInstructionsFitTheMCPCap(t *testing.T) {
 	}
 }
 
-// Earlier Claude Code builds kept only 2,048 characters, so the pointer to the guide and
-// the sensitive-data norm have to end before then.
+// Earlier Claude Code builds kept only 2,048 characters, so everything before the dataset
+// rules, which the guide repeats, has to end by then.
 func TestInstructionsPutTheEssentialsFirst(t *testing.T) {
 	ins := guidance.Instructions()
-	head := ins[:min(len(ins), 2048)]
-	for _, want := range []string{"## Full guidance", "and need not call it.", "## Sensitive data", "drives."} {
-		if !strings.Contains(head, want) {
-			t.Errorf("%q is not within the first 2,048 bytes of the instructions", want)
+	last := -1
+	for _, heading := range []string{"## Auth", "## Full guidance", "## Sensitive data", "## Datasets and portals"} {
+		i := strings.Index(ins, heading)
+		if i <= last {
+			t.Fatalf("%q is missing or out of order in the instructions", heading)
 		}
+		last = i
+	}
+	if last > 2048 {
+		t.Errorf("the dataset rules start at byte %d, so the sections before them run past 2,048", last)
 	}
 }
 

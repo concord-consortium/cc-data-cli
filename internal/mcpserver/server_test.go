@@ -788,6 +788,9 @@ func TestToolDescriptionsCarryTheirPortalFacts(t *testing.T) {
 			}
 		}
 	}
+	if !strings.HasPrefix(desc["guide"], "cc-data's full guidance") {
+		t.Error("guide description does not open by naming cc-data, which tool search matches on")
+	}
 }
 
 // The clue tools and `cc-data get clue-*` share one fetch, so each tool's result carries
