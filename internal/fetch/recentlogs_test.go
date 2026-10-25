@@ -253,7 +253,8 @@ func TestRecentLogsBoundsLeaveTheCursor(t *testing.T) {
 	s := newRecentLogsServer(t)
 	s.push(body(logsBody{class: 590, rows: []string{logRow("e1")}, count: -1, nextCursor: "v1.first"}.String()),
 		body(logsBody{class: 590, rows: []string{logRow("e2")}, count: -1, nextCursor: "v1.from-start"}.String()),
-		body(logsBody{class: 590, rows: []string{logRow("e3")}, count: -1, until: "1792540560000"}.String()))
+		body(logsBody{class: 590, rows: []string{logRow("e3")}, count: -1, until: "1792540560000"}.String()),
+		body(logsBody{class: 590, rows: []string{logRow("e4")}, count: -1, until: "1792544400000"}.String()))
 	mustPullLogs(t, d, s, RecentLogsOptions{})
 	before, _ := json.Marshal(storedCursor(t, d))
 
@@ -265,15 +266,19 @@ func TestRecentLogsBoundsLeaveTheCursor(t *testing.T) {
 	if res["cursor"] != "none" {
 		t.Errorf("a --start --end pull reported cursor %v", res["cursor"])
 	}
+	res = mustPullLogs(t, d, s, RecentLogsOptions{End: "1792544400000"})
+	if res["cursor"] != "none" {
+		t.Errorf("an --end pull reported cursor %v", res["cursor"])
+	}
 	after, _ := json.Marshal(storedCursor(t, d))
 	if !bytes.Equal(before, after) {
 		t.Errorf("stored cursor moved from %s to %s", before, after)
 	}
 	q := s.requests()
-	if q[1].Encode() != "start=1792540500000" || q[2].Encode() != "end=1792544400000&start=1792540800000" {
+	if q[1].Encode() != "start=1792540500000" || q[2].Encode() != "end=1792544400000&start=1792540800000" || q[3].Encode() != "end=1792544400000" {
 		t.Errorf("queries = %v", q)
 	}
-	if storeCount(t, d) != 3 {
+	if storeCount(t, d) != 4 {
 		t.Errorf("store = %d", storeCount(t, d))
 	}
 }

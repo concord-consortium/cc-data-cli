@@ -26,8 +26,8 @@ type MergeResult struct {
 // StreamMerge performs the two-way merge on identity key between the old store
 // (sorted JSONL, may be empty) and the sorted source, writing the new sorted
 // store to tmpPath and fsyncing it. The source beats the store on equal keys;
-// old-store identities not in covered are dropped and counted as removed. Counts
-// are attributed per owning run.
+// old-store identities not in covered are dropped and counted as removed, except for an
+// accumulating kind, which keeps every old record. Counts are attributed per owning run.
 func StreamMerge(oldStorePath string, k Kind, tmpPath string, src MergeSource, covered *Covered) (MergeResult, error) {
 	res := MergeResult{PerRun: map[int]MergeCounts{}}
 	for _, run := range src.Runs() {
@@ -86,9 +86,11 @@ func StreamMerge(oldStorePath string, k Kind, tmpPath string, src MergeSource, c
 	for oldOK || segOK {
 		switch {
 		case oldOK && (!segOK || oldKey < segKey):
-			held, err := covered.Has(oldKey)
-			if err != nil {
-				return fail(err)
+			held := k.Accumulate
+			if !held {
+				if held, err = covered.Has(oldKey); err != nil {
+					return fail(err)
+				}
 			}
 			if held {
 				if err := write(oldRec); err != nil {

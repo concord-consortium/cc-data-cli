@@ -49,8 +49,8 @@ func (s *SingleSource) RawCount(run int) int {
 }
 
 // MultiSource merges several per-run segment indexes in key order. A key several runs
-// share resolves to the record with the newest (_fetched_at, _run_id) stamp; stamps are
-// read only for such keys.
+// share resolves to the record with the newest (_fetched_at, key) stamp, the key being
+// _run_id, or _class_id for a class-keyed kind; stamps are read only for such keys.
 type MultiSource struct {
 	byRun map[int]*SegmentIndex
 	runs  []int

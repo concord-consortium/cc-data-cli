@@ -22,10 +22,13 @@ func (d *Dataset) CurrentStore(typ string) (Store, error) {
 
 // openCovered streams the membership of every run of the type except those being
 // merged, whose identity sets replace their old ones wholesale and so need no place in
-// it. An accumulating kind keeps a merging key's old identities, so its membership is a
-// source too. The returned function closes the files.
+// it. An accumulating kind removes nothing, so it walks no membership. The returned
+// function closes the files.
 func (d *Dataset) openCovered(m *Manifest, typ string, merging map[int]*store.SegmentIndex) (*store.Covered, func(), error) {
 	kind := store.MustKind(typ)
+	if kind.Accumulate {
+		return store.NewCovered(), func() {}, nil
+	}
 	var readers []*store.MembershipReader
 	closeAll := func() {
 		for _, r := range readers {
@@ -38,7 +41,7 @@ func (d *Dataset) openCovered(m *Manifest, typ string, merging map[int]*store.Se
 		if !ok || t != typ {
 			continue
 		}
-		if _, isMerging := merging[r]; isMerging && !kind.Accumulate {
+		if _, isMerging := merging[r]; isMerging {
 			continue
 		}
 		// Fail closed: a missing membership file must not silently drop this run's
