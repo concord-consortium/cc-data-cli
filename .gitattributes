@@ -1,3 +1,6 @@
 # A dataset written by cc-data 0.2.x: its manifest records each file's size, so it must
 # check out byte for byte on every platform.
 internal/dataset/testdata/v0.2/** -text
+# The guidance is embedded byte for byte, and its tests bound its size and match text that
+# wraps across lines, so it checks out with LF on every platform.
+internal/guidance/src/*.md text eol=lf

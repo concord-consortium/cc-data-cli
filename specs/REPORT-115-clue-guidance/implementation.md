@@ -298,6 +298,7 @@ Checked on the local `learn.concord.org/dataflow-cohort` dataset (read-only, no 
 - **Split files rather than cutting sections out of `core.md` by heading.** Concatenation has no failure mode to test; a renamed heading would silently drop a section from the index.
 - **The guide text is `Core()` plus `Tools()`, without the MCP header,** as the Jira acceptance reads: every client that can call `guide` already holds the header and the auth remedy.
 - **One commit for the cap fix, guards included.** About 170 lines, mostly moved text; intermediate states would each need their own guard changes.
+- **The guidance sources check out with LF on every platform** (departure, Doug, 2026-10-25): `.gitattributes` gains `internal/guidance/src/*.md text eol=lf`. A Windows checkout converts them to CRLF and `go:embed` keeps the carriage returns, which fails `TestInstructionsIndexTheGuide`'s wrapped-sentence matches and adds a byte per line to the sizes the cap tests bound.
 
 ## Verification notes
 
