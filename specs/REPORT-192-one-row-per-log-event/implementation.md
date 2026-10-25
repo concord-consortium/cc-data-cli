@@ -75,11 +75,9 @@ var logEventColumns = []string{
 	"parameters", "extras", "run_remote_endpoint", "timestamp", "user_id", "primary_user_id",
 }
 
-// logEventsView is one row per log event across every log run's CSV and the recent_logs store.
-// The log ingester gives each event an id that every copy of it carries, so copies are matched
-// on it; a row with no id cannot be matched and is kept as its own event. The row shows the
-// newest fetch's copy. Copies still tied are one delivered record repeated within a CSV, which
-// agree in every column carried here.
+// logEventsView is one row per log event across every log run's CSV and the recent_logs store,
+// matched on the id the log ingester gives an event and every copy of it carries. The row shows
+// the newest fetch's copy.
 func (vs viewSet) logEventsView() viewStmt {
 	return vs.clueView("log_events", func(standIn bool) (string, []string) {
 		var members, files []string
@@ -144,7 +142,8 @@ func logEventsMember(provenance []string, src string, has func(string) bool, con
 // logEventsSelect keeps one row per id over the members' union. A NULL id would put every
 // unmatched row in one partition, so those rows bypass the partition and carry only their own
 // run. Only a CSV row can lack an id (the store refuses one), so such a row has a run and no
-// class.
+// class. Copies still tied after the order are one delivered record repeated within a CSV, which
+// agree in every column carried here.
 func logEventsSelect(union string) string {
 	cols := make([]string, 0, len(logEventColumns)+len(logDerived)+3)
 	for _, col := range logEventColumns {
@@ -186,6 +185,7 @@ Tests, each naming the requirement and the change that would make it fail:
 - `TestLogEventsKeepsRowsWithNoID` (R2): both empty-id rows present, with `run_ids` `[1]` and `[2]`. Fails if the `id IS NULL OR` goes (they collapse to one) or if the `CASE` goes (both get `[1, 2]`).
 - `TestLogEventsListsWhereAnEventIs` (R3): `run_ids` `[1, 2]` and `_class_id` 590 for `b`; `[2, 3]` and NULL for `c`; `[]` (not NULL) and 590 for `r`; `[3]` for `007` (held twice in one run, listed once). Fails without the `coalesce`, the `DISTINCT` or the `max(...) OVER`.
 - `TestLogEventsShowsTheNewestCopy` (R4): `b`'s `_fetched_at` is run 2's; with a second fixture whose runs are fetched at `time.Unix(1, 0)`, before the store's 1970 stamp, `b`'s is the store's. Fails if the order is reversed or drops `_fetched_at`.
+- `TestLogEventsBreaksTiesOnRunID` (R4): with every run fetched at one time, after the store's stamp and then at it, `b`'s `event_value` is run 2's `v` (run 1 has `007`, the store NULL). Fails if the order drops `run_id`, sorts it ascending, or puts the store's NULL `run_id` first.
 - `TestLogEventsTypes` (R3, R5): the 20 columns in R3's order (`slices.Equal` on `DESCRIBE`'s `column_name`s, since `columnTypes` is a map and cannot see order) and their types (`maps.Equal` against a literal map) on the fixture, on an empty dataset, on runs only and on `recent_logs` only; `a`'s `event_value` reads back as `'007'`; `d`'s `time` is NULL and `SELECT sum(time) FROM log_events` runs. Fails if a CSV is read at its detected types (`a`'s `event_value` becomes `'7'`), if the `TRY_CAST` becomes a `CAST` (`oops` fails the query), or if two columns swap places. (Run 3's `007` `id` cannot pin the first: its column also holds `c`, so `DetectCSV` types it VARCHAR.)
 - `TestLogEventsTeacherRows` (R3, R11): `t` is present with `user_id` and `run_remote_endpoint` NULL, `log_events` has no `username` column, and `count(*) FILTER (WHERE user_id IS NOT NULL)` is the fixture's student events (8 of 9), so the guidance's filter is pinned to drop exactly the teacher row.
 - R6 needs no new test: `logs_views_test.go` and `recent_logs_view_test.go` pin both views' rows and types and stay unchanged, apart from `logFixture`'s new field.

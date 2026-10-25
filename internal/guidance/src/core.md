@@ -115,6 +115,25 @@ like `wildfire_2026.answers`):
   **An event a log run also holds is in both `logs` and `recent_logs`**: count one
   view or the other for the hours they share, not their union. CLUE logs only for
   students launched from the portal, so a CLUE class has rows only for them.
+- `log_events`: one row per log event across every log run and `recent_logs`,
+  matched on `id`, which the log ingester gives an event and every copy of it
+  carries. **Count events from `log_events`**, never from `logs`, where two
+  overlapping runs each keep their copy, nor from `logs` and `recent_logs`
+  together; a run's log freshness still comes from `logs`. It has the 13
+  `student-actions` columns at `recent_logs`' types and the four parsed columns,
+  plus `run_ids` (every log run holding the event, `[]` when only `recent_logs`
+  does), `_class_id` (the class of its `recent_logs` copy, else NULL) and
+  `_fetched_at` (when the copy shown was fetched; the newest wins). Scope it to a
+  run and a class with `list_contains(run_ids, <run>) OR _class_id = <class>`. It
+  leaves out `username` and the `student-actions-with-metadata` learner columns,
+  which a recent copy lacks: join `student_metadata` (names, `class`, `school`,
+  teachers) or `student_id_mapping` (ids, `offering_id`) on
+  `run_remote_endpoint` for them. A `teacher-actions` run's events are here with
+  `user_id` and `run_remote_endpoint` NULL and no `username`: every student row
+  has a `user_id`, so add `WHERE user_id IS NOT NULL` to count student events,
+  and read teacher activity from `logs`. A row with no `id` is kept as its own
+  event, and two copies with different ids (a client sending an event twice) are
+  not matched.
 - `answers`, `history` — the LARA identity-keyed stores (double-decoded
   `report_state`; no dedup needed).
 - `clue_documents`: one row per CLUE document, no dedup needed: its owner (`uid`,

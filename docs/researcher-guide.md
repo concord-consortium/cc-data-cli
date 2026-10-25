@@ -391,6 +391,7 @@ When you (or Claude) query a dataset, the data is exposed as a set of SQL
 | `report_prompts` | The prompt and correct-answer text for each question. |
 | `logs` | Log/action report rows with `parameters` and `extras` parsed as JSON, and both of the row's clocks as UTC timestamps: `event_time` from the client device's clock, `received_time` from the server's. |
 | `recent_logs` | A class's log events from the last day or two, from `cc-data get recent-logs`, with a Student Actions run's columns, the same four parsed columns as `logs`, and `_class_id` in place of `run_id`. Kept apart from `logs`: an event a Student Actions run also holds is in both, so count one or the other. |
+| `log_events` | Each log event once, however many log runs and recent-log pulls hold it, matched on the event's `id`. Count events here rather than in `logs` or `recent_logs`. It has a Student Actions run's columns and the four parsed columns, plus `run_ids` (the log runs holding the event) and `_class_id` (the class whose recent-logs pull holds it). |
 | `attachment_files` | One row per downloaded file (audio, saved docs) with its type and local path. |
 | `attachment_states` | The saved CODAP/SageModeler state the current answer points at. |
 | `attachment_content` | The text/JSON content of every saved CODAP/SageModeler snapshot, queryable and diffable. |
