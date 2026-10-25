@@ -13,7 +13,11 @@ import (
 
 // DisplayLimitBytes is the runner's cap on display.md in UTF-8 bytes, decided only in section 10
 // of the Researcher Dashboard design (final-design.md, kept outside this repository).
-const DisplayLimitBytes = 64 * 1024
+const DisplayLimitBytes = 440 * 1024
+
+// OutputReadLimitBytes is how much of summary.txt and counts.json the runner reads, decided in
+// the same paragraph of section 10.
+const OutputReadLimitBytes = 64 * 1024
 
 // countKeys are the counts.json keys the runner reads; anything else a package writes there
 // is ignored, as it is on the VM.
@@ -51,8 +55,8 @@ func ReadResult(outDir string) (Result, error) {
 	}
 	res.DisplayPath = filepath.Join(outDir, "display.md")
 	res.DisplayBytes = size
-	// The runner reads summary.txt and counts.json under the display cap too, truncating them.
-	if text, _, err := readOwnFile(outDir, "summary.txt", DisplayLimitBytes); err == nil {
+	// The runner reads summary.txt and counts.json only to OutputReadLimitBytes, truncating them.
+	if text, _, err := readOwnFile(outDir, "summary.txt", OutputReadLimitBytes); err == nil {
 		line := strings.TrimSpace(strings.SplitN(strings.ReplaceAll(text, "\r\n", "\n"), "\n", 2)[0])
 		if line != "" {
 			res.Summary = &line
@@ -61,7 +65,7 @@ func ReadResult(outDir string) (Result, error) {
 		return res, err
 	}
 	res.Counts = map[string]any{}
-	if text, _, err := readOwnFile(outDir, "counts.json", DisplayLimitBytes); err == nil {
+	if text, _, err := readOwnFile(outDir, "counts.json", OutputReadLimitBytes); err == nil {
 		var parsed map[string]any
 		if json.Unmarshal([]byte(text), &parsed) == nil {
 			for _, k := range countKeys {

@@ -170,8 +170,8 @@ func TestModesSurviveTheZip(t *testing.T) {
 }
 
 func TestDisplayCapEdges(t *testing.T) {
-	if DisplayLimitBytes != 65536 {
-		t.Fatalf("DisplayLimitBytes = %d, want 65536", DisplayLimitBytes)
+	if DisplayLimitBytes != 450560 {
+		t.Fatalf("DisplayLimitBytes = %d, want 450560", DisplayLimitBytes)
 	}
 	out := t.TempDir()
 	write := func(n int) {
@@ -187,6 +187,28 @@ func TestDisplayCapEdges(t *testing.T) {
 	var refused *OutputRefused
 	if _, err := ReadResult(out); !errors.As(err, &refused) {
 		t.Errorf("one byte over the cap: err = %v, want OutputRefused", err)
+	}
+}
+
+func TestSummaryAndCountsAreReadOnlyTo64KiB(t *testing.T) {
+	out := t.TempDir()
+	writeTree(t, out, map[string]string{
+		"display.md":  "# Class\n",
+		"summary.txt": strings.Repeat("s", DisplayLimitBytes),
+		"counts.json": `{"answers": 3, "pad": "` + strings.Repeat("x", 70000) + `"}`,
+	})
+	res, err := ReadResult(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Summary == nil {
+		t.Fatal("no summary")
+	}
+	if len(*res.Summary) != 65537 {
+		t.Errorf("summary is %d bytes, want 65537", len(*res.Summary))
+	}
+	if len(res.Counts) != 0 {
+		t.Errorf("counts = %v, want none from a counts.json cut at 64 KiB", res.Counts)
 	}
 }
 
