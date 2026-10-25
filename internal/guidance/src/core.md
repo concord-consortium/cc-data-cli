@@ -137,10 +137,11 @@ like `wildfire_2026.answers`):
   `d.offering_id = m.offering_id`, which leaves out documents with no offering.
 - `clue_history`: one row per entry of a CLUE document's edit history, no dedup
   needed; it is CLUE **document** history, unrelated to `history`'s
-  interactive-state snapshots. `action` is `action_raw` with its ids taken out, so one
-  kind of edit reads the same on every tile (the first `/tileMap/<id>`, `/sharedModelMap/<id>` and `/rowMap/<id>`
-  segments become `{tile}`, `{sharedModel}` and `{row}`), with the ids in `tile_id`
-  and `shared_model_id`; all three are NULL for an empty or NULL `action_raw`.
+  interactive-state snapshots. `action` is `action_raw` with its ids taken out, so
+  one kind of edit reads the same on every tile (the first `/tileMap/<id>`,
+  `/sharedModelMap/<id>` and `/rowMap/<id>` segments become `{tile}`,
+  `{sharedModel}` and `{row}`), with the ids in `tile_id` and `shared_model_id`; all
+  three are NULL for an empty or NULL `action_raw`.
   `entry_json` is the stored entry as JSON, byte for byte, so `->>` on it is always
   safe; an entry DuckDB cannot parse is NULL there and kept as text in
   `entry_json_unparsed`. `undoable` is a BOOLEAN, with a stored value of any other
@@ -175,9 +176,9 @@ like `wildfire_2026.answers`):
     minute either way (-55 s to +53 s at the 1st and 99th percentiles in one
     corpus).
   - **Entry order is `(idx, entry_id)`, not `idx` alone.** Some documents (73 in
-    one corpus) have duplicate or gapped `idx` values that are distinct entries, and an entry whose
-    `idx` is NULL (an index the export could not carry as an integer) sorts after
-    its document's indexed entries.
+    one corpus) have duplicate or gapped `idx` values that are distinct entries,
+    and an entry whose `idx` is NULL (an index the export could not carry as an
+    integer) sorts after its document's indexed entries.
   - **`clue_patches` promises no order.** Order output by `doc_id, idx, entry_id,
     rec_idx, patch_idx`, and order every window over it by that whole key: a
     window ordered by less leaves ties, which DuckDB breaks differently between
