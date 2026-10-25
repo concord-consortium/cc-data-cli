@@ -128,6 +128,7 @@ Checked in the DuckDB 1.5.5 CLI and through cc-data's driver (DuckDB 1.5.4):
 - `incompleteRuns` in `materialize.go` admits, for a store download, any view whose declared files hold that store's file, so an incomplete `clue_documents` run caveats `clue_history` and `clue_content` and an incomplete `clue_history` run caveats `clue_patches`.
 - The lone-surrogate fixture entry is written as raw text: Go's `encoding/json` turns `\ud83d` into U+FFFD both ways, which DuckDB parses.
 - `internal/guidance/guard_test.go` checks `StaticViewNames()` against `core.md`'s `## Views` and the researcher guide's view table in both directions.
+- `cluePatchKey` is the key the tests order by, and `TestClueGuidanceNamesThePatchKey` checks that `core.md` and the researcher guide spell it the same way.
 
 ## Out of Scope
 

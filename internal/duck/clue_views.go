@@ -9,8 +9,7 @@ import (
 )
 
 // clueDocColumns are the documents-store columns joined onto every clue_history and
-// clue_content row, so a recipe written against one document-level file finds them
-// on either view. Their types are the documents store's own.
+// clue_content row, at the documents store's own types.
 var clueDocColumns = []string{"portal_class_id", "unit", "investigation", "problem", "offering_id"}
 
 // clueSource is a CLUE store as a relation: its file, or a typed-empty stand-in over the

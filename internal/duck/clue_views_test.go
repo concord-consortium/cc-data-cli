@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/concord-consortium/cc-data-cli/internal/dataset"
+	"github.com/concord-consortium/cc-data-cli/internal/guidance"
 	"github.com/concord-consortium/cc-data-cli/internal/store"
 )
 
@@ -887,6 +888,18 @@ FROM clue_patches WHERE %s = '%s'`, cluePatchKeySQL, p.key()))
 WHERE p.action IS DISTINCT FROM h.action OR p.created IS DISTINCT FROM h.created
   OR p.server_created IS DISTINCT FROM h.server_created OR p.idx IS DISTINCT FROM h.idx`); n != 0 {
 		t.Fatalf("%d patches disagree with their entry's action, idx or clocks", n)
+	}
+}
+
+func TestClueGuidanceNamesThePatchKey(t *testing.T) {
+	guide, err := os.ReadFile("../../docs/researcher-guide.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{"core.md": guidance.Core(), "researcher-guide.md": string(guide)} {
+		if !strings.Contains(body, cluePatchKey) {
+			t.Errorf("%s does not name clue_patches' key %q", name, cluePatchKey)
+		}
 	}
 }
 
