@@ -139,12 +139,12 @@ func registerTools(s *mcp.Server, opts Options) {
 
 	addTool(s, &mcp.Tool{Name: "get_answers", Description: "Download a run's student answers into a dataset. A Student ID Mapping run id is a valid source."},
 		pagedHandler(store.TypeAnswers))
-	addTool(s, &mcp.Tool{Name: "get_history", Description: "Download a run's interactive state history into a dataset. A Student ID Mapping run id is a valid source."},
+	addTool(s, &mcp.Tool{Name: "get_history", Description: "Download a run's interactive state history into a dataset. A Student ID Mapping run id is a valid source. It is not CLUE document history: a CLUE document's history is get_clue_history."},
 		pagedHandler(store.TypeHistory))
 
 	addTool(s, &mcp.Tool{Name: "get_clue_documents", Description: "Download a run's CLUE documents into a dataset: one row per document with its owner, unit, problem, offering and raw metadata. A Student ID Mapping run id is the intended source. Fetch the documents before get_clue_history, which needs them to count owners."},
 		pagedHandler(store.TypeClueDocuments))
-	addTool(s, &mcp.Tool{Name: "get_clue_history", Description: "Download a run's CLUE document edit history into a dataset, one row per history entry. This is CLUE document history, not get_history's interactive-state history. Fetch get_clue_documents for the run first, or owner coverage is not counted. A Student ID Mapping run id is the intended source."},
+	addTool(s, &mcp.Tool{Name: "get_clue_history", Description: "Download a run's CLUE document edit history into a dataset, one row per history entry. This is CLUE document history, not get_history's interactive-state history. Fetch get_clue_documents for the run first, or owner coverage is not counted. A Student ID Mapping run id is the intended source. Per-edit questions read the clue_patches view, not the action column."},
 		pagedHandler(store.TypeClueHistory))
 	addTool(s, &mcp.Tool{Name: "get_clue_content", Description: "Download the current content of a run's CLUE documents into a dataset, one row per document. A Student ID Mapping run id is the intended source."},
 		pagedHandler(store.TypeClueContent))

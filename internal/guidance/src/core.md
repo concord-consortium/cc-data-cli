@@ -98,6 +98,12 @@ like `wildfire_2026.answers`):
   alone distinguishes the five: `logs l JOIN downloads d ON d.run_id = l.run_id AND
   d.type = 'report'`. `hide_names` is NULL where the run's filter is not on disk,
   which the `reports` entry above explains and which is not the same as false.
+  CLUE events (`application = 'CLUE'`) carry the user's interface state in
+  `extras`: `navTabsOpen` and `problemPath` on every event, `selectedNavTab` on
+  nearly every one (a sign-in event can lack it), `workspaceMode` on a student's,
+  and `group` once the student is in one; `recent_logs` rows carry the same.
+  `navTabsOpen` is true for split view and for the curriculum full screen alike,
+  so only `false` (the workspace full screen) is unambiguous.
 - `recent_logs`: a class's log events from the last day or two, from a recent-logs
   pull, with the same 13 columns as a `student-actions` run and the same four
   parsed columns as `logs`. It is keyed by `id`: a pull reads from 00:00 UTC
@@ -141,7 +147,9 @@ like `wildfire_2026.answers`):
   JSON kind in `undoable_unparsed`. Every row carries its document's `doc_uid` (the
   document's `uid`) and its `portal_class_id`, `unit`, `investigation`, `problem`
   and `offering_id`, NULL when the document is not in `clue_documents`; the join
-  never adds or drops an entry.
+  never adds or drops an entry. `entry_uid` is NULL by construction on a document
+  written without concurrent editing, which is every classroom document so far,
+  and is not a data gap.
 - `clue_content`: one row per CLUE document with its current content, no dedup
   needed. `content_json` is the content as JSON, byte for byte, NULL when `found`
   is false or the document has no content; content DuckDB cannot parse is NULL
@@ -327,6 +335,34 @@ slugs cc-data cannot enumerate; take one from a run that already exists.
    means before filtering on it.
 
 Re-read any Portal run later by re-pulling the same run id; do not duplicate it.
+
+### Answering a question about CLUE documents
+
+- A question about what students did in CLUE documents (what they built or
+  changed, in what order, how long it took) is answered from the CLUE stores:
+  fetch a Student ID Mapping run's CLUE documents, then their history and
+  content. A CLUE document's history is its edit history, `clue_history`. The
+  `history` store is LARA interactive-state history, a different store written by
+  a different application, so never fetch it for a CLUE question.
+- `clue_patches` answers what a student changed and in what order,
+  `clue_content` what a document holds now, `clue_documents` which documents
+  exist and whose they are, and `clue_history` entry-level timing and counts.
+  `logs` and `recent_logs` add what the student had on screen between edits (the
+  `logs` entry describes CLUE's `extras`).
+- Leave runtime output out when the question is about the student (the Working
+  with the CLUE views entry lists the patterns). Order a document's edits by the
+  entry key, never by a clock, and say which clock a reported time, duration or
+  cross-document ordering used: `created` within one document, `server_created`
+  across documents.
+- Before a dataset is materialized, `clue_patches` unpacks every history entry in
+  it that the query does not exclude by comparing an entry-level column
+  (`doc_id`, `entry_id`, `idx`, `created`, `server_created`, `action`,
+  `is_revert`) with literal values: `doc_id IN ('...', ...)`, a time range, or
+  the runtime-output `action` patterns. A join, an `IN (SELECT ...)` or
+  `IN (VALUES ...)`, `= ANY([...])`, the per-run scoping in Working with the
+  CLUE views, and a filter on `path`, `op`, `value` or `tile_id` narrow the
+  result, not the work, so on a large dataset materialize first, or look up the
+  document ids and filter by them as literals.
 
 ## Identity columns
 

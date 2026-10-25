@@ -770,11 +770,11 @@ func TestToolDescriptionsCarryTheirPortalFacts(t *testing.T) {
 		"reports_filter_options": {"Student ID Mapping run's filter is assembled"},
 		"get_report":             {"re-read it by passing refresh"},
 		"get_answers":            {"Student ID Mapping run id is a valid source"},
-		"get_history":            {"Student ID Mapping run id is a valid source"},
+		"get_history":            {"Student ID Mapping run id is a valid source", "a CLUE document's history is get_clue_history"},
 		"get_attachments":        {"Student ID Mapping run id is a valid source"},
 		"get_clue_documents":     {"Student ID Mapping run id is the intended source"},
 		"get_clue_content":       {"Student ID Mapping run id is the intended source"},
-		"get_clue_history":       {"Student ID Mapping run id is the intended source", "not get_history's interactive-state history", "Fetch get_clue_documents for the run first"},
+		"get_clue_history":       {"Student ID Mapping run id is the intended source", "not get_history's interactive-state history", "Fetch get_clue_documents for the run first", "clue_patches view, not the action column"},
 		"get_recent_logs":        {"recent_logs view, not logs", "appears in both logs and recent_logs", "received_time"},
 	} {
 		if _, ok := desc[tool]; !ok {
