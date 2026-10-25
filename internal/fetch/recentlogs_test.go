@@ -417,11 +417,22 @@ func TestRecentLogsConnectionCutMidRows(t *testing.T) {
 	}
 }
 
-func TestRecentLogsTrailingContentIsRefused(t *testing.T) {
-	d, s := seededPull(t)
-	s.push(body(logsBody{class: 590, rows: []string{logRow("e2")}, count: -1, nextCursor: "v1.second"}.String() + `{}`))
-	_, err, _ := pullLogs(t, d, s, RecentLogsOptions{})
-	assertFailedPull(t, d, err, "TRANSIENT", "cut off")
+func TestRecentLogsWrongShapesAreBadResponses(t *testing.T) {
+	full := logsBody{class: 590, rows: []string{logRow("e2")}, count: -1, nextCursor: "v1.second"}.String()
+	for name, b := range map[string]string{
+		"trailing content":    full + `{}`,
+		"a string class_id":   strings.Replace(full, `"class_id":590`, `"class_id":"590"`, 1),
+		"rows not an array":   strings.Replace(full, `"rows":[`+logRow("e2")+`]`, `"rows":{}`, 1),
+		"a top-level array":   "[" + full + "]",
+		"no cursor unbounded": logsBody{class: 590, rows: []string{logRow("e2")}, count: -1}.String(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			d, s := seededPull(t)
+			s.push(body(b))
+			_, err, _ := pullLogs(t, d, s, RecentLogsOptions{})
+			assertFailedPull(t, d, err, "BAD_RESPONSE", "class 590")
+		})
+	}
 }
 
 func TestRecentLogsEnvelopeChecks(t *testing.T) {
@@ -576,6 +587,22 @@ func TestRecentLogsStopsAfterTwoAttempts(t *testing.T) {
 		t.Errorf("a failed pull recorded %+v", m)
 	}
 	assertNothingLeft(t, d)
+}
+
+func TestRecentLogsDecoderHandsRowsOnInBatches(t *testing.T) {
+	rows := make([]string, recentLogsBatch*2+1)
+	for i := range rows {
+		rows[i] = logRow(fmt.Sprintf("e%04d", i))
+	}
+	var sizes []int
+	_, err := decodeRecentLogs(strings.NewReader(logsBody{class: 590, rows: rows, count: -1, nextCursor: "c"}.String()),
+		func(batch [][]byte) error { sizes = append(sizes, len(batch)); return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []int{recentLogsBatch, recentLogsBatch, 1}; !slices.Equal(sizes, want) {
+		t.Errorf("batch sizes = %v, want %v", sizes, want)
+	}
 }
 
 func TestRecentLogsBatchesLargeResponses(t *testing.T) {

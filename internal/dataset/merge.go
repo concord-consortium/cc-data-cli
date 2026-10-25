@@ -1,7 +1,9 @@
 package dataset
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -59,8 +61,9 @@ func (d *Dataset) openCovered(m *Manifest, typ string, merging map[int]*store.Se
 }
 
 // WriteMembership writes a run's membership version file from its segment index. For an
-// accumulating kind it is the union with the run's membership in m; a file m names but
-// the disk lacks fails the merge.
+// accumulating kind it is the union with the run's membership in m, or the index alone
+// when that file is gone: the kind removes nothing, so its membership only records which
+// keys the run's pulls brought.
 func (d *Dataset) WriteMembership(m *Manifest, typ string, runID, version int, idx *store.SegmentIndex) error {
 	path := d.Path(memberFileName(typ, runID, version))
 	ref, ok := m.Membership[MembershipKey(typ, runID)]
@@ -68,6 +71,9 @@ func (d *Dataset) WriteMembership(m *Manifest, typ string, runID, version int, i
 		return idx.WriteMembership(path)
 	}
 	prev, err := store.OpenMembership(d.Path(ref.File), store.MustKind(typ))
+	if errors.Is(err, fs.ErrNotExist) {
+		return idx.WriteMembership(path)
+	}
 	if err != nil {
 		return err
 	}

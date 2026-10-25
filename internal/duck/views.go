@@ -426,7 +426,7 @@ func (vs viewSet) downloadsView() viewStmt {
 	for _, dl := range vs.m.Downloads {
 		// A bare NULL would type the column "NULL" when no row has a value.
 		runID, classID := strconv.Itoa(dl.RunID), "CAST(NULL AS BIGINT)"
-		if k, ok := store.KindOf(dl.Type); ok && k.ClassKeyed {
+		if store.IsClassKeyed(dl.Type) {
 			runID, classID = classID, strconv.Itoa(dl.ClassID)
 		}
 		rows = append(rows, fmt.Sprintf("(%s, %s, %s, %s, %s, %s, %t)",

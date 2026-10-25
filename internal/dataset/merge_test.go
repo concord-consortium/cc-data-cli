@@ -504,19 +504,21 @@ func TestRecentLogsClassesKeepEachOthersRowsAcrossASweep(t *testing.T) {
 	}
 }
 
-func TestRecentLogsMergeFailsClosedOnAMissingMembershipFile(t *testing.T) {
+func TestRecentLogsMergeRebuildsALostMembershipFile(t *testing.T) {
 	d := newDataset(t)
 	mergeLogs(t, d, 590, logRec("e1", "a"))
+	mergeLogs(t, d, 591, logRec("f1", "a"))
 	m, _ := d.ReadManifest()
 	if err := os.Remove(d.Path(m.Membership[MembershipKey(store.TypeRecentLogs, 590)].File)); err != nil {
 		t.Fatal(err)
 	}
-	seg := writeFinishedSegment(t, d, store.TypeRecentLogs, 590, [][]byte{logRec("e2", "a")})
-	if _, err := d.MergeCompact(store.TypeRecentLogs, 590, seg); err == nil {
-		t.Fatal("the merge succeeded with the class's membership file missing")
+	writeFinishedSegment(t, d, store.TypeRecentLogs, 590, [][]byte{logRec("e2", "a")})
+	mergeLogs(t, d, 591, logRec("f2", "a"))
+	if got := logIDs(t, d); got != "e1,e2,f1,f2" {
+		t.Errorf("store after 591's pull swept 590's segment = %s", got)
 	}
-	if got := logIDs(t, d); got != "e1" {
-		t.Errorf("store after the failed merge = %s", got)
+	if got := classMembership(t, d, 590); got != "e2" {
+		t.Errorf("590's rebuilt membership = %s", got)
 	}
 }
 

@@ -163,7 +163,7 @@ func (d *Dataset) Reindex() error {
 	// an older cc-data's manifest rewrite leaves, is dropped.
 	var classes []Download
 	for k, dl := range prior {
-		if kind, ok := store.KindOf(k.typ); ok && kind.ClassKeyed {
+		if store.IsClassKeyed(k.typ) {
 			if _, held := newestMember[MembershipKey(k.typ, k.run)]; !held && dl.ClassID > 0 {
 				classes = append(classes, dl)
 			}

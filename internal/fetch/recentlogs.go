@@ -127,7 +127,7 @@ func FetchRecentLogs(ctx context.Context, o RecentLogsOptions) (map[string]any, 
 	}
 
 	fetchedAt := time.Now().UTC()
-	env, rows, cliErr := o.decodeIntoSegment(seg, body, fetchedAt)
+	env, rows, cliErr := o.decodeIntoSegment(seg, body, fetchedAt, q.Bounded())
 	if cliErr != nil {
 		seg.Remove()
 		return nil, cliErr
@@ -229,20 +229,16 @@ func (o RecentLogsOptions) priorEntry() (dataset.Download, error) {
 }
 
 // decodeIntoSegment decodes the body file into the segment and checks the envelope against
-// the class asked for and the rows read.
-func (o RecentLogsOptions) decodeIntoSegment(seg *store.Segment, body string, fetchedAt time.Time) (recentLogsEnvelope, int, *output.CLIError) {
+// the class asked for, the rows read and, for a pull with no bounds, the cursor it must carry.
+func (o RecentLogsOptions) decodeIntoSegment(seg *store.Segment, body string, fetchedAt time.Time, bounded bool) (recentLogsEnvelope, int, *output.CLIError) {
 	f, err := os.Open(body)
 	if err != nil {
 		return recentLogsEnvelope{}, 0, output.Internalf("opening the response: %v", err)
 	}
 	defer f.Close()
 	rows := 0
-	env, err := decodeRecentLogs(f, func(batch []json.RawMessage) error {
-		recs := make([][]byte, len(batch))
-		for i, r := range batch {
-			recs[i] = r
-		}
-		lines, err := store.MustKind(store.TypeRecentLogs).StampLines(recs, fetchedAt, o.ClassID)
+	env, err := decodeRecentLogs(f, func(batch [][]byte) error {
+		lines, err := store.MustKind(store.TypeRecentLogs).StampLines(batch, fetchedAt, o.ClassID)
 		if err == nil {
 			err = seg.AppendLines(lines)
 		}
@@ -254,6 +250,7 @@ func (o RecentLogsOptions) decodeIntoSegment(seg *store.Segment, body string, fe
 	})
 	var rowErr *rowIdentityError
 	var badRow *badRowError
+	var shape *shapeError
 	var local *localError
 	switch {
 	case errors.As(err, &rowErr):
@@ -263,12 +260,16 @@ func (o RecentLogsOptions) decodeIntoSegment(seg *store.Segment, body string, fe
 		return env, 0, badResponse("class %d %s: row %d: %v", o.ClassID, store.TypeRecentLogs, badRow.Row, badRow.Err)
 	case errors.As(err, &local):
 		return env, 0, output.Internalf("appending rows: %v", local.err)
+	case errors.As(err, &shape):
+		return env, 0, badResponse("class %d %s: %v", o.ClassID, store.TypeRecentLogs, shape.err)
 	case err != nil:
 		return env, 0, cutOff(o.ClassID)
 	case env.ClassID != o.ClassID:
 		return env, 0, badResponse("class %d %s: the response is for class %d", o.ClassID, store.TypeRecentLogs, env.ClassID)
 	case env.Count != rows:
 		return env, 0, badResponse("class %d %s: the response counts %d rows and holds %d", o.ClassID, store.TypeRecentLogs, env.Count, rows)
+	case !bounded && env.NextCursor == nil:
+		return env, 0, badResponse("class %d %s: the response has no next_cursor", o.ClassID, store.TypeRecentLogs)
 	}
 	return env, rows, nil
 }
@@ -281,6 +282,11 @@ func cutOff(class int) *output.CLIError {
 func badResponse(format string, args ...any) *output.CLIError {
 	return &output.CLIError{ExitCode: output.ExitContract, Code: "BAD_RESPONSE", Message: fmt.Sprintf(format, args...)}
 }
+
+// shapeError is a response that parsed but is not the shape the route answers.
+type shapeError struct{ err error }
+
+func (e *shapeError) Error() string { return e.err.Error() }
 
 type localError struct{ err error }
 
@@ -319,7 +325,7 @@ type recentLogsEnvelope struct {
 // are read, byte for byte, and returning the other fields. It fails on a row without a usable
 // id and on anything after the closing brace. A body cut before its closing fields fails only
 // after its earlier rows reached sink, so the caller keeps nothing until it returns cleanly.
-func decodeRecentLogs(r io.Reader, sink func([]json.RawMessage) error) (recentLogsEnvelope, error) {
+func decodeRecentLogs(r io.Reader, sink func([][]byte) error) (recentLogsEnvelope, error) {
 	var env recentLogsEnvelope
 	kind := store.MustKind(store.TypeRecentLogs)
 	dec := json.NewDecoder(r)
@@ -345,7 +351,7 @@ func decodeRecentLogs(r io.Reader, sink func([]json.RawMessage) error) (recentLo
 		if err := expectDelim(dec, '['); err != nil {
 			return env, err
 		}
-		batch := make([]json.RawMessage, 0, recentLogsBatch)
+		batch := make([][]byte, 0, recentLogsBatch)
 		n := 0
 		for dec.More() {
 			var row json.RawMessage
@@ -365,7 +371,7 @@ func decodeRecentLogs(r io.Reader, sink func([]json.RawMessage) error) (recentLo
 				if err := sink(batch); err != nil {
 					return env, err
 				}
-				batch = make([]json.RawMessage, 0, recentLogsBatch)
+				batch = make([][]byte, 0, recentLogsBatch)
 			}
 		}
 		if err := expectDelim(dec, ']'); err != nil {
@@ -381,11 +387,11 @@ func decodeRecentLogs(r io.Reader, sink func([]json.RawMessage) error) (recentLo
 		return env, err
 	}
 	if _, err := dec.Token(); err != io.EOF {
-		return env, errors.New("the response continues after its closing brace")
+		return env, &shapeError{errors.New("the response continues after its closing brace")}
 	}
 	raw, _ := json.Marshal(fields)
 	if err := json.Unmarshal(raw, &env); err != nil {
-		return env, err
+		return env, &shapeError{err}
 	}
 	return env, nil
 }
@@ -396,7 +402,7 @@ func expectDelim(dec *json.Decoder, want json.Delim) error {
 		return err
 	}
 	if d, ok := tok.(json.Delim); !ok || d != want {
-		return fmt.Errorf("expected %q, got %v", want, tok)
+		return &shapeError{fmt.Errorf("expected %q, got %v", want, tok)}
 	}
 	return nil
 }

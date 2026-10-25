@@ -94,7 +94,7 @@ func renderShow(s *dataset.ShowJSON, full bool) {
 
 // runCell names a download's run, or its class for a class-keyed type.
 func runCell(dl dataset.DownloadJSON) string {
-	if k, ok := store.KindOf(dl.Type); ok && k.ClassKeyed {
+	if store.IsClassKeyed(dl.Type) {
 		return fmt.Sprintf("class %d", dl.ClassID)
 	}
 	return strconv.Itoa(dl.RunID)

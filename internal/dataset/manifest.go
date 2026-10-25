@@ -89,7 +89,7 @@ type Download struct {
 // Key is the integer the download's segment and membership are named by: the class
 // for a class-keyed store type, else the run.
 func (dl Download) Key() int {
-	if k, ok := store.KindOf(dl.Type); ok && k.ClassKeyed {
+	if store.IsClassKeyed(dl.Type) {
 		return dl.ClassID
 	}
 	return dl.RunID

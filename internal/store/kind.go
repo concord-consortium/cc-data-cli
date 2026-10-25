@@ -205,6 +205,12 @@ func MustKind(name string) Kind {
 	return k
 }
 
+// IsClassKeyed reports whether the store type is a registered class-keyed kind.
+func IsClassKeyed(name string) bool {
+	k, ok := KindOf(name)
+	return ok && k.ClassKeyed
+}
+
 // Names returns the registered store type names in registry order.
 func Names() []string {
 	out := make([]string, len(kinds))
