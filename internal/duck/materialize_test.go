@@ -16,6 +16,7 @@ import (
 
 	"github.com/concord-consortium/cc-data-cli/internal/config"
 	"github.com/concord-consortium/cc-data-cli/internal/dataset"
+	"github.com/concord-consortium/cc-data-cli/internal/store"
 )
 
 // fullFixture holds a store, a log CSV and a mapping CSV, so the materializable
@@ -389,6 +390,26 @@ func TestMaterializeReportsAnIncompleteDownloadWithoutBlocking(t *testing.T) {
 	}
 	if r := outcomeReason(res, "logs"); r != "" {
 		t.Fatalf("a view that reads no incomplete download carries no caveat, got %q", r)
+	}
+}
+
+func TestMaterializeReportsAnIncompleteClueDownload(t *testing.T) {
+	d := fullFixture(t)
+	land(t, d, store.TypeClueHistory, 901, map[string]any{"doc_id": "d1", "entry_id": "e1"})
+	m := mustManifest(t, d)
+	m.Downloads = append(m.Downloads, dataset.Download{Type: store.TypeClueHistory, RunID: 902, Complete: false})
+	if err := writeManifestUnderLock(d, m); err != nil {
+		t.Fatal(err)
+	}
+
+	res, _ := materialize(t, d, MaterializeOptions{})
+	for _, view := range []string{store.TypeClueHistory, "run_membership"} {
+		if r := outcomeReason(res, view); !strings.Contains(r, "run 902") {
+			t.Fatalf("%s reads the incomplete clue_history download and its outcome must say so: %q", view, r)
+		}
+	}
+	if r := outcomeReason(res, "answers"); strings.Contains(r, "902") {
+		t.Fatalf("answers reads no clue_history download, got %q", r)
 	}
 }
 

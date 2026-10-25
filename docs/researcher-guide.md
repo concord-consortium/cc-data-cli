@@ -447,8 +447,8 @@ The three `log` reports share the same clickstream columns; `student-answers` an
 
 **Portal reports, computed live.** Two of them name a set of learners, and a run
 of either is a valid run id for `get answers`, `get history`, `get attachments`
-and the three `get clue-*` commands, so they are what you use to pull those learners' work without
-authoring an Athena report first:
+and the three `get clue-*` commands, so they are what you use to pull those
+learners' work without authoring an Athena report first:
 
 - **Student ID Mapping** (slug `student-id-mapping`): the portal ids and the
   `run_remote_endpoint` that joins each learner to their stored records, and no

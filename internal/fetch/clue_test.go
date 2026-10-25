@@ -292,6 +292,26 @@ func TestClueItemWithoutItsIdentityIsRefused(t *testing.T) {
 	}
 }
 
+func TestClueDocumentOrContentWithoutItsDocIDIsRefused(t *testing.T) {
+	for typ, file := range map[string]string{store.TypeClueDocuments: "documents.json", store.TypeClueContent: "content.json"} {
+		d := newTestDataset(t)
+		items := fixture(t, file)
+		srv := clueServer(t, 3, items[:1], items[1:2])
+		srv.pages[1] = strings.TrimSuffix(srv.pages[1], "]") + `,{"uid":"1234","context_id":"c"}]`
+		_, err := pullClue(t, d, srv, typ, 584)
+		var cerr *output.CLIError
+		if !errors.As(err, &cerr) || cerr.Code != "MALFORMED_ITEM" || cerr.ExitCode != output.ExitContract {
+			t.Fatalf("%s: err = %v, want MALFORMED_ITEM", typ, err)
+		}
+		if want := "run 584 " + typ + ": item 2 of page 2: doc_id is missing"; cerr.Message != want {
+			t.Fatalf("%s: message %q, want %q", typ, cerr.Message, want)
+		}
+		if cur, ok, _ := store.OpenSegment(d.Dir, typ, 584).ReadCursor(); !ok || cur.Pages != 1 {
+			t.Fatalf("%s: cursor %+v, want it left on page 1", typ, cur)
+		}
+	}
+}
+
 func coverageOf(t *testing.T, res map[string]any) *dataset.Coverage {
 	t.Helper()
 	cov, _ := res["coverage"].(*dataset.Coverage)
