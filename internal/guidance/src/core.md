@@ -153,7 +153,8 @@ like `wildfire_2026.answers`):
   needed. `content_json` is the content as JSON, byte for byte, NULL when `found`
   is false or the document has no content; content DuckDB cannot parse is NULL
   there and kept as text in `content_json_unparsed`, and `parse_ok` says which (NULL
-  with no content). Tile summaries: `n_tiles` (every `tileMap` key), `tile_types`
+  with no content): DuckDB's verdict, where `clue_history`'s `parse_ok` is the
+  server's. Tile summaries: `n_tiles` (every `tileMap` key), `tile_types`
   (the sorted distinct tile types, `VARCHAR[]`), `tile_type_counts` (a JSON object
   of type to count, `{}` with no typed tiles), `n_dataflow_tiles`, and the key
   counts `n_rows`, `n_shared_models` and `n_annotations`; each is 0 or empty when
@@ -194,9 +195,11 @@ like `wildfire_2026.answers`):
     leave them out where the question is about the student.
   - **A `replace` patch carries only the new value**, so telling whether a student
     revisited a parameter needs the sequence of patches on that path.
-  - **`value IS NULL` is a patch with no value** (a `remove`); a patch that sets
-    null has a non-NULL `value` whose `json_type(value)` is `'NULL'`. Query output
-    shows both as `null`, so make the distinction in the SQL.
+  - **`value IS NULL` is a patch with no value**: every `remove`, and the `add` and
+    `replace` patches written without one (252 beside 3,241 `remove`s in one real
+    Dataflow document). A patch that sets null has a non-NULL `value` whose
+    `json_type(value)` is `'NULL'`. Query output shows both as `null`, so make the
+    distinction in the SQL, and test `op = 'remove'` for removals.
   - **Unparseable payloads** are in `entry_json_unparsed` and
     `content_json_unparsed`. `clue_history`'s stored `parse_ok` is the server's
     `JSON.parse` verdict and `entry_json IS NOT NULL` is DuckDB's, and

@@ -2,6 +2,7 @@ package duck
 
 import (
 	"fmt"
+	"maps"
 	"path/filepath"
 	"strings"
 
@@ -12,16 +13,18 @@ import (
 // clue_content row, at the documents store's own types.
 var clueDocColumns = []string{"portal_class_id", "unit", "investigation", "problem", "offering_id"}
 
-// clueSource is a CLUE store as a relation: its file, or a typed-empty stand-in over the
-// store's recorded columns (the pins when there is no store) when standIn is set or the
-// file is absent. A missing file is still declared, so materializing refuses the view;
-// only the store's own view passes warn, so the file is reported once.
+// clueSource is a CLUE store as a relation: its file, or a typed-empty stand-in when
+// standIn is set or the file is absent. Its columns are the store's recorded ones plus
+// the pins at their pinned types, since the derived SQL names the pins. A missing file
+// is still declared, so materializing refuses the view; only the store's own view
+// passes warn, so the file is reported once.
 func (vs viewSet) clueSource(typ string, standIn, warn bool) (rel string, files []string) {
-	cols := cluePins(typ)
 	st, ok := vs.m.Stores[typ]
-	if ok && len(st.Columns) > 0 {
-		cols = st.Columns
+	cols := maps.Clone(st.Columns)
+	if cols == nil {
+		cols = map[string]string{}
 	}
+	maps.Copy(cols, cluePins(typ))
 	if standIn || !ok || st.File == "" {
 		return "(" + typedEmpty(cols) + ")", nil
 	}
@@ -105,6 +108,16 @@ func clueActionExprs(col string) (action, tileID, sharedModelID string) {
 	return action, tileID, sharedModelID
 }
 
+// clueDeclared is what a view joining the documents store declares: nothing when its own
+// store has no file, as with a plain store view, so the documents file alone never makes
+// it materializable.
+func clueDeclared(own, doc []string) []string {
+	if len(own) == 0 {
+		return nil
+	}
+	return append(own, doc...)
+}
+
 // clueDocJoin is the documents store narrowed to the joined columns, for a LEFT JOIN
 // USING (doc_id). The store holds one row per doc_id, so the join keeps the row count.
 func (vs viewSet) clueDocJoin(standIn bool, extra ...string) (rel string, files []string) {
@@ -134,7 +147,7 @@ func (vs viewSet) clueHistoryView() viewStmt {
   %s AS action, %s AS tile_id, %s AS shared_model_id, d.doc_uid, %s
 FROM %s h LEFT JOIN %s d USING (doc_id)`,
 			entry, clueUndoable.replace("h.undoable"), unparsedColumn("h.entry_json", entry, "entry_json"), clueUndoable.unparsed("h.undoable"),
-			action, tileID, sharedModelID, docColumnRefs("d"), h, d), append(files, docFiles...)
+			action, tileID, sharedModelID, docColumnRefs("d"), h, d), clueDeclared(files, docFiles)
 	})
 }
 
@@ -169,7 +182,7 @@ CROSS JOIN LATERAL (SELECT list_transform(list_filter(json_extract(cj.j, '$.tile
 LEFT JOIN %s d USING (doc_id)`,
 			clueChangeCount.replace("c.change_count"), clueChangeCount.unparsed("c.change_count"),
 			clueMapCount("$.tileMap"), clueMapCount("$.rowMap"), clueMapCount("$.sharedModelMap"), clueMapCount("$.annotations"),
-			docColumnRefs("d"), c, d), append(files, docFiles...)
+			docColumnRefs("d"), c, d), clueDeclared(files, docFiles)
 	})
 }
 

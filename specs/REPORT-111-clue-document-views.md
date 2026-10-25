@@ -36,7 +36,7 @@ Scott's CLUE corpus work showed that the history `action` column cannot be the u
 
 ### `clue_patches`
 
-- **R11.** One row per patch of every history entry whose `entry_json` parses: `doc_id`, `entry_id`, `idx`, `created`, `server_created`, `action`, `tile_id`, `is_revert`, `rec_idx`, `patch_idx`, `op`, `path`, `value`. `rec_idx` and `patch_idx` are the patch's 0-based positions in `records[]` and in that record's `patches[]`. `action`, `created` and `server_created` are the entry's, as `clue_history` derives them. `tile_id` is the tile in the patch's own `path`, else the entry's `tile_id`. `value` is the patch's `value` as `JSON`: NULL when the patch has none (`remove`), the JSON literal `null` when it sets null.
+- **R11.** One row per patch of every history entry whose `entry_json` parses: `doc_id`, `entry_id`, `idx`, `created`, `server_created`, `action`, `tile_id`, `is_revert`, `rec_idx`, `patch_idx`, `op`, `path`, `value`. `rec_idx` and `patch_idx` are the patch's 0-based positions in `records[]` and in that record's `patches[]`. `action`, `created` and `server_created` are the entry's, as `clue_history` derives them. `tile_id` is the tile in the patch's own `path`, else the entry's `tile_id`. `value` is the patch's `value` as `JSON`: NULL when the patch has none (every `remove`, and an `add` or `replace` written without one), the JSON literal `null` when it sets null.
 - **R12.** An entry that does not parse, has no `records`, or whose records have no `patches`, contributes no rows; `records` or `patches` that are not arrays contribute none either, without an error.
 - **R13.** `(doc_id, idx, entry_id, rec_idx, patch_idx)` is unique, so a query or window ordered by it returns the same rows in the same order on every run and every engine instantiation, and a window ordered by it has no ties. The view itself applies no `ORDER BY`: a sort over every patch with its value exceeds the sandbox's memory and temp caps at Scott's scale, and a view's order does not survive a filter, join or aggregate anyway. Rows come out in store order, which is fixed but not the key's order.
 
@@ -75,7 +75,8 @@ Scott's CLUE corpus work showed that the history `action` column cannot be the u
   - the runtime-output trap: patch paths under `program/values/`, `demoOutput` and `tickEntries/` are written by a running program, not the student, and `content/step` and `tickAndProcess` actions are most history entries; recorded as a known trap, not filtered by the view;
   - `action` is not the edit primitive (279 documents record granular actions, 2,604 use the catch-all `setProgram`), so per-edit questions read `clue_patches`;
   - `replace` patches carry the new value only, so detecting a revisited parameter needs the sequence;
-  - `value IS NULL` is a patch with no value (a `remove`), while a patch that sets null has a non-NULL `value` whose `json_type` is `'NULL'`; query output renders both as `null`, so the test belongs in the SQL;
+  - `value IS NULL` is a patch with no value (every `remove`, and an `add` or `replace` written without one), while a patch that sets null has a non-NULL `value` whose `json_type` is `'NULL'`; query output renders both as `null`, so the test belongs in the SQL, and removals are found by `op`;
+  - `clue_content`'s `parse_ok` is DuckDB's verdict, where `clue_history`'s is the server's;
   - `entry_json_unparsed` and `content_json_unparsed` are where a payload DuckDB cannot parse lives;
   - `clue_history`'s stored `parse_ok` is the server's `JSON.parse` verdict, while `entry_json IS NOT NULL` is DuckDB's, and `clue_patches` explodes by DuckDB's: the two disagree on a lone surrogate escape (JavaScript accepts it, DuckDB does not) and on trailing commas, `NaN` and `Infinity` (DuckDB accepts them, JavaScript does not);
   - `clue_patches` has no per-run view; scope it to a run through that run's entries, `WHERE (doc_id, entry_id) IN (SELECT doc_id, entry_id FROM clue_history_<run>)`;
@@ -119,13 +120,18 @@ Checked in the DuckDB 1.5.5 CLI and through cc-data's driver (DuckDB 1.5.4):
 - A view's `ORDER BY` survives even `count(*)`. With realistic patch values (28.8M synthetic patches, about 5.5 GB of values) the sort failed a raw `count(*)` on the memory cap and `Materialize` on the temp cap; without it the count took 23 s and the Parquet 62 s (2.6 GB). `Materialize` copies with `COPY (SELECT * FROM <view>)` and nothing turns off `preserve_insertion_order`, so the Parquet holds the raw view's store order.
 - The lambda arrow `x -> ...` is deprecated in 1.5 and reads like the JSON `->` operator; the views use `lambda x: ...`.
 
+### Checked on real patches
+
+One Dataflow student document from Scott's corpus, redacted and seeded on the local stack, has 4,029 entries and 8,465 patches. 3,493 of the patches carry no `value` key: its 3,241 `remove`s and 252 `add` and `replace` patches. Its entries, patches and kinds by action matched the source's counts, and the key was unique and its ordered read the same on every run, raw and materialized.
+
 ### Code
 
 - `internal/duck/clue_views.go` holds the four builders and their helpers: `clueSource` (a store's `read_json`, or its typed-empty stand-in), `clueView` (the fallback is the primary's SQL over stand-ins), `typedScalar` (R21's typed and `_unparsed` columns from one name), `clueActionExprs`, `clueDocJoin` and `cluePatchKey`.
-- `clueSource` reads the store's recorded `Columns`, falling back to the pins, so widened fields pass through. A store file missing on disk gives a typed-empty relation but is still declared (R15); only the store's own view warns, so the file is reported once.
+- `clueSource` reads the store's recorded `Columns` plus the pins at their pinned types, so widened fields pass through and a manifest that lacks a pin the derived SQL names still opens. A store file missing on disk gives a typed-empty relation but is still declared (R15); only the store's own view warns, so the file is reported once.
 - `clue_content` computes its parsed content and tile-type list in `CROSS JOIN LATERAL` relations referenced as `cj.j` and `ct.types`, so a store column of the same name cannot shadow them and make every view on the dataset fail to open.
 - `clue_patches` reads the history store file with the same fragments `clue_history` uses, not the `clue_history` view: a view that declares no files is never materialized, and `viewSignature` hashes only a view's own SQL, so reading another view by name would keep a stale Parquet looking fresh.
-- `incompleteRuns` in `materialize.go` admits, for a store download, any view whose declared files hold that store's file, so an incomplete `clue_documents` run caveats `clue_history` and `clue_content` and an incomplete `clue_history` run caveats `clue_patches`.
+- `clue_history` and `clue_content` declare the documents file only when their own store has a file (`clueDeclared`), so a dataset with only documents does not materialize them empty.
+- `incompleteRuns` in `materialize.go` admits, for a store download, any view whose declared files hold that store's file (its own view among them), so an incomplete `clue_documents` run caveats `clue_history` and `clue_content` and an incomplete `clue_history` run caveats `clue_patches`.
 - The lone-surrogate fixture entry is written as raw text: Go's `encoding/json` turns `\ud83d` into U+FFFD both ways, which DuckDB parses.
 - `internal/guidance/guard_test.go` checks `StaticViewNames()` against `core.md`'s `## Views` and the researcher guide's view table in both directions.
 - `cluePatchKey` is the key the tests order by, and `TestClueGuidanceNamesThePatchKey` checks that `core.md` and the researcher guide spell it the same way.

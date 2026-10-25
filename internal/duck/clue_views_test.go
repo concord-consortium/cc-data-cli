@@ -490,6 +490,53 @@ func TestClueViewsPassWidenedColumns(t *testing.T) {
 	}
 }
 
+func TestClueViewsReadPinsTheManifestDoesNotRecord(t *testing.T) {
+	d := clueFixture(t)
+	unrecorded := map[string][]string{
+		store.TypeClueDocuments: {"tools", "created_at"},
+		store.TypeClueHistory:   {"action_raw", "entry_json", "undoable"},
+		store.TypeClueContent:   {"content_json", "self", "change_count"},
+	}
+	if err := d.UpdateManifest(func(m *dataset.Manifest) error {
+		for typ, cols := range unrecorded {
+			st := m.Stores[typ]
+			st.Columns = maps.Clone(st.Columns)
+			for _, c := range cols {
+				delete(st.Columns, c)
+			}
+			m.Stores[typ] = st
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	e := openEngine(t, []DatasetSpec{{DS: d}}, nil)
+	for _, typ := range clueKinds {
+		got := columnTypes(t, e, typ)
+		delete(got, clueWidened[typ])
+		if want := clueViewColumns(typ); !maps.Equal(got, want) {
+			t.Fatalf("%s columns %v, want %v", typ, got, want)
+		}
+	}
+	if n := queryInt(t, e, "SELECT count(n_tools) FROM clue_documents"); n == 0 {
+		t.Fatal("clue_documents read no tools from its file")
+	}
+}
+
+func TestClueViewsWithOnlyADocumentsStore(t *testing.T) {
+	d := newDS(t, "clue")
+	land(t, d, store.TypeClueDocuments, 700, map[string]any{"doc_id": "d1", "uid": "1234", "context_id": "c", "owner_type": "user"})
+	res, _ := materialize(t, d, MaterializeOptions{})
+	if !slices.Contains(res.Written(), store.TypeClueDocuments) {
+		t.Fatalf("clue_documents was not written: %+v", res.Views)
+	}
+	for _, view := range []string{store.TypeClueHistory, store.TypeClueContent, "clue_patches"} {
+		if slices.Contains(res.Written(), view) {
+			t.Fatalf("%s was written with no store of its own", view)
+		}
+	}
+}
+
 func TestClueHistoryNormalizesActions(t *testing.T) {
 	e := openEngine(t, []DatasetSpec{{DS: clueFixture(t)}}, nil)
 	for entry, want := range map[string][]string{

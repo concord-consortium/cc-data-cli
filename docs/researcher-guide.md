@@ -386,14 +386,15 @@ A few things to know before analyzing CLUE documents with these views:
   them out yourself when the question is about what the student did.
 - **A `replace` patch shows only the new value**, so whether a student came back
   to a setting shows up only in the sequence of patches.
-- **A missing value is not a null value.** A patch with no value at all (a
-  `remove`) has `value IS NULL`; a patch that sets something to null has a
-  `value` whose `json_type` is `'NULL'`. Both print as `null`, so test for the
-  difference in your query.
+- **A missing value is not a null value.** A patch with no value at all (every
+  `remove`, and some `add` and `replace` patches written without one) has
+  `value IS NULL`; a patch that sets something to null has a `value` whose
+  `json_type` is `'NULL'`. Both print as `null`, so test for the difference in
+  your query, and find removals with `op = 'remove'`.
 - **An entry that will not parse keeps its text, but has no patches.** The
   original text is in `entry_json_unparsed` or `content_json_unparsed`, and
-  `clue_patches` has no rows for that entry. The stored `parse_ok` is the server's
-  verdict; the query engine's is whether `entry_json` is filled in, and
+  `clue_patches` has no rows for that entry. `clue_history`'s stored `parse_ok` is
+  the server's verdict (`clue_content`'s is the query engine's); the query engine's is whether `entry_json` is filled in, and
   `clue_patches` follows the query engine. The two can disagree: `entry_json` is NULL for
   a split emoji the server accepted, and filled in for text with a trailing comma,
   `NaN` or `Infinity` that the server rejected.

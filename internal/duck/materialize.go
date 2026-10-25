@@ -528,12 +528,12 @@ func viewCaveat(m *dataset.Manifest, view string, files, missing []string) strin
 // requested.
 //
 // The view-to-download mapping is three rules because no single rule covers it.
-// Report-backed views map by file intersection. A store download maps to the view
-// named after its type and to every view whose declared files hold the store's
-// current file, since a store is one merged file across every run and carries no
-// per-run identity. run_membership maps by type too: its filenames do encode (type, run),
-// but an incomplete run has no membership file at all, so a per-run mapping would
-// never see the run the caveat is about.
+// Report-backed views map by file intersection. A store download maps to every view
+// whose declared files hold the store's current file, its own view among them, since
+// a store is one merged file across every run and carries no per-run identity.
+// run_membership maps by type: its filenames do encode (type, run), but an
+// incomplete run has no membership file at all, so a per-run mapping would never
+// see the run the caveat is about.
 func incompleteRuns(m *dataset.Manifest, view string, files []string) []int {
 	var runs []int
 	seen := map[int]bool{}
@@ -548,7 +548,7 @@ func incompleteRuns(m *dataset.Manifest, view string, files []string) []int {
 			continue
 		}
 		if isStoreType(dl.Type) {
-			if view == dl.Type || view == "run_membership" || slices.Contains(files, m.Stores[dl.Type].File) {
+			if view == "run_membership" || slices.Contains(files, m.Stores[dl.Type].File) {
 				add(dl.RunID)
 			}
 			continue
