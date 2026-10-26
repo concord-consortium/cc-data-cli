@@ -123,8 +123,8 @@ func TestV02DatasetOpensQueriesMergesAndReindexes(t *testing.T) {
 	e.Close()
 
 	// Re-merging a run with the records it already holds, at the same stamp, is a no-op:
-	// the store and the run's membership come out byte-identical. History covers the
-	// optional history_id column and a value the 0.2.x encoder HTML-escaped.
+	// the store and the run's membership come out byte-identical. History covers a value
+	// the 0.2.x encoder HTML-escaped.
 	remergeIsNoOp(t, d, store.TypeAnswers, 585, 2)
 	remergeIsNoOp(t, d, store.TypeHistory, 584, 2)
 

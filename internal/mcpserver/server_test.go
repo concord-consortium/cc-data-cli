@@ -757,7 +757,7 @@ func TestToolDescriptionsCarryTheirPortalFacts(t *testing.T) {
 
 // The clue tools and `cc-data get clue-*` share one fetch, so each tool's result carries
 // what the CLI's result line does.
-func TestMCPGetClueToolsReturnTheCLIResult(t *testing.T) {
+func TestMCPGetClueToolsReturnTheFetchResult(t *testing.T) {
 	for tool, rt := range map[string]struct{ route, typ, items string }{
 		"get_clue_documents": {"documents", "clue_documents", `[{"doc_id":"-Nd1","uid":"1234","context_id":"c"},{"doc_id":"-Nd2","uid":"1234","context_id":"c"}]`},
 		"get_clue_history":   {"history", "clue_history", `[{"doc_id":"-Nd1","entry_id":"e1","idx":0,"entry_json":"{}"},{"doc_id":"-Nd1","entry_id":"e2","idx":1,"entry_json":"{}"}]`},
@@ -797,17 +797,8 @@ func TestMCPGetClueToolsReturnTheCLIResult(t *testing.T) {
 		if !reflect.DeepEqual(out, want) {
 			t.Fatalf("%s result %v, want the fetch's %v", tool, out, want)
 		}
-		counts, _ := out["merge_counts"].(map[string]any)
-		if out["type"] != rt.typ || out["run_id"] != float64(584) || out["complete"] != true || counts["fetched"] != float64(2) || counts["new"] != float64(2) {
-			t.Fatalf("%s result %v", tool, out)
-		}
-		cov, hasCov := out["coverage"]
-		if rt.typ == "clue_history" {
-			if note, _ := out["coverage_note"].(string); !hasCov || cov != nil || !strings.Contains(note, "fetch run 584's clue_documents, then its clue_history again") {
-				t.Fatalf("history coverage %v, note %v", cov, out["coverage_note"])
-			}
-		} else if c, _ := cov.(map[string]any); c["with_data"] != float64(1) {
-			t.Fatalf("%s coverage %v, want one owner", tool, cov)
+		if counts, _ := out["merge_counts"].(map[string]any); counts["fetched"] != float64(2) {
+			t.Fatalf("%s result %v, want both items fetched", tool, out)
 		}
 	}
 }

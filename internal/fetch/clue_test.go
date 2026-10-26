@@ -114,13 +114,11 @@ func md5hex(s string) string {
 func TestClueRoutesAreRequestedAtTheirOwnPaths(t *testing.T) {
 	for typ, route := range map[string]string{store.TypeClueDocuments: "documents", store.TypeClueHistory: "history", store.TypeClueContent: "content"} {
 		d := newTestDataset(t)
-		srv := clueServer(t, 3, fixture(t, "documents.json"))
-		if typ == store.TypeClueContent {
-			srv = clueServer(t, 3, fixture(t, "content.json"))
+		pages := historyPages(t)
+		if typ != store.TypeClueHistory {
+			pages = [][]map[string]any{fixture(t, route+".json")}
 		}
-		if typ == store.TypeClueHistory {
-			srv = clueServer(t, 3, historyPages(t)...)
-		}
+		srv := clueServer(t, 3, pages...)
 		mustPull(t, d, srv, typ, 584)
 		if len(srv.paths) == 0 {
 			t.Fatalf("%s made no request", typ)
@@ -136,7 +134,7 @@ func TestClueRoutesAreRequestedAtTheirOwnPaths(t *testing.T) {
 func TestClueStringsAreStoredByteForByte(t *testing.T) {
 	d := newTestDataset(t)
 	pages := historyPages(t)
-	big := strings.Repeat(`{"op":"replace","path":"/<&>","value":"héllo"}`, 70_000)
+	big := strings.Repeat(`{"op":"replace","path":"/<&>","value":"héllo`+"\x00\x01\x1f\u2028"+`"}`, 70_000)
 	pages[3] = append(pages[3], map[string]any{"doc_id": "-Nd2", "entry_id": "e08", "idx": 1, "parse_ok": true, "entry_json": big})
 	mustPull(t, d, clueServer(t, 3, pages...), store.TypeClueHistory, 584)
 	mustPull(t, d, clueServer(t, 3, fixture(t, "content.json")), store.TypeClueContent, 584)

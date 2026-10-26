@@ -312,7 +312,8 @@ dataset named `wildfire` on `learn.concord.org` lives in
   called `staging` that you could never log in to. For the same reason the
   `default_portal` setting takes a full hostname, and `cc-data` refuses to start
   if you put an environment name there.
-- Into a dataset you can pull seven kinds of data for any run:
+- Into a dataset you can pull seven kinds of data for a run. Runs of two
+  aggregate metrics reports can give only the report CSV (see Report types).
   - **report**: the report CSV (answers reports, and log/action reports).
   - **answers**: the raw student answer records.
   - **history**: the full series of how each answer's interactive state evolved.
@@ -659,7 +660,7 @@ What it cannot reproduce:
 - **Python.** A `.py` entrypoint runs with `python3.11` when it is on your
   `PATH`, as on the VM, and otherwise with `python3` after a note saying so.
 - **CLUE.** A package with `clue_prepull: true` is refused locally, since
-  `cc-data` cannot fetch CLUE data yet.
+  `cc-data` does not run a package's CLUE pre-pull yet.
 
 ### Checked against report-server
 
