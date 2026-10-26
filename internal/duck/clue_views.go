@@ -14,28 +14,54 @@ import (
 var clueDocColumns = []string{"portal_class_id", "unit", "investigation", "problem", "offering_id"}
 
 // clueSource is a CLUE store as a relation: its file, or a typed-empty stand-in when
-// standIn is set or the file is absent. Its columns are the store's recorded ones plus
-// the pins at their pinned types, since the derived SQL names the pins. A missing file
+// standIn is set or the file is absent. Its columns, cols, are the store's recorded ones
+// plus the pins at their pinned types, since the derived SQL names the pins. A missing file
 // is still declared, so materializing refuses the view; only the store's own view
 // passes warn, so the file is reported once.
-func (vs viewSet) clueSource(typ string, standIn, warn bool) (rel string, files []string) {
+func (vs viewSet) clueSource(typ string, standIn, warn bool) (rel string, cols map[string]string, files []string) {
 	st, ok := vs.m.Stores[typ]
-	cols := maps.Clone(st.Columns)
+	cols = maps.Clone(st.Columns)
 	if cols == nil {
 		cols = map[string]string{}
 	}
 	maps.Copy(cols, cluePins(typ))
 	if standIn || !ok || st.File == "" {
-		return "(" + typedEmpty(cols) + ")", nil
+		return "(" + typedEmpty(cols) + ")", cols, nil
 	}
 	if fileMissing(filepath.Join(vs.canonDir, st.File)) {
 		if warn {
 			vs.warnf("store file %s is missing on disk; views reading it see no %s rows (run cc-data dataset reindex)", st.File, typ)
 		}
-		return "(" + typedEmpty(cols) + ")", []string{st.File}
+		return "(" + typedEmpty(cols) + ")", cols, []string{st.File}
 	}
-	return fmt.Sprintf("read_json(%s, format='newline_delimited', columns=%s)", vs.file(st.File), columnsClause(cols)), []string{st.File}
+	return fmt.Sprintf("read_json(%s, format='newline_delimited', columns=%s)", vs.file(st.File), columnsClause(cols)), cols, []string{st.File}
 }
+
+// clueRename is the RENAME clause for a store star: a store column whose name the view adds
+// is passed through under a free sourceSuffix name, since the added name is what the guidance
+// documents and DuckDB would otherwise rename the view's own column to <name>_1. Empty when
+// nothing clashes.
+func clueRename(cols map[string]string, added []string) string {
+	var renames []string
+	for _, name := range added {
+		if _, taken := cols[name]; taken {
+			renames = append(renames, sqlIdent(name)+" AS "+sqlIdent(freeSourceName(cols, name)))
+		}
+	}
+	if len(renames) == 0 {
+		return ""
+	}
+	return " RENAME (" + strings.Join(renames, ", ") + ")"
+}
+
+// The columns each store view adds to its store's, which a store column of the same name
+// must not take.
+var (
+	clueDocumentsAdded = []string{"n_tools", "tools_unparsed", "created_at_unparsed"}
+	clueHistoryAdded   = append([]string{"entry_json_unparsed", "undoable_unparsed", "action", "tile_id", "shared_model_id", "doc_uid"}, clueDocColumns...)
+	clueContentAdded   = append([]string{"content_json_unparsed", "change_count_unparsed", "parse_ok", "n_tiles", "tile_types", "tile_type_counts",
+		"n_dataflow_tiles", "n_rows", "n_shared_models", "n_annotations", "self_uid", "self_doc_key", "self_class_hash"}, clueDocColumns...)
+)
 
 // clueView registers a view whose fallback is its primary built over stand-ins.
 func (vs viewSet) clueView(bare string, build func(standIn bool) (string, []string)) viewStmt {
@@ -91,9 +117,9 @@ func cluePins(typ string) map[string]string {
 
 func (vs viewSet) clueDocumentsView() viewStmt {
 	return vs.clueView(store.TypeClueDocuments, func(standIn bool) (string, []string) {
-		src, files := vs.clueSource(store.TypeClueDocuments, standIn, true)
-		return fmt.Sprintf("SELECT d.* REPLACE (%s, %s), len(%s) AS n_tools, %s, %s FROM %s d",
-			clueTools.replace("d.tools"), clueCreatedAt.replace("d.created_at"), clueTools.typed("d.tools"),
+		src, cols, files := vs.clueSource(store.TypeClueDocuments, standIn, true)
+		return fmt.Sprintf("SELECT d.* REPLACE (%s, %s)%s, len(%s) AS n_tools, %s, %s FROM %s d",
+			clueTools.replace("d.tools"), clueCreatedAt.replace("d.created_at"), clueRename(cols, clueDocumentsAdded), clueTools.typed("d.tools"),
 			clueTools.unparsed("d.tools"), clueCreatedAt.unparsed("d.created_at"), src), files
 	})
 }
@@ -121,7 +147,7 @@ func clueDeclared(own, doc []string) []string {
 // clueDocJoin is the documents store narrowed to the joined columns, for a LEFT JOIN
 // USING (doc_id). The store holds one row per doc_id, so the join keeps the row count.
 func (vs viewSet) clueDocJoin(standIn bool, extra ...string) (rel string, files []string) {
-	src, files := vs.clueSource(store.TypeClueDocuments, standIn, false)
+	src, _, files := vs.clueSource(store.TypeClueDocuments, standIn, false)
 	cols := append([]string{"doc_id"}, extra...)
 	for _, c := range clueDocColumns {
 		cols = append(cols, sqlIdent(c))
@@ -139,20 +165,21 @@ func docColumnRefs(alias string) string {
 
 func (vs viewSet) clueHistoryView() viewStmt {
 	return vs.clueView(store.TypeClueHistory, func(standIn bool) (string, []string) {
-		h, files := vs.clueSource(store.TypeClueHistory, standIn, true)
+		h, cols, files := vs.clueSource(store.TypeClueHistory, standIn, true)
 		d, docFiles := vs.clueDocJoin(standIn, "uid AS doc_uid")
 		action, tileID, sharedModelID := clueActionExprs("h.action_raw")
 		entry := jsonPayload("h.entry_json")
-		return fmt.Sprintf(`SELECT h.* REPLACE (%s AS entry_json, %s), %s, %s,
+		return fmt.Sprintf(`SELECT h.* REPLACE (%s AS entry_json, %s)%s, %s, %s,
   %s AS action, %s AS tile_id, %s AS shared_model_id, d.doc_uid, %s
 FROM %s h LEFT JOIN %s d USING (doc_id)`,
-			entry, clueUndoable.replace("h.undoable"), unparsedColumn("h.entry_json", entry, "entry_json"), clueUndoable.unparsed("h.undoable"),
+			entry, clueUndoable.replace("h.undoable"), clueRename(cols, clueHistoryAdded), unparsedColumn("h.entry_json", entry, "entry_json"), clueUndoable.unparsed("h.undoable"),
 			action, tileID, sharedModelID, docColumnRefs("d"), h, d), clueDeclared(files, docFiles)
 	})
 }
 
 // clueMapCount is the key count of one of content's top-level maps: 0 when the content
-// parsed and the map is absent, as cc-data-studies' summarise has it, and NULL with no content.
+// parsed and the map is absent, as cc-data-studies' summarise has it, and NULL when there is
+// no content or it does not parse.
 func clueMapCount(path string) string {
 	return fmt.Sprintf("CASE WHEN cj.j IS NOT NULL THEN coalesce(len(json_keys(cj.j, %s)), 0) END", sqlStr(path))
 }
@@ -161,11 +188,11 @@ var clueChangeCount = typedScalar{"change_count", []string{"BIGINT", "UBIGINT"},
 
 func (vs viewSet) clueContentView() viewStmt {
 	return vs.clueView(store.TypeClueContent, func(standIn bool) (string, []string) {
-		c, files := vs.clueSource(store.TypeClueContent, standIn, true)
+		c, cols, files := vs.clueSource(store.TypeClueContent, standIn, true)
 		d, docFiles := vs.clueDocJoin(standIn)
 		// Lateral relations, referenced qualified, so no store column can shadow them; untyped
 		// or non-string tile types are skipped, though n_tiles still counts their keys.
-		return fmt.Sprintf(`SELECT c.* REPLACE (cj.j AS content_json, %s),
+		return fmt.Sprintf(`SELECT c.* REPLACE (cj.j AS content_json, %s)%s,
   CASE WHEN c.content_json IS NOT NULL AND cj.j IS NULL THEN c.content_json END AS content_json_unparsed,
   %s,
   CASE WHEN c.content_json IS NOT NULL THEN cj.j IS NOT NULL END AS parse_ok,
@@ -180,7 +207,7 @@ FROM %s c
 CROSS JOIN LATERAL (SELECT TRY_CAST(c.content_json AS JSON) AS j) cj
 CROSS JOIN LATERAL (SELECT list_transform(list_filter(json_extract(cj.j, '$.tileMap.*.content.type'), lambda x: json_type(x) = 'VARCHAR'), lambda x: x ->> '$') AS types) ct
 LEFT JOIN %s d USING (doc_id)`,
-			clueChangeCount.replace("c.change_count"), clueChangeCount.unparsed("c.change_count"),
+			clueChangeCount.replace("c.change_count"), clueRename(cols, clueContentAdded), clueChangeCount.unparsed("c.change_count"),
 			clueMapCount("$.tileMap"), clueMapCount("$.rowMap"), clueMapCount("$.sharedModelMap"), clueMapCount("$.annotations"),
 			docColumnRefs("d"), c, d), clueDeclared(files, docFiles)
 	})
@@ -196,7 +223,7 @@ const cluePatchKey = "doc_id, idx, entry_id, rec_idx, patch_idx"
 // Parquet's signature would not cover the other view's SQL.
 func (vs viewSet) cluePatchesView() viewStmt {
 	return vs.clueView("clue_patches", func(standIn bool) (string, []string) {
-		h, files := vs.clueSource(store.TypeClueHistory, standIn, false)
+		h, _, files := vs.clueSource(store.TypeClueHistory, standIn, false)
 		action, tileID, _ := clueActionExprs("action_raw")
 		// Two unnests in one SELECT zip by position, so each range() index is its element's.
 		return fmt.Sprintf(`WITH e AS (SELECT doc_id, entry_id, idx, created, server_created, is_revert, %s AS action, %s AS entry_tile_id, %s AS entry FROM %s),

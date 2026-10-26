@@ -332,31 +332,41 @@ var clueWidened = map[string]string{
 // Columns are the pins plus the widened column.
 func clueFixture(t *testing.T) *dataset.Dataset {
 	t.Helper()
+	return clueFixtureWith(t, nil)
+}
+
+// clueFixtureWith is clueFixture with extra's fields added to every row of each store.
+func clueFixtureWith(t *testing.T, extra map[string]map[string]any) *dataset.Dataset {
+	t.Helper()
 	d := newDS(t, "clue")
+	with := func(typ string, row map[string]any) map[string]any {
+		maps.Copy(row, extra[typ])
+		return row
+	}
 	var docs []map[string]any
 	for _, doc := range clueFixtureDocs {
-		docs = append(docs, map[string]any{
+		docs = append(docs, with(store.TypeClueDocuments, map[string]any{
 			"doc_id": doc.id, "uid": doc.uid, "context_id": "c", "portal_class_id": doc.class, "owner_type": "user",
 			"unit": doc.unit, "investigation": doc.investigation, "problem": doc.problem, "offering_id": doc.offering,
 			"tools": doc.tools, "created_at": doc.createdAt, clueWidened[store.TypeClueDocuments]: "w-" + doc.id,
-		})
+		}))
 	}
 	land(t, d, store.TypeClueDocuments, 700, docs...)
 	var entries []map[string]any
 	for _, en := range clueFixtureEntries {
-		entries = append(entries, map[string]any{
+		entries = append(entries, with(store.TypeClueHistory, map[string]any{
 			"doc_id": en.doc, "entry_id": en.id, "idx": en.idx, "created": en.created, "server_created": en.server,
 			"action_raw": en.action, "undoable": en.undoable, "is_revert": en.isRevert, "parse_ok": en.parseOK,
 			"entry_json": en.entryJSON(), clueWidened[store.TypeClueHistory]: "w-" + en.id,
-		})
+		}))
 	}
 	land(t, d, store.TypeClueHistory, 700, entries...)
 	var content []map[string]any
 	for _, c := range clueFixtureContent {
-		content = append(content, map[string]any{
+		content = append(content, with(store.TypeClueContent, map[string]any{
 			"doc_id": c.doc, "found": c.content != nil, "content_json": c.content, "change_count": c.changeCount,
 			"self": c.self, clueWidened[store.TypeClueContent]: "w-" + c.doc,
-		})
+		}))
 	}
 	land(t, d, store.TypeClueContent, 700, content...)
 	return d
@@ -433,7 +443,19 @@ func TestClueDocumentsCreatedAt(t *testing.T) {
 	}
 }
 
-func TestClueDocumentsFallbackDeclaresEveryColumn(t *testing.T) {
+// A created_at outside TIMESTAMP's range is NULL rather than an error, which would fail every
+// query that reads the column.
+func TestClueDocumentsCreatedAtOutOfRange(t *testing.T) {
+	d := newDS(t, "clue")
+	land(t, d, store.TypeClueDocuments, 700, map[string]any{"doc_id": "dZ", "created_at": 1e300})
+	e := openEngine(t, []DatasetSpec{{DS: d}}, nil)
+	got := queryRow(t, e, "SELECT created_at::VARCHAR, created_at_unparsed::VARCHAR FROM clue_documents")
+	if want := []string{"<NULL>", "1e300"}; !slices.Equal(got, want) {
+		t.Fatalf("created_at, created_at_unparsed = %v, want %v", got, want)
+	}
+}
+
+func TestClueDocumentsWithNoClueStoresDeclaresEveryColumn(t *testing.T) {
 	assertClueFallback(t, store.TypeClueDocuments)
 }
 
@@ -486,6 +508,69 @@ func TestClueViewsPassWidenedColumns(t *testing.T) {
 		}
 		if got := clueFallbackColumns(t, e, d, typ); !maps.Equal(got, cols) {
 			t.Fatalf("%s fallback columns %v, want the primary's %v", typ, got, cols)
+		}
+	}
+}
+
+// The payloads keep their stored bytes, whitespace and escapes included; every struct-built
+// fixture payload is compact, so it cannot show a parse that re-serializes.
+func TestClueViewsKeepPayloadBytes(t *testing.T) {
+	entry := `{ "records" : [ { "patches" : [ { "op" : "add", "path" : "/p", "value" : 1.50 } ] } ], "s": "a\nb\u00e9" }`
+	content := `{ "tileMap" : { }, "n" : 1.50, "s": "a\nb\u00e9" }`
+	d := newDS(t, "clue")
+	land(t, d, store.TypeClueHistory, 700, map[string]any{"doc_id": "d1", "entry_id": "e1", "entry_json": entry})
+	land(t, d, store.TypeClueContent, 700, map[string]any{"doc_id": "d1", "content_json": content})
+	e := openEngine(t, []DatasetSpec{{DS: d}}, nil)
+	if got := queryRow(t, e, "SELECT entry_json::VARCHAR, entry_json_unparsed IS NULL FROM clue_history"); !slices.Equal(got, []string{entry, "true"}) {
+		t.Errorf("entry_json, entry_json_unparsed IS NULL = %q, want %q and true", got, entry)
+	}
+	if got := queryRow(t, e, "SELECT content_json::VARCHAR, parse_ok FROM clue_content"); !slices.Equal(got, []string{content, "true"}) {
+		t.Errorf("content_json, parse_ok = %q, want %q and true", got, content)
+	}
+}
+
+// A store column named like a column the view adds is passed through as <name>_source, and the
+// documented name keeps the view's own value. Every added name clashes at once, taken from the
+// expected schema rather than the code's list, so a name the list misses fails.
+func TestClueViewsKeepAddedNamesOverAClashingStoreColumn(t *testing.T) {
+	added, extra := map[string][]string{}, map[string]map[string]any{}
+	for _, typ := range clueKinds {
+		extra[typ] = map[string]any{}
+		for name := range clueDerived[typ] {
+			if _, stored := clueColumns[typ][name]; !stored {
+				added[typ] = append(added[typ], name)
+				extra[typ][name] = "s-" + name
+			}
+		}
+		slices.Sort(added[typ])
+	}
+	base := openEngine(t, []DatasetSpec{{DS: clueFixture(t)}}, nil)
+	d := clueFixtureWith(t, extra)
+	clash := openEngine(t, []DatasetSpec{{DS: d}}, nil)
+	for _, typ := range clueKinds {
+		want := columnTypes(t, base, typ)
+		for _, name := range added[typ] {
+			want[name+"_source"] = "VARCHAR"
+		}
+		got := columnTypes(t, clash, typ)
+		if !maps.Equal(got, want) {
+			t.Fatalf("%s columns with every added name in the store %v, want %v", typ, got, want)
+		}
+		if fb := clueFallbackColumns(t, clash, d, typ); !maps.Equal(fb, got) {
+			t.Fatalf("%s fallback columns %v, want the primary's %v", typ, fb, got)
+		}
+		order := "doc_id"
+		if typ == store.TypeClueHistory {
+			order = "doc_id, entry_id"
+		}
+		for _, name := range added[typ] {
+			agg := fmt.Sprintf("SELECT string_agg(coalesce(%s::VARCHAR, '<NULL>'), '|' ORDER BY %s) FROM %s", sqlIdent(name), order, typ)
+			if g, w := queryString(t, clash, agg), queryString(t, base, agg); g != w {
+				t.Errorf("%s.%s = %s with the store column, want the view's own %s", typ, name, g, w)
+			}
+			if n := queryInt(t, clash, fmt.Sprintf("SELECT count(*) FROM %s WHERE %s IS DISTINCT FROM 's-%s'", typ, sqlIdent(name+"_source"), name)); n != 0 {
+				t.Errorf("%s has %d rows whose %s_source is not the store's value", typ, n, name)
+			}
 		}
 	}
 }
@@ -654,7 +739,7 @@ func TestClueHistoryWithoutADocumentsStore(t *testing.T) {
 	})
 }
 
-func TestClueHistoryFallbackDeclaresEveryColumn(t *testing.T) {
+func TestClueHistoryWithNoClueStoresDeclaresEveryColumn(t *testing.T) {
 	assertClueFallback(t, store.TypeClueHistory)
 }
 
@@ -786,7 +871,7 @@ func TestClueContentPayloads(t *testing.T) {
 	}
 }
 
-func TestClueContentFallbackDeclaresEveryColumn(t *testing.T) {
+func TestClueContentWithNoClueStoresDeclaresEveryColumn(t *testing.T) {
 	assertClueFallback(t, store.TypeClueContent)
 }
 
@@ -916,19 +1001,23 @@ func TestCluePatchesColumns(t *testing.T) {
 		} else if m := tileInPath.FindStringSubmatch(fmt.Sprint(p.entry.action)); m != nil {
 			tile = m[1]
 		}
-		value := "set"
+		value, text := "set", "<NULL>"
 		switch {
 		case !p.patch.hasValue:
 			value = "absent"
 		case p.patch.value == nil:
 			value = "null"
 		}
+		if p.patch.hasValue {
+			b, _ := json.Marshal(p.patch.value)
+			text = string(b)
+		}
 		got := queryRow(t, e, fmt.Sprintf(`SELECT coalesce(tile_id, '<NULL>'), op, path,
   CASE WHEN value IS NULL THEN 'absent' WHEN json_type(value) = 'NULL' THEN 'null' ELSE 'set' END,
-  is_revert::VARCHAR
+  coalesce(value::VARCHAR, '<NULL>'), is_revert::VARCHAR
 FROM clue_patches WHERE %s = '%s'`, cluePatchKeySQL, p.key()))
-		if want := []string{tile, p.patch.op, p.patch.path, value, fmt.Sprint(p.entry.isRevert)}; !slices.Equal(got, want) {
-			t.Errorf("%s tile_id, op, path, value, is_revert = %v, want %v", p.key(), got, want)
+		if want := []string{tile, p.patch.op, p.patch.path, value, text, fmt.Sprint(p.entry.isRevert)}; !slices.Equal(got, want) {
+			t.Errorf("%s tile_id, op, path, value kind, value, is_revert = %v, want %v", p.key(), got, want)
 		}
 	}
 	if n := queryInt(t, e, `SELECT count(*) FROM clue_patches p JOIN clue_history h USING (doc_id, entry_id)
@@ -956,9 +1045,14 @@ var cluePatchesColumns = map[string]string{
 	"op": "VARCHAR", "path": "VARCHAR", "value": "JSON",
 }
 
-func TestCluePatchesFallbackDeclaresEveryColumn(t *testing.T) {
-	if got := columnTypes(t, openEngine(t, []DatasetSpec{{DS: clueFixture(t)}}, nil), "clue_patches"); !maps.Equal(got, cluePatchesColumns) {
+func TestCluePatchesWithNoClueStoresDeclaresEveryColumn(t *testing.T) {
+	d := clueFixture(t)
+	e := openEngine(t, []DatasetSpec{{DS: d}}, nil)
+	if got := columnTypes(t, e, "clue_patches"); !maps.Equal(got, cluePatchesColumns) {
 		t.Fatalf("clue_patches columns %v, want %v", got, cluePatchesColumns)
+	}
+	if got := clueFallbackColumns(t, e, d, "clue_patches"); !maps.Equal(got, cluePatchesColumns) {
+		t.Fatalf("clue_patches fallback columns %v, want %v", got, cluePatchesColumns)
 	}
 	assertClueFallback(t, "clue_patches")
 }

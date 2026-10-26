@@ -63,7 +63,9 @@ Scott's CLUE corpus work showed that the history `action` column cannot be the u
   - every `clue_history` and `clue_content` row carries its document's columns, the documents-absent row keeps NULLs, and the row counts equal the stores';
   - the tile summaries match hand-written expectations per fixture document;
   - each R21 column is typed for a well-formed value and NULL with its `_unparsed` set for a value of the wrong kind (a string number, a fraction, an object), and both are NULL for a NULL value;
-  - each view's fallback installs with the full column list on a dataset without the stores;
+  - each view declares the full column list on a dataset with no CLUE stores, and each view's registered fallback SQL, described directly since a JSONL file with explicit columns never makes the primary fail, declares the primary's columns;
+  - a store column named like each column a view adds leaves the view's value under the documented name and passes the store's through as `<name>_source`;
+  - `entry_json` and `content_json` keep a stored payload's whitespace and escapes byte for byte, a `created_at` outside the `TIMESTAMP` range is NULL with its value in `created_at_unparsed`, and each `clue_patches` `value` is the fixture's own value;
   - materializing all four and reading them back returns the raw views' rows.
 
 ### Guidance
@@ -101,7 +103,7 @@ A CLUE history entry (collaborative-learning `src/models/history/history.ts`) ho
 See `specs/REPORT-110-fetch-clue-documents-history-and-content.md`.
 
 - Store types `clue_documents`, `clue_history`, `clue_content`, each one JSONL store with a recorded `Columns` map (pins plus every field observed). Identity is `doc_id` for documents and content and `(doc_id, entry_id)` for history, one current row per identity, which is why R4's join cannot fan out and R13's key is unique.
-- Every REPORT-109 item field is a store column under its wire name, plus `_fetched_at` and `_run_id`; none collides with a derived column name. A widened field that did would not fail the view: DuckDB renames the later duplicate to `<name>_1`.
+- Every REPORT-109 item field is a store column under its wire name, plus `_fetched_at` and `_run_id`; none collides with a derived column name. A widened field that did would take the documented name, since DuckDB renames the view's later column to `<name>_1` without an error, so each view passes a store column named like one it adds through as `<name>_source`, REPORT-112's rule for `logs` (`sourceSuffix`, repeated until the name is free).
 - Pinned types: `entry_json` and `content_json` `VARCHAR` byte for byte; `tools`, `metadata_sources`, `self`, the two metadata objects, `created_at`, `change_count` and `undoable` `JSON`; `created` and `server_created` `TIMESTAMP`; `portal_class_id`, `offering_id`, `idx` and `n_records` `BIGINT`; `found`, `parse_ok` and `is_revert` `BOOLEAN`.
 - The registry (`store.Kind`, `store.MustKind`) carries each kind's pins; `cluePins` reads them, so R10's stand-in types and every fallback's source columns come from one place.
 - `statements()` builds every store view in one loop over the kinds. `derivedStoreViews` in `views.go` replaces a kind's plain `storeView` with its derived view under the same name; REPORT-152 registers `recent_logs` through the same map. The per-run `clue_*_<run>` views select `s.*` from the view named after the store, so they carry the derived columns with no change.
@@ -126,7 +128,7 @@ One Dataflow student document from Scott's corpus, redacted and seeded on the lo
 
 ### Code
 
-- `internal/duck/clue_views.go` holds the four builders and their helpers: `clueSource` (a store's `read_json`, or its typed-empty stand-in), `clueView` (the fallback is the primary's SQL over stand-ins), `typedScalar` (R21's typed and `_unparsed` columns from one name), `clueActionExprs`, `clueDocJoin` and `cluePatchKey`.
+- `internal/duck/clue_views.go` holds the four builders and their helpers: `clueSource` (a store's `read_json`, or its typed-empty stand-in), `clueView` (the fallback is the primary's SQL over stand-ins), `typedScalar` (R21's typed and `_unparsed` columns from one name), `clueRename` (a clashing store column's `_source` name), `clueActionExprs`, `clueDocJoin` and `cluePatchKey`.
 - `clueSource` reads the store's recorded `Columns` plus the pins at their pinned types, so widened fields pass through and a manifest that lacks a pin the derived SQL names still opens. A store file missing on disk gives a typed-empty relation but is still declared (R15); only the store's own view warns, so the file is reported once.
 - `clue_content` computes its parsed content and tile-type list in `CROSS JOIN LATERAL` relations referenced as `cj.j` and `ct.types`, so a store column of the same name cannot shadow them and make every view on the dataset fail to open.
 - `clue_patches` reads the history store file with the same fragments `clue_history` uses, not the `clue_history` view: a view that declares no files is never materialized, and `viewSignature` hashes only a view's own SQL, so reading another view by name would keep a stale Parquet looking fresh.

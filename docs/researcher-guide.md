@@ -391,13 +391,14 @@ A few things to know before analyzing CLUE documents with these views:
   `value IS NULL`; a patch that sets something to null has a `value` whose
   `json_type` is `'NULL'`. Both print as `null`, so test for the difference in
   your query, and find removals with `op = 'remove'`.
-- **An entry that will not parse keeps its text, but has no patches.** The
-  original text is in `entry_json_unparsed` or `content_json_unparsed`, and
-  `clue_patches` has no rows for that entry. `clue_history`'s stored `parse_ok` is
-  the server's verdict (`clue_content`'s is the query engine's); the query engine's is whether `entry_json` is filled in, and
-  `clue_patches` follows the query engine. The two can disagree: `entry_json` is NULL for
-  a split emoji the server accepted, and filled in for text with a trailing comma,
-  `NaN` or `Infinity` that the server rejected.
+- **Unparseable JSON keeps its original text.** In `clue_history`, an entry the
+  query engine cannot parse has NULL `entry_json`, keeps its text in
+  `entry_json_unparsed`, and produces no `clue_patches` rows. The stored
+  `parse_ok` is the server's verdict; `entry_json IS NOT NULL` shows the query
+  engine's verdict. They can disagree: the query engine rejects a split emoji the
+  server accepted, but accepts a trailing comma, `NaN`, or `Infinity` that the
+  server rejected. In `clue_content`, `content_json_unparsed` keeps content the
+  query engine cannot parse, and `parse_ok` reports the query engine's verdict.
 - **There is no per-run `clue_patches`.** To look at one run's patches, keep the
   entries that run's `clue_history_<run>` view holds: `WHERE (doc_id, entry_id) IN (SELECT
   doc_id, entry_id FROM clue_history_584)`.

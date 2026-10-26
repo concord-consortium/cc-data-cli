@@ -147,9 +147,14 @@ func collisions(dl dataset.Download, derived []derivedColumn) []string {
 // took. Two renames cannot converge while no derived name is another with sourceSuffix repeated
 // on the end, which is worth re-checking if a fifth derived column is ever added.
 func sourceName(dl dataset.Download, col string) string {
+	return freeSourceName(dl.Columns, col)
+}
+
+// freeSourceName is col with sourceSuffix added until the name is not among cols.
+func freeSourceName(cols map[string]string, col string) string {
 	name := col + sourceSuffix
 	for {
-		if _, taken := dl.Columns[name]; !taken {
+		if _, taken := cols[name]; !taken {
 			return name
 		}
 		name += sourceSuffix
