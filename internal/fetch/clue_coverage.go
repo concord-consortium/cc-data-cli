@@ -19,21 +19,21 @@ var coverageWalkHook = func() {}
 
 // ownerCoverage counts the run's distinct (context_id, uid) owners, read from the kind's
 // owner store. It walks under the dataset lock so another run's merge cannot delete the
-// store version the manifest names.
+// store version the manifest names. When owners cannot be counted, the note says why.
 func (opts PagedOptions) ownerCoverage(kind store.Kind, totalEndpoints *int) (*dataset.Coverage, string) {
 	lock := opts.DS.Lock()
 	if err := lock.Lock(); err != nil {
-		return nil, ""
+		return nil, "owners not counted: " + err.Error()
 	}
 	defer lock.Unlock()
 
 	m, err := opts.DS.ReadManifest()
 	if err != nil {
-		return nil, ""
+		return nil, "owners not counted: " + err.Error()
 	}
 	ref, ok := m.Membership[dataset.MembershipKey(opts.Type, opts.RunID)]
 	if !ok {
-		return nil, ""
+		return nil, fmt.Sprintf("owners not counted: run %d has no %s membership", opts.RunID, opts.Type)
 	}
 	ownerStore := kind.OwnerStore
 	note := ""
@@ -42,7 +42,7 @@ func (opts PagedOptions) ownerCoverage(kind store.Kind, totalEndpoints *int) (*d
 	}
 	owners, resolved, err := walkOwners(opts.DS.Path(ref.File), kind, m.Stores[ownerStore].File, opts.DS, store.MustKind(ownerStore))
 	if err != nil {
-		return nil, ""
+		return nil, fmt.Sprintf("owners not counted: %s %v", ownerStore, err)
 	}
 	if !resolved {
 		return nil, note
@@ -133,7 +133,7 @@ func walkOwners(memberPath string, memberKind store.Kind, storeFile string, ds *
 		}
 		owner, err := store.IdentityFromRecord(ownerKind, storeRec)
 		if err != nil {
-			return 0, false, err
+			return 0, false, fmt.Errorf("document %s's %w", memberKind.Field(memberKind.Decode(key), "doc_id"), err)
 		}
 		seen[ownerKind.Key(owner)] = true
 	}

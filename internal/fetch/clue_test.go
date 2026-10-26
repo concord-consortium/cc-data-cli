@@ -382,6 +382,35 @@ func TestClueHistoryWithNoEntriesCountsNoOwners(t *testing.T) {
 	}
 }
 
+func TestClueDocumentWithNoOwnerSaysWhyOwnersAreNotCounted(t *testing.T) {
+	d := newTestDataset(t)
+	docs := fixture(t, "documents.json")
+	docs[1]["uid"] = ""
+	res := mustPull(t, d, clueServer(t, 5, docs), store.TypeClueDocuments, 584)
+	if cov := coverageOf(t, res); cov != nil {
+		t.Fatalf("coverage %+v with a document missing its owner, want none", cov)
+	}
+	if note, _ := res["coverage_note"].(string); note != "owners not counted: clue_documents document -Nd2's uid is empty" {
+		t.Fatalf("coverage_note = %q", note)
+	}
+}
+
+// Keys sort by length before content, so "b" comes before "aa" on both sides of the walk.
+func TestClueHistoryCoverageWalksDocIDsOfDifferentLengths(t *testing.T) {
+	d := newTestDataset(t)
+	mustPull(t, d, clueServer(t, 5, []map[string]any{
+		{"doc_id": "b", "uid": "1", "context_id": "c"},
+		{"doc_id": "aa", "uid": "2", "context_id": "c"},
+	}), store.TypeClueDocuments, 584)
+	res := mustPull(t, d, clueServer(t, 5, []map[string]any{
+		{"doc_id": "aa", "entry_id": "e1", "idx": 0, "entry_json": "{}"},
+		{"doc_id": "b", "entry_id": "e1", "idx": 0, "entry_json": "{}"},
+	}), store.TypeClueHistory, 584)
+	if cov := coverageOf(t, res); cov == nil || cov.WithData != 2 {
+		t.Fatalf("history coverage %+v (note %v), want 2 owners", cov, res["coverage_note"])
+	}
+}
+
 func TestClueCoverageWalksUnderTheDatasetLock(t *testing.T) {
 	d := newTestDataset(t)
 	ran := false
