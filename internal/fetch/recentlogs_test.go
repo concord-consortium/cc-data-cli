@@ -419,6 +419,7 @@ func TestRecentLogsConnectionCutMidRows(t *testing.T) {
 
 func TestRecentLogsWrongShapesAreBadResponses(t *testing.T) {
 	full := logsBody{class: 590, rows: []string{logRow("e2")}, count: -1, nextCursor: "v1.second"}.String()
+	empty := logsBody{class: 590, count: -1, nextCursor: "v1.second"}.String()
 	for name, b := range map[string]string{
 		"trailing content":    full + `{}`,
 		"a string class_id":   strings.Replace(full, `"class_id":590`, `"class_id":"590"`, 1),
@@ -426,6 +427,9 @@ func TestRecentLogsWrongShapesAreBadResponses(t *testing.T) {
 		"a top-level array":   "[" + full + "]",
 		"rows twice":          strings.Replace(full, `"count"`, `"rows":[],"count"`, 1),
 		"no cursor unbounded": logsBody{class: 590, rows: []string{logRow("e2")}, count: -1}.String(),
+		"no rows":             strings.Replace(empty, `"rows":[],`, ``, 1),
+		"no count":            strings.Replace(empty, `"count":0,`, ``, 1),
+		"a null count":        strings.Replace(empty, `"count":0`, `"count":null`, 1),
 	} {
 		t.Run(name, func(t *testing.T) {
 			d, s := seededPull(t)

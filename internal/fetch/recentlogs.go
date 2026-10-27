@@ -323,8 +323,9 @@ type recentLogsEnvelope struct {
 
 // decodeRecentLogs reads a recent-logs response, handing its rows to sink in batches as they
 // are read, byte for byte, and returning the other fields. It fails on a row without a usable
-// id and on anything after the closing brace. A body cut before its closing fields fails only
-// after its earlier rows reached sink, so the caller keeps nothing until it returns cleanly.
+// id, on anything after the closing brace, and on a missing rows or count. A body cut before
+// its closing fields fails only after its earlier rows reached sink, so the caller keeps
+// nothing until it returns cleanly.
 func decodeRecentLogs(r io.Reader, sink func([][]byte) error) (recentLogsEnvelope, error) {
 	var env recentLogsEnvelope
 	kind := store.MustKind(store.TypeRecentLogs)
@@ -393,6 +394,12 @@ func decodeRecentLogs(r io.Reader, sink func([][]byte) error) (recentLogsEnvelop
 	}
 	if _, err := dec.Token(); err != io.EOF {
 		return env, &shapeError{errors.New("the response continues after its closing brace")}
+	}
+	if !sawRows {
+		return env, &shapeError{errors.New("the response has no rows")}
+	}
+	if v, ok := fields["count"]; !ok || string(v) == "null" {
+		return env, &shapeError{errors.New("the response has no count")}
 	}
 	raw, _ := json.Marshal(fields)
 	if err := json.Unmarshal(raw, &env); err != nil {
