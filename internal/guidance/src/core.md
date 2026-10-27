@@ -292,7 +292,8 @@ like `wildfire_2026.answers`):
 - `downloads` — a manifest dimension table: `run_id`, `class_id`, `type`, `slug`,
   `report_type`, `hide_names` and `complete`. A `recent_logs` download is one per
   class pulled, with `class_id` set and `run_id` NULL; `class_id` is NULL for every
-  other download. A download's `report_type`
+  other download. `hide_names` is NULL for a `recent_logs` download, whose rows have
+  no name columns. A download's `report_type`
   (`answers`, `log`, `usage`, `portal`, `recovered`) is cc-data's own, not the
   run's: `portal` is derived from a Portal run's execution, and `recovered` is
   what a reindex assigns to a CSV it cannot classify, which re-fetching the run

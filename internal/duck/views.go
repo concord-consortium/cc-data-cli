@@ -983,8 +983,8 @@ func dimensionOrderColumns(admitted []dataset.Download) []string {
 }
 
 // hideNamesLiteral reads the run's hide_names from the filter the download recorded. It is NULL
-// wherever no filter is on disk: a download made by a version that stored none, and any one a
-// manifest-less reindex recovered.
+// wherever no filter is on disk: a download made by a version that stored none, any one a
+// manifest-less reindex recovered, and a recent_logs download, whose rows have no name columns.
 func hideNamesLiteral(dl dataset.Download) string {
 	var filter struct {
 		HideNames *bool `json:"hide_names"`
