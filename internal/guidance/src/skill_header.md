@@ -78,6 +78,9 @@ Researcher Dashboard packages are developed and published with `cc-data package`
   the run's documents fetched first.
 - `cc-data get clue-content <run-id> --dataset <ref>` — each CLUE document's current
   content.
+- `cc-data get recent-logs <class-id> --dataset <ref>` — a class's log events from
+  the last day or two, into `recent_logs`. Later pulls ask only for what is new;
+  `--refresh` re-reads the whole window, and `--start`/`--end` read part of it.
 - `cc-data get attachments <run-id> --dataset <ref>` — file attachments (requires
   answers or history fetched first). Prefer downloading into the dataset over
   `--url`; a presigned URL is a credential-free capability to a student's file.

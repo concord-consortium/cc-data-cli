@@ -13,6 +13,7 @@ const (
 	TypeClueDocuments = "clue_documents"
 	TypeClueHistory   = "clue_history"
 	TypeClueContent   = "clue_content"
+	TypeRecentLogs    = "recent_logs"
 )
 
 // Kind declares one store type.
@@ -25,6 +26,16 @@ type Kind struct {
 	Route        string            // path under /api/v1/reports/<run>/
 	DoubleDecode bool              // double-decode report_state (LARA answers and history)
 	OwnerStore   string            // store whose records carry each record's (context_id, uid) owner; "" counts remote_endpoints
+	ClassKeyed   bool              // the integer in segment and membership names is a class id, not a run id
+	Accumulate   bool              // a merge never removes a stored record
+}
+
+// StampColumn is the column a segment record's integer key is stamped into.
+func (k Kind) StampColumn() string {
+	if k.ClassKeyed {
+		return "_class_id"
+	}
+	return "_run_id"
 }
 
 // laraPins are the answers and history contract fields.
@@ -40,7 +51,7 @@ var laraPins = withStamps(map[string]string{
 	"answer":                TypeJSON,
 })
 
-// withStamps adds the _fetched_at and _run_id stamps every store record carries.
+// withStamps adds the _fetched_at and _run_id stamps every run-keyed store record carries.
 func withStamps(fields map[string]string) map[string]string {
 	pins := map[string]string{"_fetched_at": TypeTIMESTAMP, "_run_id": TypeBIGINT}
 	for c, t := range fields {
@@ -138,6 +149,33 @@ var kinds = []Kind{
 			"content_json":          TypeVARCHAR,
 		}),
 	},
+	recentLogsKind,
+}
+
+// recentLogsKind is a class's log events from the recent-logs route, kept across pulls.
+var recentLogsKind = Kind{
+	Name:       TypeRecentLogs,
+	Identity:   []string{"id"},
+	Strict:     true,
+	ClassKeyed: true,
+	Accumulate: true,
+	Pinned: map[string]string{
+		"id":                  TypeVARCHAR,
+		"session":             TypeVARCHAR,
+		"application":         TypeVARCHAR,
+		"activity":            TypeVARCHAR,
+		"event":               TypeVARCHAR,
+		"event_value":         TypeVARCHAR,
+		"parameters":          TypeVARCHAR,
+		"extras":              TypeVARCHAR,
+		"run_remote_endpoint": TypeVARCHAR,
+		"time":                TypeBIGINT,
+		"timestamp":           TypeBIGINT,
+		"user_id":             TypeBIGINT,
+		"primary_user_id":     TypeBIGINT,
+		"_class_id":           TypeBIGINT,
+		"_fetched_at":         TypeTIMESTAMP,
+	},
 }
 
 // Kinds returns the registered store types in registry order.
@@ -167,6 +205,12 @@ func MustKind(name string) Kind {
 	return k
 }
 
+// IsClassKeyed reports whether the store type is a registered class-keyed kind.
+func IsClassKeyed(name string) bool {
+	k, ok := KindOf(name)
+	return ok && k.ClassKeyed
+}
+
 // Names returns the registered store type names in registry order.
 func Names() []string {
 	out := make([]string, len(kinds))
@@ -176,11 +220,15 @@ func Names() []string {
 	return out
 }
 
-// IdentityColumns returns every registered identity column once, in registry order.
+// IdentityColumns returns, once each in registry order, the identity columns of every kind
+// with per-run membership: run_membership's key columns. A class-keyed kind has none.
 func IdentityColumns() []string {
 	seen := map[string]bool{}
 	var out []string
 	for _, k := range kinds {
+		if k.ClassKeyed {
+			continue
+		}
 		for _, c := range k.Identity {
 			if !seen[c] {
 				seen[c] = true

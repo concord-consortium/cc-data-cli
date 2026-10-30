@@ -279,6 +279,36 @@ If you've configured a default portal, you can use a bare dataset name
 (`wildfire`) instead of the full `learn.concord.org/wildfire`. The queryable views
 (`reports`, `answers`, `history`, ...) are described in the next section.
 
+### Recent logs
+
+A Student Actions run reads a nightly copy of the logs, so it can be up to a day
+behind. To see what a class did minutes ago, pull its recent logs by its portal
+class id:
+
+```
+cc-data get recent-logs 590 --dataset learn.concord.org/wildfire
+```
+
+This reads the class's log events from 00:00 UTC yesterday onward, about two
+minutes behind live, into the `recent_logs` view. Run it again later and it asks
+only for what is new: each pull stores a cursor, and the next one sends it back.
+Pulls overlap by ten minutes, and an event pulled twice is kept once.
+
+- **`--refresh`** ignores the cursor and reads the whole window again. Use it when
+  you suspect events arrived late, since one delivered more than ten minutes after
+  it happened can fall between two cursor pulls.
+- **`--start` and `--end`** read part of the window, each as epoch milliseconds or
+  a time such as `2026-10-21T14:00:00Z`. They leave the stored cursor as it was.
+- **Days before the window** come from a Student Actions run. Its events go to
+  `logs`, not `recent_logs`, so for the hours both cover, count one view or the
+  other rather than adding them.
+- If a dataset goes more than a day or two without a pull, its cursor expires. The
+  next pull reads the whole window again and warns that events since the last pull
+  but before the window are only in a Student Actions run.
+
+CLUE logs only for students launched from the portal, so a CLUE class has rows
+only for them.
+
 ### Getting results out
 
 By default `query` prints a table. For analysis in R, Python, or a spreadsheet,
@@ -354,6 +384,7 @@ When you (or Claude) query a dataset, the data is exposed as a set of SQL
 | `clue_patches` | One row per edit inside each CLUE history entry (a JSON patch: `op`, `path`, `value`), with its entry's ids, clocks and action, the tile it touched, and its position in the entry (`rec_idx`, `patch_idx`). Order by `doc_id, idx, entry_id, rec_idx, patch_idx`, which is unique. |
 | `report_prompts` | The prompt and correct-answer text for each question. |
 | `logs` | Log/action report rows with `parameters` and `extras` parsed as JSON, and both of the row's clocks as UTC timestamps: `event_time` from the client device's clock, `received_time` from the server's. |
+| `recent_logs` | A class's log events from the last day or two, from `cc-data get recent-logs`, with a Student Actions run's columns, the same four parsed columns as `logs`, and `_class_id` in place of `run_id`. Kept apart from `logs`: an event a Student Actions run also holds is in both, so count one or the other. |
 | `attachment_files` | One row per downloaded file (audio, saved docs) with its type and local path. |
 | `attachment_states` | The saved CODAP/SageModeler state the current answer points at. |
 | `attachment_content` | The text/JSON content of every saved CODAP/SageModeler snapshot, queryable and diffable. |
@@ -705,8 +736,6 @@ What it cannot reproduce:
   one installed elsewhere, and nothing else moves ahead of your `PATH`.
 - **Python.** A `.py` entrypoint runs with `python3.11` when it is on your
   `PATH`, as on the VM, and otherwise with `python3` after a note saying so.
-- **CLUE.** A package with `clue_prepull: true` is refused locally, since
-  `cc-data` does not run a package's CLUE pre-pull yet.
 
 ### Checked against report-server
 

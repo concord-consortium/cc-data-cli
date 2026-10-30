@@ -1,6 +1,6 @@
 # cc-data
 
-A command-line tool for [Concord Consortium](https://concord.org) researchers to download report data (report CSVs, student answers, interactive state history, file attachments, and CLUE documents with their edit history and content) into local, named **datasets**, and query across all of it with SQL via an embedded [DuckDB](https://duckdb.org).
+A command-line tool for [Concord Consortium](https://concord.org) researchers to download report data (report CSVs, student answers, interactive state history, file attachments, CLUE documents with their edit history and content, and a class's recent log events) into local, named **datasets**, and query across all of it with SQL via an embedded [DuckDB](https://duckdb.org).
 
 `cc-data` collapses "log into the report server → run a report → download a CSV → open it somewhere → join it against answers by hand" into a local workflow you (or Claude, on your behalf) can drive from the terminal: pull the data once, then ask questions of it, including natural-language questions about both temporal and state information, via the Claude Code skill the CLI installs.
 
@@ -20,13 +20,14 @@ A command-line tool for [Concord Consortium](https://concord.org) researchers to
   - `get history <run-id>`: the interactive state history series (full series by default), as JSONL.
   - `get attachments <run-id>`: S3 file attachments referenced by answers/history (open-response audio, offloaded CODAP/SageModeler state).
   - `get clue-documents <run-id>`, `get clue-history <run-id>`, `get clue-content <run-id>`: a run's CLUE documents, each document's edit history, and each document's current content, as JSONL. Fetch the documents before the history, which needs them to count owners. CLUE document history is unrelated to `get history`'s interactive-state history.
-- **See what's in a dataset**: `cc-data dataset list` and `dataset show` render instant summaries from the manifest (downloads by type, record counts, coverage, size, age). `dataset show` and both commands' `--json` count every store, CLUE documents, history and content included; `dataset list`'s table counts answers, history, report rows and attachments. `--json` emits the same summary for Claude and scripts, and every `get` ends with a machine-readable result line so tooling can confirm what happened.
-- **Query everything with SQL** (`cc-data query`, `cc-data repl`): an ephemeral in-memory DuckDB exposes unified `reports`, `answers`, and `history` views across everything in the dataset, `clue_documents`, `clue_history`, `clue_content` and `clue_patches` (one row per edit inside each history entry) for CLUE data, plus `run_membership` (which runs' fetches covered which records), `run_answers` (every answer with the `run_id` of each run whose answers fetch holds it), `attachment_files` (per-attachment metadata and local paths), `attachment_states` (queryable offloaded CODAP/SageModeler state), `student_id_mapping` and `student_metadata` (the Portal student reports as deduplicated join dimensions, one row per learner), and a `downloads` provenance dimension table. Audio attachment content itself isn't SQL-queryable; `attachment_files` gives you its local path instead.
+  - `get recent-logs <class-id>`: a class's log events from the last day or two, about two minutes behind live, as JSONL. Each later pull asks only for what is new; `--refresh` re-reads the whole window.
+- **See what's in a dataset**: `cc-data dataset list` and `dataset show` render instant summaries from the manifest (downloads by type, record counts, coverage, size, age). `dataset show` and both commands' `--json` count every store, the CLUE stores and recent logs included; `dataset list`'s table counts answers, history, report rows and attachments. `--json` emits the same summary for Claude and scripts, and every `get` ends with a machine-readable result line so tooling can confirm what happened.
+- **Query everything with SQL** (`cc-data query`, `cc-data repl`): an ephemeral in-memory DuckDB exposes unified `reports`, `answers`, and `history` views across everything in the dataset, `clue_documents`, `clue_history`, `clue_content` and `clue_patches` (one row per edit inside each history entry) for CLUE data, `recent_logs` (a class's log events from recent-logs pulls, kept apart from the log reports), plus `run_membership` (which runs' fetches covered which records), `run_answers` (every answer with the `run_id` of each run whose answers fetch holds it), `attachment_files` (per-attachment metadata and local paths), `attachment_states` (queryable offloaded CODAP/SageModeler state), `student_id_mapping` and `student_metadata` (the Portal student reports as deduplicated join dimensions, one row per learner), and a `downloads` provenance dimension table. Audio attachment content itself isn't SQL-queryable; `attachment_files` gives you its local path instead.
 - **Teach Claude about itself**: on install, `cc-data` writes a Claude Code skill (and a one-line `~/.claude/CLAUDE.md` pointer) so Claude can download and query data for you, and ships `cc-data mcp`, an MCP stdio server for Claude Desktop using the same stored credential.
 
 ## Datasets
 
-A dataset is a named, single-portal, user-managed workspace meant to combine many downloads (classes, activities, time periods) so you can query across them in one place. Answer, history and CLUE records live in identity-keyed stores (exactly one current record per identity); report CSVs stay per-run files; small membership files record which identities each run's fetch covered:
+A dataset is a named, single-portal, user-managed workspace meant to combine many downloads (classes, activities, time periods) so you can query across them in one place. Answer, history, CLUE and recent-log records live in identity-keyed stores (exactly one current record per identity); report CSVs stay per-run files; small membership files record which identities each run's fetch (or a class's last recent-logs pull) covered:
 
 ```
 ~/cc-data/
@@ -41,12 +42,14 @@ A dataset is a named, single-portal, user-managed workspace meant to combine man
         clue_documents.v2.jsonl        # one record per CLUE document (doc_id)
         clue_history.v2.jsonl          # one record per CLUE document history entry (doc_id, entry_id)
         clue_content.v1.jsonl          # one record per CLUE document's current content (doc_id)
+        recent_logs.v4.jsonl           # one record per log event from recent-logs pulls (id)
         members_answers_584.v3.jsonl   # which identities run 584's answers fetch covered
         members_clue_history_584.v2.jsonl  # which (doc_id, entry_id) pairs run 584's clue-history fetch covered
+        members_recent_logs_590.v4.jsonl   # the events class 590's last recent-logs pull brought
         attachments/                   # audio .mp3, offloaded CODAP/SageModeler .json state
 ```
 
-- **A dataset never contains duplicate data.** Every downloaded item is checked against what the dataset already holds by identity (an answer is this learner's answer to this question; a history record is one snapshot in that answer's series; a CLUE document, history entry or content record is one document, one entry of its edit history, or its current content; an attachment file is one S3 object) and overwrites the existing copy; the incoming record was just read live, so it always wins. Overlapping runs, regenerated reports, and repeated pulls simply update records in place, and every `get` reports its counts (fetched/new/updated/removed). To compare pulls over time (e.g. answer data as it evolves), create a dataset per pull.
+- **A dataset never contains duplicate data.** Every downloaded item is checked against what the dataset already holds by identity (an answer is this learner's answer to this question; a history record is one snapshot in that answer's series; a CLUE document, history entry or content record is one document, one entry of its edit history, or its current content; a log event from a recent-logs pull is one `id`; an attachment file is one S3 object) and overwrites the existing copy; the incoming record was just read live, so it always wins. Overlapping runs, regenerated reports, and repeated pulls simply update records in place, and every `get` reports its counts (fetched/new/updated/removed). To compare pulls over time (e.g. answer data as it evolves), create a dataset per pull.
 - `manifest.json` records the provenance the files can't: the run's filter selection (raw values and resolved human labels), coverage, history mode, completeness, merge counts, and resume cursors. The filesystem is the source of truth for what exists; `cc-data dataset reindex` rebuilds a lost or drifted manifest.
 - Writes are atomic and paged downloads are resumable: pages append to a per-download segment with the cursor saved, then merge into the store as a new version with an atomic swap. An interrupted `get` picks up from its last cursor, a truncated pull is honestly marked incomplete, and queries only ever see complete, duplicate-free data.
 - Datasets are purely local. `cc-data dataset delete` and `purge` only touch your disk.
@@ -72,6 +75,7 @@ cc-data get answers     <run-id> --dataset <portal>/<name>
 cc-data get history     <run-id> --dataset <portal>/<name>
 cc-data get attachments <run-id> --dataset <portal>/<name> [--answer <id>] [--url] [--inline]
 cc-data get clue-documents|clue-history|clue-content <run-id> --dataset <portal>/<name>
+cc-data get recent-logs <class-id> --dataset <portal>/<name> [--start <time>] [--end <time>] [--refresh]
 cc-data query --dataset <portal>/<name> "SELECT ..." [--format table|csv|json|jsonl]
 cc-data repl  --dataset <portal>/<name>
 cc-data package init [dir] [--name <name>]    # manifest.json skeleton + run.py stub for a dashboard package

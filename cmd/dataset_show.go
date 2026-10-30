@@ -3,11 +3,13 @@ package cmd
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"text/tabwriter"
 
 	"github.com/concord-consortium/cc-data-cli/internal/dataset"
 	"github.com/concord-consortium/cc-data-cli/internal/duck"
 	"github.com/concord-consortium/cc-data-cli/internal/output"
+	"github.com/concord-consortium/cc-data-cli/internal/store"
 	"github.com/spf13/cobra"
 )
 
@@ -75,8 +77,8 @@ func renderShow(s *dataset.ShowJSON, full bool) {
 		tw := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
 		fmt.Fprintln(tw, "RUN\tTYPE\tSLUG\tFETCHED\tSTATUS\tCOVERAGE")
 		for _, dl := range s.Downloads {
-			fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\t%s\n",
-				dl.RunID, dl.Type, dl.Slug, dl.FetchedAt.Format("2006-01-02"), downloadStatus(dl), coverageText(dl.Coverage))
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
+				runCell(dl), dl.Type, dl.Slug, dl.FetchedAt.Format("2006-01-02"), downloadStatus(dl), coverageText(dl.Coverage))
 		}
 		tw.Flush()
 	}
@@ -88,6 +90,14 @@ func renderShow(s *dataset.ShowJSON, full bool) {
 			fmt.Fprintf(errOut, "  %s\n", w)
 		}
 	}
+}
+
+// runCell names a download's run, or its class for a class-keyed type.
+func runCell(dl dataset.DownloadJSON) string {
+	if store.IsClassKeyed(dl.Type) {
+		return fmt.Sprintf("class %d", dl.ClassID)
+	}
+	return strconv.Itoa(dl.RunID)
 }
 
 func downloadStatus(dl dataset.DownloadJSON) string {

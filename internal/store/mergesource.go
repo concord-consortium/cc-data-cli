@@ -49,8 +49,8 @@ func (s *SingleSource) RawCount(run int) int {
 }
 
 // MultiSource merges several per-run segment indexes in key order. A key several runs
-// share resolves to the record with the newest (_fetched_at, _run_id) stamp; stamps are
-// read only for such keys.
+// share resolves to the record with the newest (_fetched_at, key) stamp, the key being
+// _run_id, or _class_id for a class-keyed kind; stamps are read only for such keys.
 type MultiSource struct {
 	byRun map[int]*SegmentIndex
 	runs  []int
@@ -128,23 +128,28 @@ func (m *MultiSource) RawCount(run int) int {
 
 type stamp struct {
 	fetchedAt string
-	runID     int
+	key       int
 }
 
 func (s stamp) newerThan(o stamp) bool {
 	if s.fetchedAt != o.fetchedAt {
 		return s.fetchedAt > o.fetchedAt
 	}
-	return s.runID > o.runID
+	return s.key > o.key
 }
 
 func readStamp(rec []byte) (stamp, error) {
 	var fields struct {
 		FetchedAt string `json:"_fetched_at"`
 		RunID     int    `json:"_run_id"`
+		ClassID   int    `json:"_class_id"`
 	}
 	if err := json.Unmarshal(bytes.TrimSpace(rec), &fields); err != nil {
 		return stamp{}, err
 	}
-	return stamp{fetchedAt: fields.FetchedAt, runID: fields.RunID}, nil
+	key := fields.RunID
+	if key == 0 {
+		key = fields.ClassID
+	}
+	return stamp{fetchedAt: fields.FetchedAt, key: key}, nil
 }

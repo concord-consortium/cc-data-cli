@@ -80,10 +80,15 @@ func (d *Dataset) Reindex() error {
 	// Only adopt a store version proven committed by a matching membership file
 	// at the same version; otherwise fall back to the newest such generation. If
 	// none committed (e.g. a crashed first merge), skip the store so a resume
-	// rebuilds it from the surviving segment.
+	// rebuilds it from the surviving segment. An accumulating kind removes nothing,
+	// so its newest version holds every older one's rows and is adopted whatever
+	// membership is present; a resume re-merges the segment, which only replaces.
 	m.Stores = map[string]Store{}
 	for typ, versFiles := range storeVersFiles {
 		v := newestCommittedStoreVersion(versFiles, memberVersPresent[typ])
+		if store.MustKind(typ).Accumulate {
+			v = newestStoreVersion(versFiles)
+		}
 		if v == 0 {
 			continue
 		}
@@ -124,6 +129,9 @@ func (d *Dataset) Reindex() error {
 			Recovered: true,
 			FetchedAt: clock().UTC(),
 		}
+		if store.MustKind(typ).ClassKeyed {
+			dl.RunID, dl.ClassID = 0, run
+		}
 		carryProvenance(&dl, prior[downloadKey(typ, run, nil)])
 		m.Downloads = append(m.Downloads, dl)
 	}
@@ -149,6 +157,20 @@ func (d *Dataset) Reindex() error {
 	}
 	sort.Slice(attach, func(i, j int) bool { return attach[i].RunID < attach[j].RunID })
 	m.Downloads = append(m.Downloads, attach...)
+
+	// Carry forward a class-keyed download with no membership on disk: a pull that returned no
+	// rows merges nothing, but its entry holds the class's cursor. An entry with no class, which
+	// an older cc-data's manifest rewrite leaves, is dropped.
+	var classes []Download
+	for k, dl := range prior {
+		if store.IsClassKeyed(k.typ) {
+			if _, held := newestMember[MembershipKey(k.typ, k.run)]; !held && dl.ClassID > 0 {
+				classes = append(classes, dl)
+			}
+		}
+	}
+	sort.Slice(classes, func(i, j int) bool { return classes[i].ClassID < classes[j].ClassID })
+	m.Downloads = append(m.Downloads, classes...)
 
 	if err := d.RebuildAttachmentIndex(m); err != nil {
 		return err
@@ -196,7 +218,8 @@ func (d *Dataset) reindexIdentity() *Manifest {
 	}
 }
 
-// dlKey identifies a download for provenance carry-forward (job -1 means none).
+// dlKey identifies a download for provenance carry-forward: run is Download.Key() (job
+// -1 means none).
 type dlKey struct {
 	typ string
 	run int
@@ -222,7 +245,7 @@ func (d *Dataset) priorDownloadIndex() map[dlKey]Download {
 		return idx
 	}
 	for _, dl := range m.Downloads {
-		idx[downloadKey(dl.Type, dl.RunID, dl.JobID)] = dl
+		idx[downloadKey(dl.Type, dl.Key(), dl.JobID)] = dl
 	}
 	return idx
 }
@@ -265,6 +288,9 @@ func carryProvenance(dl *Download, prior Download) {
 	}
 	if !prior.FetchedAt.IsZero() {
 		dl.FetchedAt = prior.FetchedAt
+	}
+	if prior.RecentLogs != nil {
+		dl.RecentLogs = prior.RecentLogs
 	}
 	if !prior.Recovered {
 		if prior.ReportType != "" {
@@ -392,6 +418,15 @@ func newestCommittedStoreVersion(versFiles map[int]string, memberVers map[int]bo
 		if memberVers[v] && v > best {
 			best = v
 		}
+	}
+	return best
+}
+
+// newestStoreVersion returns the highest store version on disk.
+func newestStoreVersion(versFiles map[int]string) int {
+	best := 0
+	for v := range versFiles {
+		best = max(best, v)
 	}
 	return best
 }

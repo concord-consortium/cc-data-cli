@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/concord-consortium/cc-data-cli/internal/config"
+	"github.com/concord-consortium/cc-data-cli/internal/store"
 )
 
 func fixedClock() time.Time { return time.Date(2026, 7, 17, 0, 0, 0, 0, time.UTC) }
@@ -323,5 +324,45 @@ func TestRenameDeletePurgeRefuseDuringAMaterializeRun(t *testing.T) {
 	release()
 	if _, err := d.Rename(root, "moved"); err != nil {
 		t.Fatalf("rename should succeed once the run finishes: %v", err)
+	}
+}
+
+func TestPurgeRemovesRecentLogs(t *testing.T) {
+	d := newDataset(t)
+	mergeLogs(t, d, 590, logRec("e1", "a"))
+	if err := d.UpsertDownload(Download{Type: store.TypeRecentLogs, ClassID: 590, Complete: true}); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{"recent_logs.v1.jsonl", "members_recent_logs_590.v1.jsonl"} {
+		if _, err := os.Stat(d.Path(f)); err != nil {
+			t.Fatalf("before purge: %v", err)
+		}
+	}
+	// A file the manifest no longer names, as a crash can leave.
+	os.WriteFile(d.Path("members_recent_logs_591.v3.jsonl"), []byte("{}\n"), 0o600)
+	if err := d.Purge(); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{"recent_logs.v1.jsonl", "members_recent_logs_590.v1.jsonl", "members_recent_logs_591.v3.jsonl"} {
+		if _, err := os.Stat(d.Path(f)); !os.IsNotExist(err) {
+			t.Errorf("%s survived the purge", f)
+		}
+	}
+	m, _ := d.ReadManifest()
+	if len(m.Downloads) != 0 || len(m.Stores) != 0 || len(m.Membership) != 0 {
+		t.Fatalf("manifest after purge: %+v", m)
+	}
+}
+
+func TestUpsertDownloadKeepsOneEntryPerClass(t *testing.T) {
+	d := newDataset(t)
+	for _, class := range []int{590, 591, 590} {
+		if err := d.UpsertDownload(Download{Type: store.TypeRecentLogs, ClassID: class, Complete: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m, _ := d.ReadManifest()
+	if len(m.Downloads) != 2 || m.Downloads[0].ClassID != 590 || m.Downloads[1].ClassID != 591 {
+		t.Fatalf("downloads = %+v", m.Downloads)
 	}
 }

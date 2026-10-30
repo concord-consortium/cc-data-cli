@@ -455,3 +455,50 @@ func TestDerivedSubdirIsInvisible(t *testing.T) {
 		}
 	}
 }
+
+func TestReindexRecoversARecentLogsPull(t *testing.T) {
+	d := newDataset(t)
+	mergeLogs(t, d, 590, logRec("e1", "a"), logRec("e2", "a"))
+	pull := &RecentLogsPull{WindowStart: 1, Since: 2, QueryStartedAt: 3, NightlyThrough: "2026-10-21", Rows: 2, Cursor: "v1.abc"}
+	if err := d.UpsertDownload(Download{Type: store.TypeRecentLogs, ClassID: 590, Complete: true, RecentLogs: pull}); err != nil {
+		t.Fatal(err)
+	}
+	// A class whose pulls returned no rows has an entry and a cursor but no membership.
+	empty := &RecentLogsPull{Cursor: "v1.empty"}
+	if err := d.UpsertDownload(Download{Type: store.TypeRecentLogs, ClassID: 591, Complete: true, RecentLogs: empty}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpsertDownload(Download{Type: store.TypeRecentLogs, Complete: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := d.Reindex(); err != nil {
+		t.Fatal(err)
+	}
+	m, _ := d.ReadManifest()
+	if len(m.Downloads) != 2 {
+		t.Fatalf("downloads = %+v", m.Downloads)
+	}
+	dl := m.Downloads[0]
+	if dl.Type != store.TypeRecentLogs || dl.ClassID != 590 || dl.RunID != 0 || dl.Recovered || dl.RecentLogs == nil || dl.RecentLogs.Cursor != "v1.abc" {
+		t.Fatalf("with the manifest: %+v %+v", dl, dl.RecentLogs)
+	}
+	if e := m.Downloads[1]; e.ClassID != 591 || e.RecentLogs == nil || e.RecentLogs.Cursor != "v1.empty" {
+		t.Fatalf("the class with no rows: %+v", e)
+	}
+
+	if err := os.Remove(d.Path(ManifestFile)); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Reindex(); err != nil {
+		t.Fatal(err)
+	}
+	m, _ = d.ReadManifest()
+	if m.Stores[store.TypeRecentLogs].Count != 2 || len(m.Downloads) != 1 {
+		t.Fatalf("without the manifest: stores %+v, downloads %+v", m.Stores, m.Downloads)
+	}
+	dl = m.Downloads[0]
+	if dl.ClassID != 590 || dl.RunID != 0 || !dl.Recovered || dl.RecentLogs != nil {
+		t.Fatalf("without the manifest: %+v", dl)
+	}
+}

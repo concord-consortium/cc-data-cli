@@ -28,6 +28,12 @@ func (e *partialDownloadError) Error() string {
 
 func (e *partialDownloadError) Unwrap() error { return e.Err }
 
+// IsPartialDownload reports whether a streamed download failed after its first byte.
+func IsPartialDownload(err error) bool {
+	var p *partialDownloadError
+	return errors.As(err, &p)
+}
+
 // StreamAPIToFile GETs an API path and streams the 2xx body to dstPath. It is do() with the
 // buffering removed: same bearer token, same backoff, same decodeAPIError on a non-2xx, so a coded
 // refusal reaches AsCLIError intact instead of becoming an untyped HTTP-status error.

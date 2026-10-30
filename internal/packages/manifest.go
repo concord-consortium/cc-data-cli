@@ -39,7 +39,6 @@ type Manifest struct {
 	Version                 string `json:"version"`
 	Description             string `json:"description,omitempty"`
 	URLs                    URLs   `json:"urls"`
-	CluePrepull             bool   `json:"clue_prepull"`
 	Entrypoint              string `json:"entrypoint"`
 	ExpectedDurationSeconds int    `json:"expected_duration_seconds"`
 }

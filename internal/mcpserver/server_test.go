@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -110,7 +112,7 @@ func TestMCPToolSurface(t *testing.T) {
 	want := []string{"auth_status", "version", "reports_list", "reports_jobs",
 		"reports_filter_options", "reports_create", "reports_duplicate", "get_report",
 		"get_answers", "get_history", "get_attachments", "get_clue_documents", "get_clue_history",
-		"get_clue_content", "dataset_create", "dataset_list",
+		"get_clue_content", "get_recent_logs", "dataset_create", "dataset_list",
 		"dataset_show", "dataset_rename", "dataset_edit", "dataset_delete", "dataset_purge",
 		"dataset_reindex", "dataset_materialize", "query"}
 	for _, n := range want {
@@ -742,6 +744,7 @@ func TestToolDescriptionsCarryTheirPortalFacts(t *testing.T) {
 		"get_clue_documents":     {"Student ID Mapping run id is the intended source"},
 		"get_clue_content":       {"Student ID Mapping run id is the intended source"},
 		"get_clue_history":       {"Student ID Mapping run id is the intended source", "not get_history's interactive-state history", "Fetch get_clue_documents for the run first"},
+		"get_recent_logs":        {"recent_logs view, not logs", "appears in both logs and recent_logs", "received_time"},
 	} {
 		if _, ok := desc[tool]; !ok {
 			t.Errorf("%s is not registered", tool)
@@ -799,6 +802,83 @@ func TestMCPGetClueToolsReturnTheFetchResult(t *testing.T) {
 		}
 		if counts, _ := out["merge_counts"].(map[string]any); counts["fetched"] != float64(2) {
 			t.Fatalf("%s result %v, want both items fetched", tool, out)
+		}
+	}
+}
+
+func TestMCPGetRecentLogsSchema(t *testing.T) {
+	setupEnv(t)
+	cs := connect(t)
+	res, err := cs.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range res.Tools {
+		if tool.Name != "get_recent_logs" {
+			continue
+		}
+		raw, _ := json.Marshal(tool.InputSchema)
+		var schema struct {
+			Properties map[string]any `json:"properties"`
+			Required   []string       `json:"required"`
+		}
+		json.Unmarshal(raw, &schema)
+		props := slices.Sorted(maps.Keys(schema.Properties))
+		required := slices.Sorted(slices.Values(schema.Required))
+		if strings.Join(props, ",") != "class_id,dataset,end,refresh,start" || strings.Join(required, ",") != "class_id,dataset" {
+			t.Fatalf("schema properties %v, required %v", props, required)
+		}
+		return
+	}
+	t.Fatal("get_recent_logs is not registered")
+}
+
+// The tool and `cc-data get recent-logs` share one fetch, so the tool's result carries what the
+// CLI's result line does.
+func TestMCPGetRecentLogsReturnsTheFetchResult(t *testing.T) {
+	setupEnv(t)
+	body := `{"class_id":590,"window_start":1,"nightly_through":"2026-10-20","since":2,"until":null,"query_started_at":3,"rows":[{"id":"e1"},{"id":"e2"}],"count":2,"latest_timestamp":4,"next_cursor":"v1.c"}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/classes/590/recent-logs" {
+			http.NotFound(w, r)
+			return
+		}
+		fmt.Fprint(w, body)
+	}))
+	defer srv.Close()
+	if err := (creds.Store{}).Save(config.MustPortal("learn.concord.org"), "test-token", srv.URL); err != nil {
+		t.Fatal(err)
+	}
+	cs := connect(t)
+	if res, _ := callJSON(t, cs, "dataset_create", map[string]any{"portal": "learn.concord.org", "name": "ds"}); res.IsError {
+		t.Fatalf("dataset_create failed: %s", errorText(res))
+	}
+	res, out := callJSON(t, cs, "get_recent_logs", map[string]any{"dataset": "learn.concord.org/ds", "class_id": 590})
+	if res.IsError {
+		t.Fatalf("get_recent_logs failed: %s", errorText(res))
+	}
+	direct, err := dataset.Create(t.TempDir(), dataset.Ref{Portal: config.MustPortal("learn.concord.org"), Name: "direct"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cli, err := fetch.FetchRecentLogs(context.Background(), fetch.RecentLogsOptions{DS: direct, Client: api.New(srv.URL, "test-token"), ClassID: 590, Progress: io.Discard})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want map[string]any
+	b, _ := json.Marshal(cli)
+	json.Unmarshal(b, &want)
+	if !reflect.DeepEqual(out, want) {
+		t.Fatalf("result %v, want the fetch's %v", out, want)
+	}
+	if out["class_id"] != float64(590) || out["rows"] != float64(2) || out["cursor"] != "stored" {
+		t.Fatalf("result %v", out)
+	}
+
+	for _, bound := range []string{"start", "end"} {
+		res, _ = callJSON(t, cs, "get_recent_logs", map[string]any{"dataset": "learn.concord.org/ds", "class_id": 590, "refresh": true, bound: "1"})
+		if !res.IsError || !strings.Contains(errorText(res), "--refresh") {
+			t.Fatalf("a refresh with %s: %v %s", bound, res.IsError, errorText(res))
 		}
 	}
 }

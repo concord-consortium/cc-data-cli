@@ -21,8 +21,7 @@ import (
 const runDifferences = `What run cannot reproduce from the VM: the package runs as you, with no network
 sandbox, and with HOME, PATH, the locale and any proxy settings passed through so its own
 cc-data calls find your login and reach the server. A .py entrypoint runs with python3.11
-when it is on PATH, as on the VM, else python3. A clue_prepull package is refused, since
-cc-data does not run a package's CLUE pre-pull yet.`
+when it is on PATH, as on the VM, else python3.`
 
 const packageLong = `Develop, test and publish a Researcher Dashboard package.
 

@@ -129,7 +129,7 @@ func TestPackageInitRefusesASecondInit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(manifest), `"name": "my-package"`) {
+	if !strings.Contains(string(manifest), `"name": "my-package"`) || strings.Contains(string(manifest), "clue_prepull") {
 		t.Errorf("manifest = %s", manifest)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "run.py"), []byte("mine"), 0o644); err != nil {

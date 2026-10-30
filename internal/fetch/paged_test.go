@@ -354,10 +354,11 @@ func TestPagedANonLearnerReportRefusalIsReadable(t *testing.T) {
 	}
 }
 
-// appendPage stamps records and appends them to seg as one fetched page.
-func appendPage(t *testing.T, seg *store.Segment, recs [][]byte, at time.Time, run int) {
+// appendPage stamps records in the segment kind's stamp column and appends them to seg
+// as one fetched page.
+func appendPage(t *testing.T, seg *store.Segment, recs [][]byte, at time.Time, key int) {
 	t.Helper()
-	lines, err := store.StampLines(recs, at, run)
+	lines, err := store.MustKind(seg.Type).StampLines(recs, at, key)
 	if err == nil {
 		err = seg.AppendLines(lines)
 	}

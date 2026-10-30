@@ -16,6 +16,17 @@ import (
 // same reason the catalog and the researcher guide are checked against StaticViewNames.
 func staticViewList() string { return wrapNames(duck.StaticViewNames()) }
 
+// perRunStoreNames is the store types that get a <type>_<run> view: every one keyed by run.
+func perRunStoreNames() []string {
+	var names []string
+	for _, k := range store.Kinds() {
+		if !k.ClassKeyed {
+			names = append(names, k.Name)
+		}
+	}
+	return names
+}
+
 // wrapNames lists names comma-separated and indented, wrapped for help output.
 func wrapNames(names []string) string {
 	const width = 76
@@ -45,8 +56,8 @@ func newQueryCmd() *cobra.Command {
 
 Views (single dataset: unqualified; multiple: schema-qualified per dataset):
 ` + staticViewList() + `
-  plus per-run views: report_<run>, and <type>_<run> for each store type:
-` + wrapNames(store.Names()) + `
+  plus per-run views: report_<run>, and <type>_<run> for each run-keyed store type:
+` + wrapNames(perRunStoreNames()) + `
 
 The session is sandboxed to the named dataset folders. --allow-dir adds a
 directory to the allowlist for this invocation only (never persisted), so joining

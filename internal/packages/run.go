@@ -43,8 +43,7 @@ type Verdict struct {
 	Unconfirmed bool
 }
 
-// Refused is a package the runner would not start: it does not apply, or it needs the CLUE
-// pre-pull, which cc-data cannot do.
+// Refused is a package the runner would not start: it does not apply to the scope.
 type Refused struct{ Reason string }
 
 func (e *Refused) Error() string { return e.Reason }
@@ -75,9 +74,6 @@ type RunOptions struct {
 
 // Run prepares the runner's layout, runs the entrypoint and reads its result.
 func Run(ctx context.Context, o RunOptions) (Result, error) {
-	if o.Manifest.CluePrepull {
-		return Result{}, &Refused{Reason: "the package sets clue_prepull, and cc-data does not run a package's CLUE pre-pull yet, so it runs only on the VM"}
-	}
 	if o.Manifest.URLs.DeclaresPatterns() {
 		v, err := o.Applies(ctx, o.Manifest.URLs)
 		switch {
@@ -101,7 +97,7 @@ func Run(ctx context.Context, o RunOptions) (Result, error) {
 	if warning != "" {
 		fmt.Fprintln(o.Stderr, "warning: "+warning)
 	}
-	scope := ScopeFile{LocalScope: o.Scope, ClueSource: "firebase", Dataset: o.Name, OutputDir: paths.out}
+	scope := ScopeFile{LocalScope: o.Scope, Dataset: o.Name, OutputDir: paths.out}
 	b, err := json.MarshalIndent(scope, "", "  ")
 	if err != nil {
 		return Result{}, err

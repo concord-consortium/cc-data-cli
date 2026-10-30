@@ -14,7 +14,7 @@ import (
 )
 
 // PagedOptions parameterizes a fetch of one store type's paged route (one code path
-// for every registered store type).
+// for every registered store type with a route).
 type PagedOptions struct {
 	DS       *dataset.Dataset
 	Client   *api.Client
