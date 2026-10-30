@@ -52,6 +52,7 @@ func (vs viewSet) statements() []viewStmt {
 	stmts = append(stmts, vs.reportsView())
 	stmts = append(stmts, vs.reportPromptsView())
 	stmts = append(stmts, vs.logsView())
+	stmts = append(stmts, vs.logEventsView())
 	for _, k := range store.Kinds() {
 		if derived, ok := derivedStoreViews[k.Name]; ok {
 			stmts = append(stmts, derived(vs))
@@ -80,17 +81,22 @@ var derivedStoreViews = map[string]func(viewSet) viewStmt{
 	store.TypeRecentLogs:    viewSet.recentLogsView,
 }
 
-// recentLogsView is the recent_logs store with logs' derived columns. The store's source
-// columns are pinned, so each derived column's source exists in every read.
+// recentLogsView is the recent_logs store with logs' derived columns.
 func (vs viewSet) recentLogsView() viewStmt {
+	return vs.clueView(store.TypeRecentLogs, func(standIn bool) (string, []string) {
+		src, _, files := vs.clueSource(store.TypeRecentLogs, standIn, true)
+		return "SELECT *, " + strings.Join(pinnedLogDerived(), ", ") + " FROM " + src, files
+	})
+}
+
+// pinnedLogDerived renders logDerived over a source whose columns have the recent_logs
+// store's pinned types, so each derived column's source is always there.
+func pinnedLogDerived() []string {
 	derived := make([]string, 0, len(logDerived))
 	for _, d := range logDerived {
 		derived = append(derived, fmt.Sprintf("%s AS %s", d.expr(sqlIdent(d.src)), sqlIdent(d.name)))
 	}
-	return vs.clueView(store.TypeRecentLogs, func(standIn bool) (string, []string) {
-		src, _, files := vs.clueSource(store.TypeRecentLogs, standIn, true)
-		return "SELECT *, " + strings.Join(derived, ", ") + " FROM " + src, files
-	})
+	return derived
 }
 
 func (vs viewSet) file(rel string) string {
@@ -309,10 +315,6 @@ func fileMissing(path string) bool {
 // csvScan builds one per-run CSV SELECT. When keepData is true the pseudo-header
 // rows are filtered out (answers-type only); when false only they are kept.
 func (vs viewSet) csvScan(dl dataset.Download, keepData bool, derived []derivedColumn) string {
-	dialect := dataset.DefaultCSVDialect()
-	if dl.CSVDialect != nil {
-		dialect = *dl.CSVDialect
-	}
 	star := "*"
 	var extra strings.Builder
 	if shadowed := collisions(dl, derived); len(shadowed) > 0 {
@@ -326,8 +328,7 @@ func (vs viewSet) csvScan(dl dataset.Download, keepData bool, derived []derivedC
 	for _, d := range derived {
 		fmt.Fprintf(&extra, ", %s AS %s", d.sql(dl), sqlIdent(d.name))
 	}
-	scan := fmt.Sprintf("SELECT %d AS run_id, %s%s FROM read_csv(%s, auto_detect=false, header=true, delim=%s, quote=%s, escape=%s, columns=%s)",
-		dl.RunID, star, extra.String(), vs.file(dl.Files[0]), sqlStr(dialect.Delim), sqlStr(dialect.Quote), sqlStr(dialect.Escape), orderedColumnsClause(dl.Columns, dl.ColumnOrder))
+	scan := fmt.Sprintf("SELECT %d AS run_id, %s%s FROM %s", dl.RunID, star, extra.String(), vs.csvRead(dl, dl.Columns))
 	if dl.ReportType == dataset.ReportTypeAnswers {
 		if keepData {
 			return scan + " WHERE student_id::VARCHAR NOT IN ('Prompt', 'Correct answer')"
@@ -335,6 +336,16 @@ func (vs viewSet) csvScan(dl dataset.Download, keepData bool, derived []derivedC
 		return scan + " WHERE student_id::VARCHAR IN ('Prompt', 'Correct answer')"
 	}
 	return scan
+}
+
+// csvRead reads a download's CSV with the given column types, in the order the CSV records.
+func (vs viewSet) csvRead(dl dataset.Download, cols map[string]string) string {
+	dialect := dataset.DefaultCSVDialect()
+	if dl.CSVDialect != nil {
+		dialect = *dl.CSVDialect
+	}
+	return fmt.Sprintf("read_csv(%s, auto_detect=false, header=true, delim=%s, quote=%s, escape=%s, columns=%s)",
+		vs.file(dl.Files[0]), sqlStr(dialect.Delim), sqlStr(dialect.Quote), sqlStr(dialect.Escape), orderedColumnsClause(cols, dl.ColumnOrder))
 }
 
 // storeView builds a registered store type's view, falling back to its pinned columns when
@@ -914,14 +925,7 @@ func (d dimensionView) standIn() string {
 
 // dimensionScan reads one run's CSV, injecting the run id and the fetch time the dedupe orders by.
 func (vs viewSet) dimensionScan(dl dataset.Download, d dimensionView) string {
-	dialect := dataset.DefaultCSVDialect()
-	if dl.CSVDialect != nil {
-		dialect = *dl.CSVDialect
-	}
-	return fmt.Sprintf("SELECT %s, * FROM read_csv(%s, auto_detect=false, header=true, delim=%s, quote=%s, escape=%s, columns=%s)",
-		strings.Join(vs.dimensionInjected(dl, d), ", "), vs.file(dl.Files[0]),
-		sqlStr(dialect.Delim), sqlStr(dialect.Quote), sqlStr(dialect.Escape),
-		orderedColumnsClause(dl.Columns, dl.ColumnOrder))
+	return fmt.Sprintf("SELECT %s, * FROM %s", strings.Join(vs.dimensionInjected(dl, d), ", "), vs.csvRead(dl, dl.Columns))
 }
 
 // dimensionEmptyMember is a zero-row member for a CSV that is missing or unreadable. It carries

@@ -25,10 +25,11 @@ var derivedNames = []string{"parameters_json", "extras_json", "event_time", "rec
 var noSlug = new(string)
 
 type logFixture struct {
-	run    int
-	slug   *string
-	csv    string
-	absent bool // record the download but leave no file on disk
+	run       int
+	slug      *string
+	csv       string
+	absent    bool      // record the download but leave no file on disk
+	fetchedAt time.Time // zero means 2026-09-10 12:00 UTC
 }
 
 func addLogCSV(t *testing.T, d *dataset.Dataset, f logFixture) {
@@ -51,11 +52,15 @@ func addLogCSV(t *testing.T, d *dataset.Dataset, f logFixture) {
 	if f.slug != nil {
 		slug = *f.slug
 	}
+	fetchedAt := f.fetchedAt
+	if fetchedAt.IsZero() {
+		fetchedAt = time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	}
 	if err := d.UpsertDownload(dataset.Download{
 		Type: "report", RunID: f.run, ReportType: dataset.ReportTypeLog, Slug: slug,
 		Filters: json.RawMessage(`{}`), Files: []string{name}, RowCount: &rowCount,
 		Columns: cols, ColumnOrder: order, CSVDialect: &dialect, Complete: true,
-		FetchedAt: time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC),
+		FetchedAt: fetchedAt,
 	}); err != nil {
 		t.Fatal(err)
 	}

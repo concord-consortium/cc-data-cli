@@ -306,8 +306,8 @@ Pulls overlap by ten minutes, and an event pulled twice is kept once.
 - **`--start` and `--end`** read part of the window, each as epoch milliseconds or
   a time such as `2026-10-21T14:00:00Z`. They leave the stored cursor as it was.
 - **Days before the window** come from a Student Actions run. Its events go to
-  `logs`, not `recent_logs`, so for the hours both cover, count one view or the
-  other rather than adding them.
+  `logs`, not `recent_logs`, so for the hours both cover an event is in each view;
+  `log_events` has it once, so count from it.
 - If a dataset goes more than a day or two without a pull, its cursor expires. The
   next pull reads the whole window again and warns that events since the last pull
   but before the window are only in a Student Actions run.
@@ -364,6 +364,9 @@ dataset named `wildfire` on `learn.concord.org` lives in
   question; one snapshot in that answer's history; one CLUE document, one entry of
   its edit history, or a document's current content) and updated in place: the
   freshly downloaded copy wins. So you can pull freely without creating duplicates.
+  Report CSVs are the exception: each run's CSV is kept whole, so two overlapping
+  report runs each hold their copy of a row in `reports`, and two overlapping log
+  runs each hold their copy of an event in `logs`; `log_events` has it once.
 - Because of that, to **compare data over time** (e.g. answers in the fall vs. the
   spring), make a **separate dataset per pull** and query across them.
 - Datasets are **purely local** and can contain **sensitive student data**:
@@ -390,7 +393,8 @@ When you (or Claude) query a dataset, the data is exposed as a set of SQL
 | `clue_patches` | One row per edit inside each CLUE history entry (a JSON patch: `op`, `path`, `value`), with its entry's ids, clocks and action, the tile it touched, and its position in the entry (`rec_idx`, `patch_idx`). Order by `doc_id, idx, entry_id, rec_idx, patch_idx`, which is unique. |
 | `report_prompts` | The prompt and correct-answer text for each question. |
 | `logs` | Log/action report rows with `parameters` and `extras` parsed as JSON, and both of the row's clocks as UTC timestamps: `event_time` from the client device's clock, `received_time` from the server's. |
-| `recent_logs` | A class's log events from the last day or two, from `cc-data get recent-logs`, with a Student Actions run's columns, the same four parsed columns as `logs`, and `_class_id` in place of `run_id`. Kept apart from `logs`: an event a Student Actions run also holds is in both, so count one or the other. |
+| `recent_logs` | A class's log events from the last day or two, from `cc-data get recent-logs`, with a Student Actions run's columns, the same four parsed columns as `logs`, and `_class_id` in place of `run_id`. Kept apart from `logs`: an event a Student Actions run also holds is in both, and `log_events` has it once. |
+| `log_events` | Each log event once, however many log runs and recent-log pulls hold it, matched on the event's `id`. Count events here rather than in `logs` or `recent_logs`. It has a Student Actions run's columns and the four parsed columns, plus `run_ids` (the log runs holding the event) and `_class_id` (the class whose recent-logs pull holds it). |
 | `attachment_files` | One row per downloaded file (audio, saved docs) with its type and local path. |
 | `attachment_states` | The saved CODAP/SageModeler state the current answer points at. |
 | `attachment_content` | The text/JSON content of every saved CODAP/SageModeler snapshot, queryable and diffable. |
@@ -472,11 +476,12 @@ A few things worth knowing about that folder.
   interrupted partway through, the next run clears the half-written file it left
   behind.
 - **It is bigger than the one view you care about**, for two reasons. `reports`
-  unions the same log CSVs `logs` reads, so both carry those rows (on a
-  200,000-row log fixture, a 5.4 MB `reports.parquet` beside a 9.5 MB
-  `logs.parquet`). And a view's derived columns cost nothing until they are
-  written down: `logs` carries both `parameters` and its parsed `parameters_json`,
-  which together with the other derived columns is about 45% of that file.
+  unions the same log CSVs `logs` reads, and `log_events` has their events again,
+  so each carries those rows (on a 200,000-row log fixture, a 5.4 MB
+  `reports.parquet` beside a 9.5 MB `logs.parquet`). And a view's derived columns
+  cost nothing until they are written down: `logs` carries both `parameters` and
+  its parsed `parameters_json`, which together with the other derived columns is
+  about 45% of that file.
 - **`dataset show` and `dataset list` report the folder's size separately**, so
   you can see at a glance what deleting it would reclaim.
 
@@ -821,8 +826,8 @@ of `*`, so git never commits them. **`.cc-data-run/` holds student data**
   shows up blank for rows from reports that don't carry it. Nothing is lost or
   misaligned; the blanks are expected. If you're asking about a column only some
   runs have, scope the question to a specific run.
-- **Comparing over time means separate datasets.** Because a dataset never keeps
-  duplicates (re-pulling a run overwrites its records), to compare data across time (fall vs. spring, before vs. after), pull each
+- **Comparing over time means separate datasets.** Because re-pulling a run
+  overwrites its records, to compare data across time (fall vs. spring, before vs. after), pull each
   point in time into its own dataset and query across them.
 - **Counting students.** A distinct-student count is based on the Portal user, not
   on session or data-source identifiers, so a raw count of sessions or endpoints

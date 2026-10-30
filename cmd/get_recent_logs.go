@@ -19,7 +19,8 @@ When the stored cursor has expired, the pull reads the whole window and warns.
 
 --start and --end (epoch milliseconds or RFC 3339) read part of the window and leave the
 stored cursor as it was. Days before the window come from a Student Actions run, whose
-events land in logs, not recent_logs.`
+events land in logs, not recent_logs. Count events across both from log_events, which
+has each once.`
 
 func newGetRecentLogsCmd() *cobra.Command {
 	var datasetRef, start, end string

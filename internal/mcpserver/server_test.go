@@ -776,7 +776,7 @@ func TestToolDescriptionsCarryTheirPortalFacts(t *testing.T) {
 		"get_clue_documents":     {"Student ID Mapping run id is the intended source"},
 		"get_clue_content":       {"Student ID Mapping run id is the intended source"},
 		"get_clue_history":       {"Student ID Mapping run id is the intended source", "not get_history's interactive-state history", "Fetch get_clue_documents for the run first", "clue_patches view, not the action column"},
-		"get_recent_logs":        {"recent_logs view, not logs", "appears in both logs and recent_logs", "received_time"},
+		"get_recent_logs":        {"recent_logs view, not logs", "appears in both logs and recent_logs", "count events from log_events", "received_time"},
 	} {
 		if _, ok := desc[tool]; !ok {
 			t.Errorf("%s is not registered", tool)
