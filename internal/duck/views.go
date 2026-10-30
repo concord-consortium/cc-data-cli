@@ -52,8 +52,13 @@ func (vs viewSet) statements() []viewStmt {
 	stmts = append(stmts, vs.reportPromptsView())
 	stmts = append(stmts, vs.logsView())
 	for _, k := range store.Kinds() {
+		if derived, ok := derivedStoreViews[k.Name]; ok {
+			stmts = append(stmts, derived(vs))
+			continue
+		}
 		stmts = append(stmts, vs.storeView(k))
 	}
+	stmts = append(stmts, vs.cluePatchesView())
 	stmts = append(stmts, vs.runMembershipView())
 	stmts = append(stmts, vs.runAnswersView())
 	stmts = append(stmts, vs.downloadsView())
@@ -63,6 +68,14 @@ func (vs viewSet) statements() []viewStmt {
 	stmts = append(stmts, vs.dimensionViewStmts()...)
 	stmts = append(stmts, vs.perDownloadViews()...)
 	return stmts
+}
+
+// derivedStoreViews replaces a kind's plain storeView with its derived view under the
+// same name.
+var derivedStoreViews = map[string]func(viewSet) viewStmt{
+	store.TypeClueDocuments: viewSet.clueDocumentsView,
+	store.TypeClueHistory:   viewSet.clueHistoryView,
+	store.TypeClueContent:   viewSet.clueContentView,
 }
 
 func (vs viewSet) file(rel string) string {
@@ -134,9 +147,14 @@ func collisions(dl dataset.Download, derived []derivedColumn) []string {
 // took. Two renames cannot converge while no derived name is another with sourceSuffix repeated
 // on the end, which is worth re-checking if a fifth derived column is ever added.
 func sourceName(dl dataset.Download, col string) string {
+	return freeSourceName(dl.Columns, col)
+}
+
+// freeSourceName is col with sourceSuffix added until the name is not among cols.
+func freeSourceName(cols map[string]string, col string) string {
 	name := col + sourceSuffix
 	for {
-		if _, taken := dl.Columns[name]; !taken {
+		if _, taken := cols[name]; !taken {
 			return name
 		}
 		name += sourceSuffix

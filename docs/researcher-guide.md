@@ -348,9 +348,10 @@ When you (or Claude) query a dataset, the data is exposed as a set of SQL
 | `reports` | Report CSV rows across all runs, with a `run_id` column. Covers both answer reports and log/action reports. |
 | `answers` | Student answers, one current record per learner-question. |
 | `history` | Every interactive-state snapshot, how each answer evolved over time. |
-| `clue_documents` | One row per CLUE document: its owner, class, unit, problem and offering, with the raw Firestore and RTDB metadata. |
-| `clue_history` | Every entry of each CLUE document's edit history, the stored entry kept as text. CLUE document history, not the interactive-state `history` above. |
-| `clue_content` | Each CLUE document's current content, stored as text, joined to the others by `doc_id`. |
+| `clue_documents` | One row per CLUE document: its owner, class, unit, problem and offering, with the raw Firestore and RTDB metadata. `tools` is its tool list, `n_tools` how many, and `created_at` when it was created, as a UTC timestamp; a stored value that is not the right kind is kept in `tools_unparsed` or `created_at_unparsed`. |
+| `clue_history` | Every entry of each CLUE document's edit history, with its action normalized (`action`, `tile_id`, `shared_model_id`), the stored entry as JSON in `entry_json`, and its document's owner (`doc_uid`), class, unit, investigation, problem and offering. CLUE document history, not the interactive-state `history` above. |
+| `clue_content` | Each CLUE document's current content as JSON in `content_json`, with tile summaries (`n_tiles`, `tile_types`, `tile_type_counts`, `n_dataflow_tiles`, `n_rows`, `n_shared_models`, `n_annotations`) and its document's class, unit, investigation, problem and offering, joined to the others by `doc_id`. |
+| `clue_patches` | One row per edit inside each CLUE history entry (a JSON patch: `op`, `path`, `value`), with its entry's ids, clocks and action, the tile it touched, and its position in the entry (`rec_idx`, `patch_idx`). Order by `doc_id, idx, entry_id, rec_idx, patch_idx`, which is unique. |
 | `report_prompts` | The prompt and correct-answer text for each question. |
 | `logs` | Log/action report rows with `parameters` and `extras` parsed as JSON, and both of the row's clocks as UTC timestamps: `event_time` from the client device's clock, `received_time` from the server's. |
 | `attachment_files` | One row per downloaded file (audio, saved docs) with its type and local path. |
@@ -360,6 +361,51 @@ When you (or Claude) query a dataset, the data is exposed as a set of SQL
 | `student_metadata` | One row per learner from Student Metadata runs: name, username, class, school, teachers, permission forms. |
 | `run_answers` | Every answer with the `run_id` of each run that holds it: `SELECT count(*) FROM run_answers WHERE run_id = 584` counts one run's answers. Join it to `student_id_mapping` on `remote_endpoint = run_remote_endpoint` to count learners by `user_id`. |
 | `run_membership`, `downloads` | Provenance: which run's fetch covered which records, and what each download was, including whether its run hid names. |
+
+A few things to know before analyzing CLUE documents with these views:
+
+- **Each entry has two clocks.** `created` is the student's device clock and
+  `server_created` is the server's. Use `created` for how long things took inside
+  one document, and `server_created` to compare documents, since device clocks
+  can be off by about a minute either way.
+- **Put entries in order by `idx` and then `entry_id`.** Some documents repeat or
+  skip `idx` values for entries that are really different, and an entry with no
+  `idx` comes after the rest of its document.
+- **Always sort patches yourself.** `clue_patches` comes in no particular order.
+  Sort by `doc_id, idx, entry_id, rec_idx, patch_idx`, and use that whole list in
+  any window function (such as `lag`), or results can change from one run to the
+  next.
+- **The action is not the edit.** Most documents record their edits under one
+  catch-all action ending in `setProgram`, so questions about individual edits
+  belong on `clue_patches`.
+- **Some patches are the program running, not the student.** Paths containing
+  `program/values/`, `demoOutput` or `tickEntries/`, and actions ending in
+  `content/step` or `tickAndProcess`, which make up most history entries, are
+  written while a program runs. Actions and paths are full paths, so match them
+  with `LIKE` (`action LIKE '%content/step'`). No view filters them out, so leave
+  them out yourself when the question is about what the student did.
+- **A `replace` patch shows only the new value**, so whether a student came back
+  to a setting shows up only in the sequence of patches.
+- **A missing value is not a null value.** A patch with no value at all (every
+  `remove`, and some `add` and `replace` patches written without one) has
+  `value IS NULL`; a patch that sets something to null has a `value` whose
+  `json_type` is `'NULL'`. Both print as `null`, so test for the difference in
+  your query, and find removals with `op = 'remove'`.
+- **Unparseable JSON keeps its original text.** In `clue_history`, an entry the
+  query engine cannot parse has NULL `entry_json`, keeps its text in
+  `entry_json_unparsed`, and produces no `clue_patches` rows. The stored
+  `parse_ok` is the server's verdict; `entry_json IS NOT NULL` shows the query
+  engine's verdict. They can disagree: the query engine rejects a split emoji the
+  server accepted, but accepts a trailing comma, `NaN`, or `Infinity` that the
+  server rejected. In `clue_content`, `content_json_unparsed` keeps content the
+  query engine cannot parse, and `parse_ok` reports the query engine's verdict.
+- **There is no per-run `clue_patches`.** To look at one run's patches, keep the
+  entries that run's `clue_history_<run>` view holds: `WHERE (doc_id, entry_id) IN (SELECT
+  doc_id, entry_id FROM clue_history_584)`.
+- **A big CLUE dataset is worth materializing** (below), since `clue_patches`
+  unpacks every entry each time it is read. A window over all the patches has to
+  sort them, so on a big dataset select only the columns the window needs, and
+  leave out `value` unless it uses it.
 
 ### Speeding up a large dataset
 

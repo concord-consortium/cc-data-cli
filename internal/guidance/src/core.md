@@ -118,17 +118,16 @@ like `wildfire_2026.answers`):
   which the `reports` entry above explains and which is not the same as false.
 - `answers`, `history` — the LARA identity-keyed stores (double-decoded
   `report_state`; no dedup needed).
-- `clue_documents`, `clue_history`, `clue_content` — the CLUE stores, no dedup
-  needed. `clue_documents` has one row per CLUE document: its owner (`uid`,
+- `clue_documents`: one row per CLUE document, no dedup needed: its owner (`uid`,
   `context_id`, `portal_class_id`, `owner_type`), unit and problem, `offering_id`,
-  and the raw Firestore and RTDB metadata. `clue_history` has one row per entry of a
-  document's edit history, with the stored entry string in `entry_json`; it is CLUE
-  **document** history, unrelated to `history`'s interactive-state snapshots.
-  `clue_content` has one row per document with its current content string in
-  `content_json`, NULL when `found` is false or the document has no content. Join
-  the three on `doc_id`. A CLUE row has no `remote_endpoint`, so it never joins the
-  LARA stores. `created_at`, `change_count` and `undoable` are JSON, as stored;
-  cast them, e.g. `TRY_CAST(created_at AS BIGINT)`.
+  and the raw Firestore and RTDB metadata. `tools` is the document's tool list as
+  `VARCHAR[]`, NULL when the stored `tools` is NULL (an empty list stays `[]`), and
+  `n_tools` its length.
+  `created_at` is a UTC `TIMESTAMP` from the stored epoch milliseconds. A stored
+  value of the wrong JSON kind (a `created_at` string, a `tools` object) is NULL
+  there rather than converted, and kept as JSON in `created_at_unparsed` or
+  `tools_unparsed`, which are NULL otherwise. Join the CLUE views on `doc_id`. A
+  CLUE row has no `remote_endpoint`, so it never joins the LARA stores.
   To put CLUE rows in a cohort, `uid` is VARCHAR and is a portal `user_id` only when
   `owner_type = 'user'` (group and class owners have synthetic ids): match it with
   `TRY_CAST(d.uid AS BIGINT) = m.user_id` against `student_id_mapping`, plus
@@ -136,6 +135,80 @@ like `wildfire_2026.answers`):
   which is one per assignment, so that join repeats a document once per assignment
   its student has in the class: test membership with `SEMI JOIN` or `EXISTS`, or add
   `d.offering_id = m.offering_id`, which leaves out documents with no offering.
+- `clue_history`: one row per entry of a CLUE document's edit history, no dedup
+  needed; it is CLUE **document** history, unrelated to `history`'s
+  interactive-state snapshots. `action` is `action_raw` with its ids taken out, so
+  one kind of edit reads the same on every tile (the first `/tileMap/<id>`,
+  `/sharedModelMap/<id>` and `/rowMap/<id>` segments become `{tile}`,
+  `{sharedModel}` and `{row}`), with the ids in `tile_id` and `shared_model_id`; all
+  three are NULL for an empty or NULL `action_raw`.
+  `entry_json` is the stored entry as JSON, byte for byte, so `->>` on it is always
+  safe; an entry DuckDB cannot parse is NULL there and kept as text in
+  `entry_json_unparsed`. `undoable` is a BOOLEAN, with a stored value of any other
+  JSON kind in `undoable_unparsed`. Every row carries its document's `doc_uid` (the
+  document's `uid`) and its `portal_class_id`, `unit`, `investigation`, `problem`
+  and `offering_id`, NULL when the document is not in `clue_documents`; the join
+  never adds or drops an entry.
+- `clue_content`: one row per CLUE document with its current content, no dedup
+  needed. `content_json` is the content as JSON, byte for byte, NULL when `found`
+  is false or the document has no content; content DuckDB cannot parse is NULL
+  there and kept as text in `content_json_unparsed`, and `parse_ok` says which (NULL
+  with no content): DuckDB's verdict, where `clue_history`'s `parse_ok` is the
+  server's. Tile summaries: `n_tiles` (every `tileMap` key), `tile_types`
+  (the sorted distinct tile types, `VARCHAR[]`), `tile_type_counts` (a JSON object
+  of type to count, `{}` with no typed tiles), `n_dataflow_tiles`, and the key
+  counts `n_rows`, `n_shared_models` and `n_annotations`; each is 0 or empty when
+  the content parsed and the map is absent, and NULL when `content_json` is NULL
+  (no content, or content DuckDB cannot parse). `self_uid`,
+  `self_doc_key` and `self_class_hash` come from the `self` object. `change_count`
+  is a BIGINT, with a stored value that is not an integer in
+  `change_count_unparsed`. Every row carries its document's `portal_class_id`,
+  `unit`, `investigation`, `problem` and `offering_id`, as `clue_history` does.
+- `clue_patches`: one row per JSON patch of every `clue_history` entry whose
+  `entry_json` parses: `doc_id`, `entry_id`, `idx`, `created`, `server_created`,
+  the entry's `action`, `tile_id` (the tile in the patch's own `path`, else the
+  entry's), `is_revert`, `rec_idx` and `patch_idx` (the patch's 0-based positions in
+  the entry's `records` and in that record's `patches`), `op`, `path`, and `value`
+  as JSON. `(doc_id, idx, entry_id, rec_idx, patch_idx)` is unique.
+- Working with the CLUE views:
+  - **Two clocks.** `created` is the client's clock and `server_created`
+    Firestore's, both UTC `TIMESTAMP`s. Use `created` for durations within one
+    document and `server_created` across documents: the two differ by about a
+    minute either way (-55 s to +53 s at the 1st and 99th percentiles in one
+    corpus).
+  - **Entry order is `(idx, entry_id)`, not `idx` alone.** Some documents (73 in
+    one corpus) have duplicate or gapped `idx` values that are distinct entries,
+    and an entry whose `idx` is NULL (an index the export could not carry as an
+    integer) sorts after its document's indexed entries.
+  - **`clue_patches` promises no order.** Order output by `doc_id, idx, entry_id,
+    rec_idx, patch_idx`, and order every window over it by that whole key: a
+    window ordered by less leaves ties, which DuckDB breaks differently between
+    runs, so one operation can split into two.
+  - **`action` is not the edit.** Most documents record their edits as one
+    catch-all action ending in `setProgram`, and only a minority record granular
+    actions, so per-edit questions read `clue_patches`, not `clue_history.action`.
+  - **Runtime output is not student work.** Patch paths containing
+    `program/values/`, `demoOutput` or `tickEntries/` are written by a running
+    program, and actions ending in `content/step` or `tickAndProcess` are most
+    history entries. `action` and `path` are full paths, so match these with
+    `LIKE` (`action LIKE '%content/step'`), not equality. No view filters them;
+    leave them out where the question is about the student.
+  - **A `replace` patch carries only the new value**, so telling whether a student
+    revisited a parameter needs the sequence of patches on that path.
+  - **`value IS NULL` is a patch with no value**: every `remove`, and the `add` and
+    `replace` patches written without one (252 beside 3,241 `remove`s in one real
+    Dataflow document). A patch that sets null has a non-NULL `value` whose
+    `json_type(value)` is `'NULL'`. Query output shows both as `null`, so make the
+    distinction in the SQL, and test `op = 'remove'` for removals.
+  - **Unparseable payloads** are in `entry_json_unparsed` and
+    `content_json_unparsed`. `clue_history`'s stored `parse_ok` is the server's
+    `JSON.parse` verdict and `entry_json IS NOT NULL` is DuckDB's, and
+    `clue_patches` explodes by DuckDB's. They disagree on a lone surrogate escape
+    (JavaScript accepts it, DuckDB does not) and on trailing commas, `NaN` and
+    `Infinity` (DuckDB accepts them, JavaScript does not).
+  - **There is no per-run `clue_patches`.** Scope it to a run through that run's
+    entries: `WHERE (doc_id, entry_id) IN (SELECT doc_id, entry_id FROM
+    clue_history_<run>)`.
 - `run_membership` — one row per membership line with `run_id` and `type`. Join
   **type-qualified**: `answers a JOIN run_membership m USING
   (source_key, remote_endpoint, question_id) WHERE m.run_id = 584 AND m.type =
@@ -308,6 +381,10 @@ writes each view to a Parquet file that queries read instead, while it is fresh.
 - A dataset with only some of its views materialized is an ordinary state, not a
   fault: freshness is per view, and a view can also be refused when a file it
   reads is missing from disk.
+- A large CLUE dataset is worth materializing, since `clue_patches` explodes every
+  history entry on each raw read. A window over the whole patch table sorts it, so
+  at scale read only the columns the window needs, leaving `value` out unless it
+  uses it.
 
 ## Sensitive data
 

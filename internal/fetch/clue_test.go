@@ -145,7 +145,7 @@ func TestClueStringsAreStoredByteForByte(t *testing.T) {
 			want[e["entry_id"].(string)] = md5hex(e["entry_json"].(string))
 		}
 	}
-	got := queryStrings(t, d, "SELECT entry_id, md5(entry_json) FROM clue_history")
+	got := queryStrings(t, d, "SELECT entry_id, md5(coalesce(entry_json::VARCHAR, entry_json_unparsed)) FROM clue_history")
 	if len(got) != len(want) {
 		t.Fatalf("stored %d entries, want %d", len(got), len(want))
 	}
@@ -156,14 +156,14 @@ func TestClueStringsAreStoredByteForByte(t *testing.T) {
 		}
 	}
 	content := fixture(t, "content.json")[0]["content_json"].(string)
-	if got := queryStrings(t, d, "SELECT doc_id, md5(content_json) FROM clue_content WHERE content_json IS NOT NULL"); len(got) != 1 || got[0] != "-Nd1="+md5hex(content) {
+	if got := queryStrings(t, d, "SELECT doc_id, md5(coalesce(content_json::VARCHAR, content_json_unparsed)) FROM clue_content WHERE content_json IS NOT NULL OR content_json_unparsed IS NOT NULL"); len(got) != 1 || got[0] != "-Nd1="+md5hex(content) {
 		t.Fatalf("content_json = %v", got)
 	}
 }
 
 func storedIdentities(t *testing.T, d *dataset.Dataset) []string {
 	t.Helper()
-	out := queryStrings(t, d, "SELECT doc_id || '/' || entry_id, md5(entry_json) FROM clue_history")
+	out := queryStrings(t, d, "SELECT doc_id || '/' || entry_id, md5(coalesce(entry_json::VARCHAR, entry_json_unparsed)) FROM clue_history")
 	sort.Strings(out)
 	return out
 }
