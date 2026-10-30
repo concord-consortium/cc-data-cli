@@ -104,7 +104,7 @@ func TestBothSurfacesCarryTheAuthRemedy(t *testing.T) {
 	}
 }
 
-// The core renders into the MCP instructions, where the model has tools and no shell, so
+// The core renders into the guide tool's text, where the model has tools and no shell, so
 // a command written there would be an instruction it cannot carry out. Command spellings
 // belong in the per-surface wrappers.
 func TestCoreNamesNoCommand(t *testing.T) {
@@ -253,7 +253,60 @@ func TestBothSurfacesCarryTheRePullMechanism(t *testing.T) {
 	if !strings.Contains(guidance.Skill(), "--refresh") {
 		t.Error("skill: the --refresh spelling is missing")
 	}
-	if !strings.Contains(guidance.Instructions(), "passing `refresh`") {
-		t.Error("instructions: the refresh parameter is missing")
+	if !strings.Contains(guidance.Guide(), "passing `refresh`") {
+		t.Error("guide: the refresh parameter is missing")
+	}
+}
+
+// Claude Code keeps only the first 4,096 characters of a server's instructions and drops
+// the rest. A byte count is never below the character count, so a byte bound is the
+// conservative test.
+const instructionsCap = 4096
+
+func TestInstructionsFitTheMCPCap(t *testing.T) {
+	if n := len(guidance.Instructions()); n > instructionsCap {
+		t.Errorf("instructions are %d bytes, over the %d a client keeps", n, instructionsCap)
+	}
+}
+
+// Earlier Claude Code builds kept only 2,048 characters, so everything before the dataset
+// rules, which the guide repeats, has to end by then.
+const essentialsCap = 2048
+
+func TestInstructionsPutTheEssentialsFirst(t *testing.T) {
+	ins := guidance.Instructions()
+	last := -1
+	for _, heading := range []string{"## Auth", "## Full guidance", "## Sensitive data", "## Datasets and portals"} {
+		i := strings.Index(ins, heading)
+		if i <= last {
+			t.Fatalf("%q is missing or out of order in the instructions", heading)
+		}
+		last = i
+	}
+	if last > essentialsCap {
+		t.Errorf("the dataset rules start at byte %d, so the sections before them run past %d", last, essentialsCap)
+	}
+}
+
+// Claude Code caps a tool result at 25,000 tokens by default, which is 75,000 bytes at a
+// pessimistic three bytes per token.
+const guideCap = 75000
+
+func TestGuideFitsAToolResult(t *testing.T) {
+	if n := len(guidance.Guide()); n > guideCap {
+		t.Errorf("guide text is %d bytes, over the %d a tool result keeps", n, guideCap)
+	}
+}
+
+func TestInstructionsIndexTheGuide(t *testing.T) {
+	ins := guidance.Instructions()
+	for _, want := range []string{"## Datasets and portals", "check the dataset's portal is a\n  hostname",
+		"## Sensitive data", "Suggest purging a\ndataset", "cc-data's `guide` tool"} {
+		if !strings.Contains(ins, want) {
+			t.Errorf("instructions do not carry %q", want)
+		}
+	}
+	if strings.Contains(ins, "## Views") {
+		t.Error("instructions carry the views catalog, which belongs to the guide")
 	}
 }

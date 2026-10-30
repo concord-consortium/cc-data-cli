@@ -183,6 +183,10 @@ You might say things like:
 > "Download the student-actions log for run 187 and tell me how much time each
 > student spent on task and who disengaged."
 
+> "Pull the CLUE documents and their history for Student ID Mapping run 612 into
+> `dataflow`, and show me what each student changed in their Dataflow program,
+> in order."
+
 Claude will download what it needs, run the queries, and explain the results.
 Under the hood it's the same commands you could run yourself (see §4), so you can
 always ask Claude to "show me the SQL you ran" or "give me that as a CSV."
@@ -199,7 +203,9 @@ A few things worth knowing about the division of labor:
 This guide covers **Claude Code**, which is what `cc-data init` sets up. A
 one-click **Claude Desktop** extension that uses the same underlying
 `cc-data mcp` server is planned but not yet available; `cc-data init` does not
-configure Claude Desktop today.
+configure Claude Desktop today. When the skill is not installed, Claude reads the
+same guidance through the MCP server's `guide` tool, so a session with only the
+MCP server knows the same views and caveats.
 
 ---
 
@@ -671,6 +677,41 @@ cc-data query \
 
 Ask Claude to "compare the `fall_2026` and `spring_2027` datasets" and it will
 write the cross-dataset query for you.
+
+### About how students built CLUE documents
+
+These come from a run's CLUE documents, pulled by a Student ID Mapping run's id:
+the documents first, then their history and content (§4 has the commands), then
+`dataset materialize` once the dataset is large. §5 describes the four views.
+
+- **What changed, and in what order**: every edit a student made to a document,
+  one row per change, from `clue_patches`.
+- **How long things took inside a document**: the time between a student's edits.
+- **What a document holds now**: its tiles and their kinds, from `clue_content`.
+- **What the student had on screen while editing**: the CLUE events in the logs
+  carry which tab was open and whether the curriculum was showing.
+
+```sql
+-- One student's edits, in order, without the program's own output
+SELECT p.doc_id, p.created, p.op, p.path
+FROM clue_patches p JOIN clue_documents d USING (doc_id)
+WHERE d.owner_type = 'user' AND d.uid = '1234'
+  AND p.path NOT LIKE '%program/values/%'
+  AND p.path NOT LIKE '%demoOutput%'
+  AND p.path NOT LIKE '%tickEntries/%'
+  AND coalesce(p.action, '') NOT LIKE '%content/step'
+  AND coalesce(p.action, '') NOT LIKE '%tickAndProcess'
+ORDER BY p.doc_id, p.idx, p.entry_id, p.rec_idx, p.patch_idx;
+```
+
+> Each edit has two times. `created` is the student's device clock, right for
+> how long something took inside one document; `server_created` is the server's,
+> right for comparing documents, since device clocks can be off by about a minute.
+> Ask Claude which one an answer used.
+
+On a big dataset that hasn't been materialized, a query like this one unpacks
+every document's edits before the join narrows them, so materialize first, or
+ask Claude to filter by the document ids directly.
 
 ---
 

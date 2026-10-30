@@ -1,22 +1,3 @@
-## Datasets and portals
-
-- Auth, datasets and downloaded data are all per portal, and a portal is always a
-  full hostname.
-- A dataset is identified by its portal and its name, spelled as a ref,
-  `<portal>/<name>` (e.g. `learn.concord.org/wildfire`), where a bare `<name>`
-  resolves under the configured default portal. That is the spelling everywhere a
-  dataset is identified, on the command line included. `dataset_create` is the
-  exception: it takes the two as separate arguments, with the portal optional and
-  the same fallback, and its `name` must not contain a slash. A bare name is also
-  what `dataset_rename` takes as `new_name`, which renames within the same portal.
-- A dataset's portal is always a hostname and never an environment alias, because
-  it also names the folder the data lives in. `prod`, `staging` and `dev` are
-  **refused** when naming a dataset, and the error names the hostname to use.
-- An environment alias is accepted, and expanded, wherever a `portal` selects a
-  server to read from rather than a folder to write into.
-- If a fetch returns `NOT_AUTHENTICATED`, check the dataset's portal is a
-  hostname before relaying a login.
-
 ## Runs and their data
 
 - Datasets are duplicate-free by construction: re-fetching a run replaces its
@@ -117,6 +98,12 @@ like `wildfire_2026.answers`):
   alone distinguishes the five: `logs l JOIN downloads d ON d.run_id = l.run_id AND
   d.type = 'report'`. `hide_names` is NULL where the run's filter is not on disk,
   which the `reports` entry above explains and which is not the same as false.
+  CLUE events (`application = 'CLUE'`) carry the user's interface state in
+  `extras`: `navTabsOpen` and `problemPath` on every event, `selectedNavTab` on
+  nearly every one (a sign-in event can lack it), `workspaceMode` on a student's,
+  and `group` once the student is in one; `recent_logs` rows carry the same.
+  `navTabsOpen` is true for split view and for the curriculum full screen alike,
+  so only `false` (the workspace full screen) is unambiguous.
 - `recent_logs`: a class's log events from the last day or two, from a recent-logs
   pull, with the same 13 columns as a `student-actions` run and the same four
   parsed columns as `logs`. It is keyed by `id`: a pull reads from 00:00 UTC
@@ -160,7 +147,9 @@ like `wildfire_2026.answers`):
   JSON kind in `undoable_unparsed`. Every row carries its document's `doc_uid` (the
   document's `uid`) and its `portal_class_id`, `unit`, `investigation`, `problem`
   and `offering_id`, NULL when the document is not in `clue_documents`; the join
-  never adds or drops an entry.
+  never adds or drops an entry. `entry_uid` is NULL by construction on a document
+  written without concurrent editing, which is every classroom document so far,
+  and is not a data gap.
 - `clue_content`: one row per CLUE document with its current content, no dedup
   needed. `content_json` is the content as JSON, byte for byte, NULL when `found`
   is false or the document has no content; content DuckDB cannot parse is NULL
@@ -347,6 +336,37 @@ slugs cc-data cannot enumerate; take one from a run that already exists.
 
 Re-read any Portal run later by re-pulling the same run id; do not duplicate it.
 
+### Answering a question about CLUE documents
+
+- A question about what students did in CLUE documents (what they built or
+  changed, in what order, how long it took) is answered from the CLUE stores:
+  fetch a Student ID Mapping run's CLUE documents, then their history and
+  content. A CLUE document's history is its edit history, `clue_history`. The
+  `history` store is LARA interactive-state history, a different store written by
+  a different application, so never fetch it for a CLUE question.
+- `clue_patches` answers what a student changed and in what order,
+  `clue_content` what a document holds now, `clue_documents` which documents
+  exist and whose they are, and `clue_history` entry-level timing and counts.
+  `logs` and `recent_logs` add what the student had on screen between edits (the
+  `logs` entry describes CLUE's `extras`).
+- Leave runtime output out when the question is about the student (the Working
+  with the CLUE views entry lists the patterns), excluding with
+  `coalesce(action, '') NOT LIKE ...`: `action` is NULL for an entry with an
+  empty `action_raw`, and `NULL NOT LIKE` drops that entry's patches. Order a
+  document's edits by the entry key, and its patches by `clue_patches`' whole
+  key, never by a clock, and say which clock a reported time, duration or
+  cross-document ordering used: `created` within one document, `server_created`
+  across documents.
+- Before a dataset is materialized, `clue_patches` unpacks every history entry in
+  it that the query does not exclude by comparing an entry-level column
+  (`doc_id`, `entry_id`, `idx`, `created`, `server_created`, `action`,
+  `is_revert`) with literal values: `doc_id IN ('...', ...)`, a time range, or
+  the runtime-output `action` patterns. A join, an `IN (SELECT ...)` or
+  `IN (VALUES ...)`, `= ANY([...])`, the per-run scoping in Working with the
+  CLUE views, and a filter on `path`, `op`, `value` or `tile_id` narrow the
+  result, not the work, so on a large dataset materialize first, or look up the
+  document ids and filter by them as literals.
+
 ## Identity columns
 
 Each store identifies a record by its own columns, which are also the `USING` key
@@ -402,10 +422,3 @@ writes each view to a Parquet file that queries read instead, while it is fresh.
   history entry on each raw read. A window over the whole patch table sorts it, so
   at scale read only the columns the window needs, leaving `value` out unless it
   uses it.
-
-## Sensitive data
-
-Datasets hold sensitive student data. You may auto-read a dataset's summary; do
-not dump raw JSONL stores into the conversation by default. Suggest purging a
-dataset when its data is no longer needed rather than archiving it to shared
-drives.

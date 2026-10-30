@@ -11,6 +11,7 @@ import (
 	"github.com/concord-consortium/cc-data-cli/internal/dataset"
 	"github.com/concord-consortium/cc-data-cli/internal/duck"
 	"github.com/concord-consortium/cc-data-cli/internal/fetch"
+	"github.com/concord-consortium/cc-data-cli/internal/guidance"
 	"github.com/concord-consortium/cc-data-cli/internal/reportview"
 	"github.com/concord-consortium/cc-data-cli/internal/store"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -24,6 +25,11 @@ const noArgsMsg = "Note: url/inline and allow-dir arguments are intentionally ex
 func registerTools(s *mcp.Server, opts Options) {
 	readOnly := &mcp.ToolAnnotations{ReadOnlyHint: true}
 	destructive := &mcp.ToolAnnotations{DestructiveHint: ptr(true)}
+
+	addTool(s, &mcp.Tool{Name: "guide", Description: "cc-data's full guidance: the data model, every view with its columns and traps, the report slugs, the cohort recipes, and the tool catalog. The server's instructions are only an index of it, so call this once before the first fetch or query.", Annotations: readOnly},
+		func(ctx context.Context, req *mcp.CallToolRequest, in struct{}) (*mcp.CallToolResult, any, error) {
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: guidance.Guide()}}}, nil, nil
+		})
 
 	addTool(s, &mcp.Tool{Name: "version", Description: "Print the cc-data binary version.", Annotations: readOnly},
 		func(ctx context.Context, req *mcp.CallToolRequest, in struct{}) (*mcp.CallToolResult, versionOut, error) {
@@ -133,12 +139,12 @@ func registerTools(s *mcp.Server, opts Options) {
 
 	addTool(s, &mcp.Tool{Name: "get_answers", Description: "Download a run's student answers into a dataset. A Student ID Mapping run id is a valid source."},
 		pagedHandler(store.TypeAnswers))
-	addTool(s, &mcp.Tool{Name: "get_history", Description: "Download a run's interactive state history into a dataset. A Student ID Mapping run id is a valid source."},
+	addTool(s, &mcp.Tool{Name: "get_history", Description: "Download a run's interactive state history into a dataset. A Student ID Mapping run id is a valid source. It is not CLUE document history: a CLUE document's history is get_clue_history."},
 		pagedHandler(store.TypeHistory))
 
 	addTool(s, &mcp.Tool{Name: "get_clue_documents", Description: "Download a run's CLUE documents into a dataset: one row per document with its owner, unit, problem, offering and raw metadata. A Student ID Mapping run id is the intended source. Fetch the documents before get_clue_history, which needs them to count owners."},
 		pagedHandler(store.TypeClueDocuments))
-	addTool(s, &mcp.Tool{Name: "get_clue_history", Description: "Download a run's CLUE document edit history into a dataset, one row per history entry. This is CLUE document history, not get_history's interactive-state history. Fetch get_clue_documents for the run first, or owner coverage is not counted. A Student ID Mapping run id is the intended source."},
+	addTool(s, &mcp.Tool{Name: "get_clue_history", Description: "Download a run's CLUE document edit history into a dataset, one row per history entry. This is CLUE document history, not get_history's interactive-state history. Fetch get_clue_documents for the run first, or owner coverage is not counted. A Student ID Mapping run id is the intended source. Per-edit questions read the clue_patches view, not the action column."},
 		pagedHandler(store.TypeClueHistory))
 	addTool(s, &mcp.Tool{Name: "get_clue_content", Description: "Download the current content of a run's CLUE documents into a dataset, one row per document. A Student ID Mapping run id is the intended source."},
 		pagedHandler(store.TypeClueContent))
@@ -337,11 +343,12 @@ func checkCreateArgs(portal, name string) error {
 
 // queryDescription names the views from the registration rather than restating them, so it
 // cannot drift from what a dataset actually exposes. The per-run and per-job view shapes are
-// left to the guidance, which every client of this tool also receives: written here they
-// would be a view-name copy in the one place the drift guard cannot read.
+// left to the guide tool's text, which this description points to: written here they would
+// be a view-name copy in the one place the drift guard cannot read.
 func queryDescription() string {
 	return "Run SQL over one or more datasets. Each datasets entry may be alias=ref to schema-qualify that dataset. " +
 		"Always-present views: " + strings.Join(duck.StaticViewNames(), ", ") + ". " +
+		"Each view's columns and traps are in cc-data's guide tool: call it before the first query. " +
 		"res_<N>_<question_id>_answer columns are VARCHAR and hold prompt text on pseudo-header rows, so aggregate them numerically with TRY_CAST. " +
 		"Cross-dataset unions are never implicit: write them with UNION ALL BY NAME. " +
 		"Rows beyond max_rows (default 1000) are dropped and truncated is set. " + noArgsMsg

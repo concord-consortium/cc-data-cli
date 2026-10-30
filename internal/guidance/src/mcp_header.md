@@ -6,7 +6,9 @@ datasets and query across them with SQL (embedded DuckDB). Find runs with
 existing one with `dataset_list`, since a fetch into a dataset that does not
 exist fails; pull runs in with `get_report` / `get_answers` / `get_history` /
 `get_clue_documents` / `get_clue_history` / `get_clue_content` / `get_attachments`;
-orient with `dataset_show`; and analyze with `query`.
+orient with `dataset_show`; and analyze with `query`. Call cc-data's `guide`
+tool before the first fetch or query: these instructions are only an index (see
+Full guidance below).
 
 ## Auth
 
