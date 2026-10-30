@@ -247,8 +247,8 @@ Portal reports are computed live, so re-reading one with `get report --refresh`
 gives you current data and duplicating one needs `--force`.
 
 To pull a whole cohort's work without authoring an Athena report at all, create a
-`student-id-mapping` run and fetch answers, history and attachments by its run
-id; the Report types section describes that path.
+`student-id-mapping` run and fetch answers, history, attachments and the three
+`get clue-*` commands by its run id; the Report types section describes that path.
 
 ### A complete session
 
@@ -262,6 +262,10 @@ cc-data get answers  584 --dataset learn.concord.org/wildfire
 cc-data get history  584 --dataset learn.concord.org/wildfire
 # attachments reference answer/history records, so fetch those first
 cc-data get attachments 584 --dataset learn.concord.org/wildfire
+# for a CLUE cohort: documents first, so the history pull can count owners
+cc-data get clue-documents 584 --dataset learn.concord.org/wildfire
+cc-data get clue-history   584 --dataset learn.concord.org/wildfire
+cc-data get clue-content   584 --dataset learn.concord.org/wildfire
 
 # 3. Ask a question with SQL
 cc-data query --dataset learn.concord.org/wildfire \
@@ -308,17 +312,22 @@ dataset named `wildfire` on `learn.concord.org` lives in
   called `staging` that you could never log in to. For the same reason the
   `default_portal` setting takes a full hostname, and `cc-data` refuses to start
   if you put an environment name there.
-- Into a dataset you can pull four kinds of data for any run:
+- Into a dataset you can pull seven kinds of data for a run. Runs of two
+  aggregate metrics reports can give only the report CSV (see Report types).
   - **report**: the report CSV (answers reports, and log/action reports).
   - **answers**: the raw student answer records.
   - **history**: the full series of how each answer's interactive state evolved.
   - **attachments**: the files answers reference: open-response audio, and
     offloaded (too-big-to-inline) CODAP/SageModeler documents.
+  - **clue-documents**: the run's CLUE documents, with owner, unit and problem.
+  - **clue-history**: every entry of each CLUE document's edit history (CLUE
+    document history, not the interactive-state history above).
+  - **clue-content**: each CLUE document's current content.
 - **A dataset never holds duplicate data.** If you re-download a run, or pull two
   overlapping runs, records are matched by identity (this learner's answer to this
-  question; one snapshot in that answer's history) and updated in place: the
-  freshly downloaded copy wins. So you can pull freely without creating
-  duplicates.
+  question; one snapshot in that answer's history; one CLUE document, one entry of
+  its edit history, or a document's current content) and updated in place: the
+  freshly downloaded copy wins. So you can pull freely without creating duplicates.
 - Because of that, to **compare data over time** (e.g. answers in the fall vs. the
   spring), make a **separate dataset per pull** and query across them.
 - Datasets are **purely local** and can contain **sensitive student data**:
@@ -339,6 +348,9 @@ When you (or Claude) query a dataset, the data is exposed as a set of SQL
 | `reports` | Report CSV rows across all runs, with a `run_id` column. Covers both answer reports and log/action reports. |
 | `answers` | Student answers, one current record per learner-question. |
 | `history` | Every interactive-state snapshot, how each answer evolved over time. |
+| `clue_documents` | One row per CLUE document: its owner, class, unit, problem and offering, with the raw Firestore and RTDB metadata. |
+| `clue_history` | Every entry of each CLUE document's edit history, the stored entry kept as text. CLUE document history, not the interactive-state `history` above. |
+| `clue_content` | Each CLUE document's current content, stored as text, joined to the others by `doc_id`. |
 | `report_prompts` | The prompt and correct-answer text for each question. |
 | `logs` | Log/action report rows with `parameters` and `extras` parsed as JSON, and both of the row's clocks as UTC timestamps: `event_time` from the client device's clock, `received_time` from the server's. |
 | `attachment_files` | One row per downloaded file (audio, saved docs) with its type and local path. |
@@ -435,9 +447,9 @@ The three `log` reports share the same clickstream columns; `student-answers` an
 `student-assignment-usage` share the same per-student, per-resource shape.
 
 **Portal reports, computed live.** Two of them name a set of learners, and a run
-of either is a valid run id for `get answers`, `get history` and
-`get attachments`, so they are what you use to pull those learners' work without
-authoring an Athena report first:
+of either is a valid run id for `get answers`, `get history`, `get attachments`
+and the three `get clue-*` commands, so they are what you use to pull those
+learners' work without authoring an Athena report first:
 
 - **Student ID Mapping** (slug `student-id-mapping`): the portal ids and the
   `run_remote_endpoint` that joins each learner to their stored records, and no
@@ -472,8 +484,8 @@ The rest are aggregate metrics: *Summary Metrics by Assignment*, *Detailed
 Metrics by Assignment*, *Teacher Status*, *Detailed Metrics by School*, and
 *Summary Metrics by Subject Area*. They download like any other report, but the
 two metrics-by-school and by-subject-area reports do not describe individual
-learners, so a run of either cannot drive `get answers`, `get history` or `get
-attachments` and says so if you try.
+learners, so a run of either cannot drive `get answers`, `get history`, `get
+attachments` or the `get clue-*` commands and says so if you try.
 
 ---
 
@@ -648,7 +660,7 @@ What it cannot reproduce:
 - **Python.** A `.py` entrypoint runs with `python3.11` when it is on your
   `PATH`, as on the VM, and otherwise with `python3` after a note saying so.
 - **CLUE.** A package with `clue_prepull: true` is refused locally, since
-  `cc-data` cannot fetch CLUE data yet.
+  `cc-data` does not run a package's CLUE pre-pull yet.
 
 ### Checked against report-server
 

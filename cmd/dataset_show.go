@@ -60,12 +60,14 @@ func renderShow(s *dataset.ShowJSON, full bool) {
 
 	fmt.Fprintln(out, "Totals:")
 	types := make([]string, 0, len(s.Totals))
+	width := 0
 	for t := range s.Totals {
 		types = append(types, t)
+		width = max(width, len(t))
 	}
 	sort.Strings(types)
 	for _, t := range types {
-		fmt.Fprintf(out, "  %-12s %d\n", t, s.Totals[t])
+		fmt.Fprintf(out, "  %-*s %d\n", width, t, s.Totals[t])
 	}
 
 	if len(s.Downloads) > 0 {

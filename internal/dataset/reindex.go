@@ -14,8 +14,8 @@ import (
 	"github.com/concord-consortium/cc-data-cli/internal/store"
 )
 
-var reindexStoreRe = regexp.MustCompile(`^(answers|history)\.v(\d+)\.jsonl$`)
-var reindexMemberRe = regexp.MustCompile(`^members_(answers|history)_(\d+)\.v(\d+)\.jsonl$`)
+var reindexStoreRe = storeFileRe()
+var reindexMemberRe = memberFileRe()
 var reindexCSVRe = regexp.MustCompile(`^report_(\d+)(?:_job_(\d+))?\.csv$`)
 
 // Reindex rebuilds the manifest from the filesystem under the mutation locks:
@@ -87,7 +87,7 @@ func (d *Dataset) Reindex() error {
 		if v == 0 {
 			continue
 		}
-		count, cols, serr := scanStoreCountAndColumns(d.Path(versFiles[v]))
+		count, cols, serr := scanStoreCountAndColumns(store.MustKind(typ), d.Path(versFiles[v]))
 		if serr != nil {
 			return serr
 		}
@@ -100,7 +100,7 @@ func (d *Dataset) Reindex() error {
 		m.Membership[key] = MembershipRef{File: newestMemberFile[key], Version: v}
 	}
 
-	// Rebuild downloads: one per adopted membership (answers/history), one per CSV.
+	// Rebuild downloads: one per adopted membership (every store type), one per CSV.
 	// Label provenance (report_type, slug, filters, source_key, history_mode) is
 	// not on disk, so a reindex that still has the old manifest carries it forward
 	// rather than discarding it and flagging the entry recovered. Disk-derived
@@ -355,13 +355,13 @@ func recoverReportType(path string) (reportType string, recovered bool) {
 	return ReportTypeRecovered, true
 }
 
-func scanStoreCountAndColumns(path string) (int, map[string]string, error) {
+func scanStoreCountAndColumns(k store.Kind, path string) (int, map[string]string, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return 0, nil, err
 	}
 	defer f.Close()
-	det := store.NewColumnDetector()
+	det := store.NewColumnDetector(k)
 	count := 0
 	r := bufio.NewReader(f)
 	for {

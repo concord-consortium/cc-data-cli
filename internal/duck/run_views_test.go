@@ -29,9 +29,7 @@ func TestRunAnswersAndTheDocumentedLearnerCount(t *testing.T) {
 	})
 	hist, _ := json.Marshal(map[string]any{"source_key": "s", "remote_endpoint": "https://p/d/e1a", "question_id": "q1", "history_id": "h1"})
 	seg := store.OpenSegment(d.Dir, store.TypeHistory, 700)
-	if err := seg.AppendPage([][]byte{hist}, time.Unix(700, 0).UTC(), 700); err != nil {
-		t.Fatal(err)
-	}
+	appendPage(t, seg, [][]byte{hist}, time.Unix(700, 0).UTC(), 700)
 	seg.WriteCursor(&store.Cursor{Items: 1})
 	if _, err := d.MergeCompact(store.TypeHistory, 700, seg); err != nil {
 		t.Fatal(err)

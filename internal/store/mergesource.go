@@ -6,13 +6,10 @@ import (
 	"sort"
 )
 
-// MergeSource is the sorted input the merge consumes: one segment for a plain
-// merge, or several combined for a backlog sweep. It yields one winning record
-// per identity key and reports which run owns each key.
+// MergeSource yields one winning record per identity key, in key order, with the run
+// that owns it: one segment for a plain merge, or several combined for a backlog sweep.
 type MergeSource interface {
-	Keys() []string
-	Record(key string) ([]byte, error)
-	OwnerRun(key string) int
+	Next() (key string, rec []byte, run int, ok bool, err error)
 	RawCount(run int) int
 	Runs() []int
 }
@@ -21,6 +18,7 @@ type MergeSource interface {
 type SingleSource struct {
 	idx *SegmentIndex
 	run int
+	pos int
 }
 
 // NewSingleSource wraps a segment index for a run.
@@ -28,10 +26,21 @@ func NewSingleSource(idx *SegmentIndex, run int) *SingleSource {
 	return &SingleSource{idx: idx, run: run}
 }
 
-func (s *SingleSource) Keys() []string                    { return s.idx.Keys() }
-func (s *SingleSource) Record(key string) ([]byte, error) { return s.idx.Record(key) }
-func (s *SingleSource) OwnerRun(string) int               { return s.run }
-func (s *SingleSource) Runs() []int                       { return []int{s.run} }
+func (s *SingleSource) Next() (string, []byte, int, bool, error) {
+	if s.pos >= len(s.idx.entries) {
+		return "", nil, 0, false, nil
+	}
+	i := s.pos
+	s.pos++
+	rec, err := s.idx.record(i)
+	if err != nil {
+		return "", nil, 0, false, err
+	}
+	return s.idx.entries[i].key, rec, s.run, true, nil
+}
+
+func (s *SingleSource) Runs() []int { return []int{s.run} }
+
 func (s *SingleSource) RawCount(run int) int {
 	if run == s.run {
 		return s.idx.RawCount()
@@ -39,54 +48,75 @@ func (s *SingleSource) RawCount(run int) int {
 	return 0
 }
 
-// MultiSource combines several per-run segment indexes into one sorted source,
-// resolving a shared identity to the record with the newest (_fetched_at,
-// _run_id) stamp.
+// MultiSource merges several per-run segment indexes in key order. A key several runs
+// share resolves to the record with the newest (_fetched_at, _run_id) stamp; stamps are
+// read only for such keys.
 type MultiSource struct {
 	byRun map[int]*SegmentIndex
-	keys  []string
-	owner map[string]int
+	runs  []int
+	pos   map[int]int
 }
 
 // NewMultiSource combines per-run segment indexes.
-func NewMultiSource(byRun map[int]*SegmentIndex) (*MultiSource, error) {
-	m := &MultiSource{byRun: byRun, owner: map[string]int{}}
-	best := map[string]stamp{}
+func NewMultiSource(byRun map[int]*SegmentIndex) *MultiSource {
 	runs := make([]int, 0, len(byRun))
 	for run := range byRun {
 		runs = append(runs, run)
 	}
 	sort.Ints(runs)
-	for _, run := range runs {
-		idx := byRun[run]
-		for _, key := range idx.Keys() {
-			st, err := readStamp(idx, key)
-			if err != nil {
-				return nil, err
-			}
-			if cur, ok := best[key]; !ok || st.newerThan(cur) {
-				best[key] = st
-				m.owner[key] = run
-			}
-		}
-	}
-	m.keys = make([]string, 0, len(m.owner))
-	for k := range m.owner {
-		m.keys = append(m.keys, k)
-	}
-	sort.Strings(m.keys)
-	return m, nil
+	return &MultiSource{byRun: byRun, runs: runs, pos: make(map[int]int, len(runs))}
 }
 
-func (m *MultiSource) Keys() []string          { return m.keys }
-func (m *MultiSource) OwnerRun(key string) int { return m.owner[key] }
-func (m *MultiSource) Runs() []int {
-	runs := make([]int, 0, len(m.byRun))
-	for r := range m.byRun {
-		runs = append(runs, r)
+func (m *MultiSource) Next() (string, []byte, int, bool, error) {
+	var key string
+	var holders []int
+	for _, run := range m.runs {
+		idx, p := m.byRun[run], m.pos[run]
+		if p >= len(idx.entries) {
+			continue
+		}
+		k := idx.entries[p].key
+		switch {
+		case holders == nil || k < key:
+			key, holders = k, []int{run}
+		case k == key:
+			holders = append(holders, run)
+		}
 	}
-	sort.Ints(runs)
-	return runs
+	if holders == nil {
+		return "", nil, 0, false, nil
+	}
+	for _, run := range holders {
+		m.pos[run]++
+	}
+	if len(holders) == 1 {
+		run := holders[0]
+		rec, err := m.byRun[run].record(m.pos[run] - 1)
+		return key, rec, run, err == nil, err
+	}
+	var bestRec []byte
+	var best stamp
+	bestRun := 0
+	for i, run := range holders {
+		rec, err := m.byRun[run].record(m.pos[run] - 1)
+		if err != nil {
+			return "", nil, 0, false, err
+		}
+		st, err := readStamp(rec)
+		if err != nil {
+			return "", nil, 0, false, err
+		}
+		if i == 0 || st.newerThan(best) {
+			best, bestRec, bestRun = st, rec, run
+		}
+	}
+	return key, bestRec, bestRun, true, nil
+}
+
+func (m *MultiSource) Runs() []int {
+	out := make([]int, len(m.runs))
+	copy(out, m.runs)
+	return out
 }
 
 func (m *MultiSource) RawCount(run int) int {
@@ -94,10 +124,6 @@ func (m *MultiSource) RawCount(run int) int {
 		return idx.RawCount()
 	}
 	return 0
-}
-
-func (m *MultiSource) Record(key string) ([]byte, error) {
-	return m.byRun[m.owner[key]].Record(key)
 }
 
 type stamp struct {
@@ -112,11 +138,7 @@ func (s stamp) newerThan(o stamp) bool {
 	return s.runID > o.runID
 }
 
-func readStamp(idx *SegmentIndex, key string) (stamp, error) {
-	rec, err := idx.Record(key)
-	if err != nil {
-		return stamp{}, err
-	}
+func readStamp(rec []byte) (stamp, error) {
 	var fields struct {
 		FetchedAt string `json:"_fetched_at"`
 		RunID     int    `json:"_run_id"`

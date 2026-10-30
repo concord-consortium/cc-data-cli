@@ -52,7 +52,7 @@ func TestStaticViewNamesExcludePerRunViews(t *testing.T) {
 
 func TestIdentityColumnNamesAreTheMembershipKey(t *testing.T) {
 	got := IdentityColumnNames()
-	want := []string{"history_id", "question_id", "remote_endpoint", "source_key"}
+	want := []string{"doc_id", "entry_id", "history_id", "question_id", "remote_endpoint", "source_key"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("got %v, want %v", got, want)
 	}

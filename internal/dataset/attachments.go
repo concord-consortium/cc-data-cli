@@ -81,7 +81,8 @@ func (d *Dataset) ScanRecordAttachments(typ string, record []byte) []AttachRef {
 	if len(attachments) == 0 {
 		return nil
 	}
-	id, _ := store.IdentityFromRecord(typ, record)
+	kind := store.MustKind(typ)
+	id, _ := store.IdentityFromRecord(kind, record)
 	docID := jsonString(obj["id"])
 	if typ == store.TypeHistory {
 		docID = jsonString(obj["history_id"])
@@ -91,7 +92,7 @@ func (d *Dataset) ScanRecordAttachments(typ string, record []byte) []AttachRef {
 	// be the record's own source_key (the reporting LARA/AP host), NOT the firebase
 	// project (report-service-dev/-pro). The firebase project is selected
 	// server-side by the report-server, not carried in this field.
-	source := id.SourceKey
+	source := kind.Field(id, "source_key")
 
 	refs := make([]AttachRef, 0, len(attachments))
 	for name, meta := range attachments {
@@ -172,13 +173,14 @@ func (d *Dataset) ScanRunAttachments(run int) (refs []AttachRef, scanned []strin
 		if !ok {
 			continue
 		}
-		ids, rerr := store.ReadMembershipFile(d.Path(ref.File))
+		kind := store.MustKind(typ)
+		ids, rerr := store.ReadMembershipFile(d.Path(ref.File), kind)
 		if rerr != nil {
 			return nil, nil, rerr
 		}
 		keys := map[string]bool{}
 		for _, id := range ids {
-			keys[id.Key(typ)] = true
+			keys[kind.Key(id)] = true
 		}
 		st := m.Stores[typ]
 		if st.File == "" {
@@ -223,6 +225,7 @@ func (d *Dataset) scanStore(typ, file string, keys map[string]bool) ([]AttachRef
 		return nil, err
 	}
 	defer f.Close()
+	kind := store.MustKind(typ)
 	var refs []AttachRef
 	r := bufio.NewReader(f)
 	for {
@@ -231,8 +234,8 @@ func (d *Dataset) scanStore(typ, file string, keys map[string]bool) ([]AttachRef
 		if len(trimmed) > 0 {
 			include := true
 			if keys != nil {
-				id, _ := store.IdentityFromRecord(typ, trimmed)
-				include = keys[id.Key(typ)]
+				id, _ := store.IdentityFromRecord(kind, trimmed)
+				include = keys[kind.Key(id)]
 			}
 			if include {
 				refs = append(refs, d.ScanRecordAttachments(typ, trimmed)...)
@@ -280,12 +283,13 @@ func (d *Dataset) RebuildAttachmentIndex(m *Manifest) error {
 		if r.State {
 			af.State = true
 		}
+		kind := store.MustKind(r.Collection)
 		af.Refs = append(af.Refs, AttachmentRef{
 			Type:           r.Collection,
-			SourceKey:      r.Identity.SourceKey,
-			RemoteEndpoint: r.Identity.RemoteEndpoint,
-			QuestionID:     r.Identity.QuestionID,
-			HistoryID:      r.Identity.HistoryID,
+			SourceKey:      kind.Field(r.Identity, "source_key"),
+			RemoteEndpoint: kind.Field(r.Identity, "remote_endpoint"),
+			QuestionID:     kind.Field(r.Identity, "question_id"),
+			HistoryID:      kind.Field(r.Identity, "history_id"),
 		})
 	}
 

@@ -136,6 +136,13 @@ func registerTools(s *mcp.Server, opts Options) {
 	addTool(s, &mcp.Tool{Name: "get_history", Description: "Download a run's interactive state history into a dataset. A Student ID Mapping run id is a valid source."},
 		pagedHandler(store.TypeHistory))
 
+	addTool(s, &mcp.Tool{Name: "get_clue_documents", Description: "Download a run's CLUE documents into a dataset: one row per document with its owner, unit, problem, offering and raw metadata. A Student ID Mapping run id is the intended source. Fetch the documents before get_clue_history, which needs them to count owners."},
+		pagedHandler(store.TypeClueDocuments))
+	addTool(s, &mcp.Tool{Name: "get_clue_history", Description: "Download a run's CLUE document edit history into a dataset, one row per history entry. This is CLUE document history, not get_history's interactive-state history. Fetch get_clue_documents for the run first, or owner coverage is not counted. A Student ID Mapping run id is the intended source."},
+		pagedHandler(store.TypeClueHistory))
+	addTool(s, &mcp.Tool{Name: "get_clue_content", Description: "Download the current content of a run's CLUE documents into a dataset, one row per document. A Student ID Mapping run id is the intended source."},
+		pagedHandler(store.TypeClueContent))
+
 	addTool(s, &mcp.Tool{Name: "get_attachments", Description: "Download a run's file attachments into a dataset. Fetch that run's answers or history first: attachments are reached through those records. A Student ID Mapping run id is a valid source. " + noArgsMsg},
 		func(ctx context.Context, req *mcp.CallToolRequest, in getAttachmentsIn) (*mcp.CallToolResult, mapOut, error) {
 			d, client, err := openForFetch(in.Dataset)

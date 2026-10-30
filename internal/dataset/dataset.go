@@ -397,7 +397,7 @@ func (d *Dataset) deleteArtifacts() error {
 	return nil
 }
 
-var artifactFileRe = regexp.MustCompile(`^(answers\.v\d+\.jsonl|history\.v\d+\.jsonl|members_.*\.v\d+\.jsonl|report_\d+.*\.csv)$`)
+var artifactFileRe = artifactRe()
 
 func isArtifactFile(name string) bool {
 	return artifactFileRe.MatchString(name)

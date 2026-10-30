@@ -10,10 +10,10 @@ import (
 )
 
 // TestBuildIndexPropagatesReadError verifies that a non-EOF read error during the
-// segment scan is returned rather than swallowed into a partial index (finding
-// #43). A partial index feeds a truncated identity set to `covered`, and
-// StreamMerge then drops any old-store record whose key is absent from it, which
-// silently deletes durable records and violates the never-lose contract.
+// segment scan is returned rather than swallowed into a partial index. A partial index
+// gives the merge and the run's membership a truncated identity set, so StreamMerge
+// drops old-store records the run still holds, which silently deletes durable records
+// and violates the never-lose contract.
 //
 // The read error is injected by making the segment path a directory: os.Open
 // succeeds, but the first Read returns EISDIR, which is not io.EOF. (The happy
@@ -30,7 +30,7 @@ func TestBuildIndexPropagatesReadError(t *testing.T) {
 
 	idx, err := seg.BuildIndex()
 	if err == nil {
-		t.Fatalf("BuildIndex must return the read error, not a partial index + nil (got %d keys)", len(idx.Keys()))
+		t.Fatalf("BuildIndex must return the read error, not a partial index + nil (got %d keys)", idx.Len())
 	}
 	if errors.Is(err, io.EOF) {
 		t.Fatalf("a real read error must not be reported as EOF: %v", err)
@@ -47,9 +47,7 @@ func TestBuildIndexHappyPathStillWorks(t *testing.T) {
 		[]byte(`{"source_key":"s","remote_endpoint":"e1","question_id":"q1","data":"A"}`),
 		[]byte(`{"source_key":"s","remote_endpoint":"e2","question_id":"q2","data":"A"}`),
 	}
-	if err := seg.AppendPage(recs, time.Unix(584, 0).UTC(), 584); err != nil {
-		t.Fatal(err)
-	}
+	appendPage(t, seg, recs, time.Unix(584, 0).UTC(), 584)
 	idx, err := seg.BuildIndex()
 	if err != nil {
 		t.Fatal(err)
@@ -57,7 +55,36 @@ func TestBuildIndexHappyPathStillWorks(t *testing.T) {
 	// BuildIndex keeps the segment file open for offset reads; close it so the
 	// temp dir cleanup succeeds (Windows cannot remove a file with an open handle).
 	defer idx.Close()
-	if len(idx.Keys()) != 2 {
-		t.Fatalf("expected 2 indexed identities, got %d", len(idx.Keys()))
+	if idx.Len() != 2 {
+		t.Fatalf("expected 2 indexed identities, got %d", idx.Len())
+	}
+}
+
+func TestBuildIndexRefusesATornLine(t *testing.T) {
+	dir := t.TempDir()
+	seg := OpenSegment(dir, TypeAnswers, 1)
+	if err := os.MkdirAll(filepath.Dir(seg.Path()), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	whole := `{"question_id":"q","remote_endpoint":"r","source_key":"s","answer":"a"}`
+	torn := `{"question_id":"q","remote_endpoint":"r","source_key":"s","ans` + whole + "\n"
+	if err := os.WriteFile(seg.Path(), []byte(torn), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if idx, err := seg.BuildIndex(); err == nil {
+		idx.Close()
+		t.Fatal("BuildIndex accepted a torn segment line")
+	}
+}
+
+// appendPage stamps records and appends them to seg as one fetched page.
+func appendPage(t *testing.T, seg *Segment, recs [][]byte, at time.Time, run int) {
+	t.Helper()
+	lines, err := StampLines(recs, at, run)
+	if err == nil {
+		err = seg.AppendLines(lines)
+	}
+	if err != nil {
+		t.Fatal(err)
 	}
 }

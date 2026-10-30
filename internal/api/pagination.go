@@ -68,7 +68,7 @@ func DrainPages[T any](ctx context.Context, c *Client, path string, limit int) (
 	}
 }
 
-// FetchBulkPage fetches one answers/history page whose items stay raw and whose
+// FetchBulkPage fetches one page of a store type's bulk route, whose items stay raw and whose
 // envelope may carry total_endpoints.
 func FetchBulkPage(ctx context.Context, c *Client, path string, limit int, token string) (BulkPage, error) {
 	q := url.Values{}

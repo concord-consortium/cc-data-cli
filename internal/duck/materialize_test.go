@@ -16,6 +16,7 @@ import (
 
 	"github.com/concord-consortium/cc-data-cli/internal/config"
 	"github.com/concord-consortium/cc-data-cli/internal/dataset"
+	"github.com/concord-consortium/cc-data-cli/internal/store"
 )
 
 // fullFixture holds a store, a log CSV and a mapping CSV, so the materializable
@@ -389,6 +390,26 @@ func TestMaterializeReportsAnIncompleteDownloadWithoutBlocking(t *testing.T) {
 	}
 	if r := outcomeReason(res, "logs"); r != "" {
 		t.Fatalf("a view that reads no incomplete download carries no caveat, got %q", r)
+	}
+}
+
+func TestMaterializeReportsAnIncompleteClueDownload(t *testing.T) {
+	d := fullFixture(t)
+	land(t, d, store.TypeClueHistory, 901, map[string]any{"doc_id": "d1", "entry_id": "e1"})
+	m := mustManifest(t, d)
+	m.Downloads = append(m.Downloads, dataset.Download{Type: store.TypeClueHistory, RunID: 902, Complete: false})
+	if err := writeManifestUnderLock(d, m); err != nil {
+		t.Fatal(err)
+	}
+
+	res, _ := materialize(t, d, MaterializeOptions{})
+	for _, view := range []string{store.TypeClueHistory, "run_membership"} {
+		if r := outcomeReason(res, view); !strings.Contains(r, "run 902") {
+			t.Fatalf("%s reads the incomplete clue_history download and its outcome must say so: %q", view, r)
+		}
+	}
+	if r := outcomeReason(res, "answers"); strings.Contains(r, "902") {
+		t.Fatalf("answers reads no clue_history download, got %q", r)
 	}
 }
 
@@ -878,5 +899,87 @@ func TestMaterializedViewIsIgnoredWhenTheDefinitionMoved(t *testing.T) {
 	e := openEngine(t, []DatasetSpec{{DS: d}}, nil)
 	if n := sentinelCount(t, e, "answers"); n != 0 {
 		t.Fatalf("sentinel rows = %d, want 0: a Parquet from an older view definition must not be read", n)
+	}
+}
+
+func largeWarnings(t *testing.T, d *dataset.Dataset) []string {
+	t.Helper()
+	s, err := ShowJSON(d, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, w := range s.Warnings {
+		if strings.HasPrefix(w, "LARGE_UNMATERIALIZED") {
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
+func TestShowSuggestsMaterializingALargeStore(t *testing.T) {
+	saved := largeStoreBytes
+	t.Cleanup(func() { largeStoreBytes = saved })
+	d := newDS(t, "big")
+	buildStore(t, d, 584, [][]byte{answerRec("s", "e1", "q1", "hi")})
+
+	if gib(5<<30) != "5.0" || gib(6<<29) != "3.0" {
+		t.Fatalf("gib(5 GiB) = %s, gib(3 GiB) = %s", gib(5<<30), gib(6<<29))
+	}
+	largeStoreBytes = 1
+	m, _ := d.ReadManifest()
+	fi, err := os.Stat(d.Path(m.Stores["answers"].File))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := largeWarnings(t, d)
+	if len(got) != 1 || !strings.Contains(got[0], "view answers reads a "+gib(fi.Size())+" GiB store") ||
+		!strings.Contains(got[0], "cc-data dataset materialize "+d.Ref.String()) {
+		t.Fatalf("warnings %v, want one naming the view, its size and the command", got)
+	}
+
+	materialize(t, d, MaterializeOptions{})
+	if got := largeWarnings(t, d); len(got) != 0 {
+		t.Fatalf("a fresh Parquet copy still warns: %v", got)
+	}
+	m, _ = d.ReadManifest()
+	parquet := d.Path(m.Materialized["answers"].File)
+	parquetBytes, err := os.ReadFile(parquet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Remove(parquet)
+	if got := largeWarnings(t, d); len(got) != 1 {
+		t.Fatalf("a deleted Parquet copy must warn: %v", got)
+	}
+	for name, damaged := range map[string][]byte{"truncated": parquetBytes[:len(parquetBytes)/2], "magic only": []byte("PAR1")} {
+		if err := os.WriteFile(parquet, damaged, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if got := largeWarnings(t, d); len(got) != 1 {
+			t.Fatalf("a %s Parquet copy must warn: %v", name, got)
+		}
+	}
+	if err := os.WriteFile(parquet, parquetBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	buildStore(t, d, 612, [][]byte{answerRec("s", "e2", "q2", "yo")})
+	if got := largeWarnings(t, d); len(got) != 1 {
+		t.Fatalf("a stale copy must warn again: %v", got)
+	}
+
+	m, _ = d.ReadManifest()
+	fi, err = os.Stat(d.Path(m.Stores["answers"].File))
+	if err != nil {
+		t.Fatal(err)
+	}
+	largeStoreBytes = fi.Size()
+	if got := largeWarnings(t, d); len(got) != 0 {
+		t.Fatalf("a store at the threshold warns: %v", got)
+	}
+	largeStoreBytes = fi.Size() - 1
+	if got := largeWarnings(t, d); len(got) != 1 {
+		t.Fatalf("a store one byte over the threshold must warn: %v", got)
 	}
 }

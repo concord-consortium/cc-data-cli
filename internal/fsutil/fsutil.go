@@ -4,6 +4,7 @@
 package fsutil
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 )
@@ -12,6 +13,16 @@ import (
 // fsyncs it, and atomically renames it into place, so the destination is never
 // created with a broader mode even transiently.
 func WriteFileAtomic0600(path string, data []byte) error {
+	return WriteAtomic0600(path, func(w io.Writer) error {
+		_, err := w.Write(data)
+		return err
+	})
+}
+
+// WriteAtomic0600 is WriteFileAtomic0600 for content produced by a writer callback, so
+// a large file streams to disk instead of being built in memory first. Nothing replaces
+// path unless write returns nil.
+func WriteAtomic0600(path string, write func(io.Writer) error) error {
 	dir := filepath.Dir(path)
 	f, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
 	if err != nil {
@@ -20,7 +31,7 @@ func WriteFileAtomic0600(path string, data []byte) error {
 	tmp := f.Name()
 	defer os.Remove(tmp)
 
-	if _, err := f.Write(data); err != nil {
+	if err := write(f); err != nil {
 		f.Close()
 		return err
 	}

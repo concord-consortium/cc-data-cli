@@ -26,11 +26,14 @@ type bulkServer struct {
 	totalEndpoints *int
 	expireToken    string // return 410 when this token arrives, once
 	expired        bool
+	failFrom       int      // when > 0, answer 500 for this page index and later
+	paths          []string // request paths, in order
 }
 
 func newBulkServer(t *testing.T, b *bulkServer) *bulkServer {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/reports/", func(w http.ResponseWriter, r *http.Request) {
+		b.paths = append(b.paths, r.URL.Path)
 		token := r.URL.Query().Get("page_token")
 		if token != "" && token == b.expireToken && !b.expired {
 			b.expired = true
@@ -39,6 +42,11 @@ func newBulkServer(t *testing.T, b *bulkServer) *bulkServer {
 			return
 		}
 		idx := b.pageForToken(token)
+		if b.failFrom > 0 && idx >= b.failFrom {
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprint(w, `{"error":"SERVER_ERROR","message":"down"}`)
+			return
+		}
 		next := b.tokens[idx]
 		te := ""
 		if b.totalEndpoints != nil {
@@ -176,7 +184,7 @@ func TestPagedResumeFromCursor(t *testing.T) {
 	d := newTestDataset(t)
 	// Pre-seed a segment + cursor as if page 1 was fetched and the process died.
 	seg := store.OpenSegment(d.Dir, store.TypeAnswers, 584)
-	seg.AppendPage([][]byte{[]byte(answerItem("s", "e1", "q1"))}, timeZero(), 584)
+	appendPage(t, seg, [][]byte{[]byte(answerItem("s", "e1", "q1"))}, timeZero(), 584)
 	tok := "tok1"
 	seg.WriteCursor(&store.Cursor{NextPageToken: &tok, Pages: 1, Items: 1})
 
@@ -200,7 +208,7 @@ func TestPagedStaleSegmentDiscarded(t *testing.T) {
 	d := newTestDataset(t)
 	// A segment with no cursor is stale.
 	seg := store.OpenSegment(d.Dir, store.TypeAnswers, 584)
-	seg.AppendPage([][]byte{[]byte(answerItem("s", "stale", "q"))}, timeZero(), 584)
+	appendPage(t, seg, [][]byte{[]byte(answerItem("s", "stale", "q"))}, timeZero(), 584)
 
 	srv := newBulkServer(t, &bulkServer{
 		pages:  []string{"[" + answerItem("s", "e1", "q1") + "]"},
@@ -343,5 +351,17 @@ func TestPagedANonLearnerReportRefusalIsReadable(t *testing.T) {
 	}
 	if cliErr.ExitCode != output.ExitContract {
 		t.Errorf("exit code = %d, want contract", cliErr.ExitCode)
+	}
+}
+
+// appendPage stamps records and appends them to seg as one fetched page.
+func appendPage(t *testing.T, seg *store.Segment, recs [][]byte, at time.Time, run int) {
+	t.Helper()
+	lines, err := store.StampLines(recs, at, run)
+	if err == nil {
+		err = seg.AppendLines(lines)
+	}
+	if err != nil {
+		t.Fatal(err)
 	}
 }

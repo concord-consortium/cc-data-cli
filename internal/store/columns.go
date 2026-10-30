@@ -16,35 +16,20 @@ const (
 	TypeTIMESTAMP = "TIMESTAMP"
 )
 
-// pinnedColumns are the contract fields whose DuckDB type is fixed regardless of
-// observed values.
-var pinnedColumns = map[string]string{
-	"source_key":            TypeVARCHAR,
-	"remote_endpoint":       TypeVARCHAR,
-	"question_id":           TypeVARCHAR,
-	"history_id":            TypeVARCHAR,
-	"_fetched_at":           TypeTIMESTAMP,
-	"_run_id":               TypeBIGINT,
-	"_decode_error":         TypeBOOLEAN,
-	"report_state":          TypeJSON,
-	"report_state_raw":      TypeVARCHAR,
-	"interactive_state_raw": TypeVARCHAR,
-	"answer":                TypeJSON,
-}
-
 // ColumnDetector accumulates a DuckDB column map by widening over every observed
 // record. Contract fields are pinned; every other field widens over its values.
 type ColumnDetector struct {
-	types map[string]string
+	pinned map[string]string
+	types  map[string]string
 }
 
-// NewColumnDetector returns a detector seeded with the pinned contract columns.
-func NewColumnDetector() *ColumnDetector {
-	types := make(map[string]string, len(pinnedColumns))
-	for k, v := range pinnedColumns {
-		types[k] = v
+// NewColumnDetector returns a detector seeded with the kind's pinned columns.
+func NewColumnDetector(k Kind) *ColumnDetector {
+	types := make(map[string]string, len(k.Pinned))
+	for c, t := range k.Pinned {
+		types[c] = t
 	}
-	return &ColumnDetector{types: types}
+	return &ColumnDetector{pinned: k.Pinned, types: types}
 }
 
 // Observe widens the column map over one record's fields.
@@ -54,7 +39,7 @@ func (d *ColumnDetector) Observe(rec []byte) {
 		return
 	}
 	for k, v := range obj {
-		if _, pinned := pinnedColumns[k]; pinned {
+		if _, pinned := d.pinned[k]; pinned {
 			continue
 		}
 		d.types[k] = widen(d.types[k], valueType(v))

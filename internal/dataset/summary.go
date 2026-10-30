@@ -3,7 +3,6 @@ package dataset
 import (
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -179,11 +178,10 @@ func lastUnderscoreBeforeDigits(s string) int {
 
 func manifestTotals(m *Manifest) map[string]int {
 	totals := map[string]int{}
-	if st, ok := m.Stores[store.TypeAnswers]; ok {
-		totals["answers"] = st.Count
-	}
-	if st, ok := m.Stores[store.TypeHistory]; ok {
-		totals["history"] = st.Count
+	for _, name := range store.Names() {
+		if st, ok := m.Stores[name]; ok {
+			totals[name] = st.Count
+		}
 	}
 	reportRows := 0
 	for _, dl := range m.Downloads {
@@ -196,7 +194,7 @@ func manifestTotals(m *Manifest) map[string]int {
 	return totals
 }
 
-var finalArtifactRe = regexp.MustCompile(`^(answers\.v\d+\.jsonl|history\.v\d+\.jsonl|members_.*\.v\d+\.jsonl|report_\d+.*\.csv)$`)
+var finalArtifactRe = artifactRe()
 
 // driftWarnings computes cheap stat-level warnings with machine-stable codes.
 func driftWarnings(d *Dataset, m *Manifest) []string {
@@ -217,9 +215,9 @@ func driftWarnings(d *Dataset, m *Manifest) []string {
 		if !dl.Complete {
 			warnings = append(warnings, "INCOMPLETE: a "+dl.Type+" download for run "+itoa(dl.RunID)+" did not finish")
 		}
-		// Only report/report_job downloads carry provenance; store downloads
-		// (answers/history) have none, so the recovered flag there is not a
-		// provenance gap and must not raise this warning.
+		// Only report/report_job downloads carry provenance; store downloads have
+		// none, so the recovered flag there is not a provenance gap and must not
+		// raise this warning.
 		if dl.Recovered && (dl.Type == "report" || dl.Type == "report_job") {
 			warnings = append(warnings, "RECOVERED_PROVENANCE: run "+itoa(dl.RunID)+" has no provenance; re-fetch to restore its report_type, its filter, and any dimension view it feeds")
 		}

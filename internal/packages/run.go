@@ -76,7 +76,7 @@ type RunOptions struct {
 // Run prepares the runner's layout, runs the entrypoint and reads its result.
 func Run(ctx context.Context, o RunOptions) (Result, error) {
 	if o.Manifest.CluePrepull {
-		return Result{}, &Refused{Reason: "the package sets clue_prepull, and cc-data cannot fetch CLUE data yet, so it runs only on the VM"}
+		return Result{}, &Refused{Reason: "the package sets clue_prepull, and cc-data does not run a package's CLUE pre-pull yet, so it runs only on the VM"}
 	}
 	if o.Manifest.URLs.DeclaresPatterns() {
 		v, err := o.Applies(ctx, o.Manifest.URLs)

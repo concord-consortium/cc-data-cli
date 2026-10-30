@@ -73,7 +73,7 @@ func assertData(t *testing.T, d *Dataset, typ, sk, re, qid, hid, wantData string
 	t.Helper()
 	m, _ := d.ReadManifest()
 	st := m.Stores[typ]
-	data := readData(t, d.Path(st.File), typ, store.Identity{SourceKey: sk, RemoteEndpoint: re, QuestionID: qid, HistoryID: hid})
+	data := readData(t, d.Path(st.File), typ, identityFor(typ, sk, re, qid, hid))
 	if data != wantData {
 		t.Fatalf("record data = %q, want %q", data, wantData)
 	}

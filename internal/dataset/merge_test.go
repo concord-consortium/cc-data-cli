@@ -2,8 +2,11 @@ package dataset
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -36,9 +39,7 @@ func rec(sk, re, qid, hid, data string) []byte {
 func writeFinishedSegment(t *testing.T, d *Dataset, typ string, run int, recs [][]byte) *store.Segment {
 	t.Helper()
 	seg := store.OpenSegment(d.Dir, typ, run)
-	if err := seg.AppendPage(recs, time.Unix(int64(run), 0).UTC(), run); err != nil {
-		t.Fatal(err)
-	}
+	appendPage(t, seg, recs, time.Unix(int64(run), 0).UTC(), run)
 	if err := seg.WriteCursor(&store.Cursor{NextPageToken: nil, Pages: 1, Items: len(recs)}); err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +69,7 @@ func storeIdentities(t *testing.T, d *Dataset, typ string) []store.Identity {
 		if line == "" {
 			continue
 		}
-		id, err := store.IdentityFromRecord(typ, []byte(line))
+		id, err := store.IdentityFromRecord(store.MustKind(typ), []byte(line))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -91,8 +92,9 @@ func readData(t *testing.T, storeFile, typ string, want store.Identity) string {
 		if line == "" {
 			continue
 		}
-		id, _ := store.IdentityFromRecord(typ, []byte(line))
-		if id.Key(typ) != want.Key(typ) {
+		kind := store.MustKind(typ)
+		id, _ := store.IdentityFromRecord(kind, []byte(line))
+		if kind.Key(id) != kind.Key(want) {
 			continue
 		}
 		var obj map[string]any
@@ -110,7 +112,7 @@ func assertDistinct(t *testing.T, d *Dataset, typ string) {
 	ids := storeIdentities(t, d, typ)
 	seen := map[string]bool{}
 	for _, id := range ids {
-		k := id.Key(typ)
+		k := store.MustKind(typ).Key(id)
 		if seen[k] {
 			t.Fatalf("duplicate identity in store: %+v", id)
 		}
@@ -202,6 +204,10 @@ func TestNeverDuplicateAcceptance(t *testing.T) {
 	if counts.Removed != 0 {
 		t.Fatalf("a2 still covered by B; removed should be 0, got %+v", counts)
 	}
+	m, _ := d.ReadManifest()
+	if got := readData(t, d.Path(m.Stores["answers"].File), "answers", identityFor("answers", "s", "e2", "q2", "")); got != "B" {
+		t.Fatalf("a2 = %q, want B's copy", got)
+	}
 	assertDistinct(t, d, "answers")
 	ids := storeIdentities(t, d, "answers")
 	if len(ids) != 3 {
@@ -247,9 +253,143 @@ func TestMergeSortedOutput(t *testing.T) {
 	ids := storeIdentities(t, d, "answers")
 	keys := make([]string, len(ids))
 	for i, id := range ids {
-		keys[i] = id.Key("answers")
+		keys[i] = store.MustKind(store.TypeAnswers).Key(id)
 	}
 	if !sort.StringsAreSorted(keys) {
 		t.Fatalf("store not sorted by identity key: %v", keys)
+	}
+}
+
+func identityFor(typ, sk, re, qid, hid string) store.Identity {
+	vals := map[string]string{"source_key": sk, "remote_endpoint": re, "question_id": qid, "history_id": hid}
+	k := store.MustKind(typ)
+	id := make(store.Identity, len(k.Identity))
+	for i, c := range k.Identity {
+		id[i] = vals[c]
+	}
+	return id
+}
+
+func TestATornSegmentLineFailsTheMergeAndKeepsTheStore(t *testing.T) {
+	d := newDataset(t)
+	seg := writeFinishedSegment(t, d, "history", 584, [][]byte{rec("s", "e1", "q1", "h1", "kept")})
+	if _, err := d.MergeCompact("history", 584, seg); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := d.ReadManifest()
+	storeBytes, err := os.ReadFile(d.Path(before.Stores["history"].File))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	whole := `{"entry_json":"` + strings.Repeat("x", 64) + `","history_id":"h2","question_id":"q1","remote_endpoint":"e1","source_key":"s"}`
+	// Identity keys precede the cut, so only the whole-line JSON check can reject this line.
+	torn := `{"history_id":"h2","question_id":"q1","remote_endpoint":"e1","source_key":"s","entry_json":"xx` + whole + "\n"
+	seg2 := store.OpenSegment(d.Dir, "history", 612)
+	if err := os.MkdirAll(filepath.Dir(seg2.Path()), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(seg2.Path(), []byte(torn), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := seg2.WriteCursor(&store.Cursor{Pages: 1, Items: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.MergeCompact("history", 612, seg2); err == nil {
+		t.Fatal("a torn segment line must fail the merge")
+	}
+	after, _ := d.ReadManifest()
+	if after.Stores["history"].Version != before.Stores["history"].Version || after.Stores["history"].File != before.Stores["history"].File {
+		t.Fatalf("store moved: %+v -> %+v", before.Stores["history"], after.Stores["history"])
+	}
+	if got, _ := os.ReadFile(d.Path(after.Stores["history"].File)); !bytes.Equal(got, storeBytes) {
+		t.Fatal("the store's bytes changed")
+	}
+	if !seg2.Exists() {
+		t.Fatal("the segment must survive a failed merge")
+	}
+}
+
+// overwriteMembership replaces a run's current membership file with the given lines.
+func overwriteMembership(t *testing.T, d *Dataset, typ string, run int, lines ...string) {
+	t.Helper()
+	m, _ := d.ReadManifest()
+	path := d.Path(m.Membership[MembershipKey(typ, run)].File)
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func memberLine(qid string) string {
+	return `{"source_key":"s","remote_endpoint":"e","question_id":"` + qid + `"}`
+}
+
+// assertMergeFailsClosed checks a merge fails, with want when it is non-nil, and moves nothing.
+func assertMergeFailsClosed(t *testing.T, d *Dataset, want error, setup func()) {
+	t.Helper()
+	setup()
+	before, _ := d.ReadManifest()
+	storeBytes, _ := os.ReadFile(d.Path(before.Stores["answers"].File))
+	seg := writeFinishedSegment(t, d, "answers", 612, [][]byte{rec("s", "e", "qm", "", "new")})
+	if _, err := d.MergeCompact("answers", 612, seg); err == nil || want != nil && !errors.Is(err, want) {
+		t.Fatalf("err = %v, want %v", err, want)
+	}
+	after, _ := d.ReadManifest()
+	if after.Stores["answers"].Version != before.Stores["answers"].Version || len(after.Membership) != len(before.Membership) {
+		t.Fatalf("manifest moved: %+v -> %+v", before.Stores["answers"], after.Stores["answers"])
+	}
+	if got, _ := os.ReadFile(d.Path(after.Stores["answers"].File)); !bytes.Equal(got, storeBytes) {
+		t.Fatal("the store's bytes changed")
+	}
+	if !seg.Exists() {
+		t.Fatal("the segment must survive a failed merge")
+	}
+}
+
+func TestMembershipOutOfOrderFailsTheMergeClosed(t *testing.T) {
+	d := newDataset(t)
+	assertMergeFailsClosed(t, d, store.ErrMembershipOrder, func() {
+		segA := writeFinishedSegment(t, d, "answers", 584, [][]byte{rec("s", "e", "qa", "", "a"), rec("s", "e", "qb", "", "b"), rec("s", "e", "qc", "", "c"), rec("s", "e", "qd", "", "d")})
+		if _, err := d.MergeCompact("answers", 584, segA); err != nil {
+			t.Fatal(err)
+		}
+		// The disorder sits before the last old key, so the walk itself reads it.
+		overwriteMembership(t, d, "answers", 584, memberLine("qa"), memberLine("qc"), memberLine("qb"), memberLine("qd"))
+	})
+}
+
+func TestMembershipDisorderPastTheLastOldKeyFailsTheMergeClosed(t *testing.T) {
+	d := newDataset(t)
+	assertMergeFailsClosed(t, d, store.ErrMembershipOrder, func() {
+		segA := writeFinishedSegment(t, d, "answers", 584, [][]byte{rec("s", "e", "qa", "", "a")})
+		if _, err := d.MergeCompact("answers", 584, segA); err != nil {
+			t.Fatal(err)
+		}
+		overwriteMembership(t, d, "answers", 584, memberLine("qa"), memberLine("qz"), memberLine("qy"))
+	})
+}
+
+func TestTruncatedMembershipLineFailsTheMergeClosed(t *testing.T) {
+	d := newDataset(t)
+	assertMergeFailsClosed(t, d, nil, func() {
+		segA := writeFinishedSegment(t, d, "answers", 584, [][]byte{rec("s", "e", "qa", "", "a"), rec("s", "e", "qb", "", "b")})
+		if _, err := d.MergeCompact("answers", 584, segA); err != nil {
+			t.Fatal(err)
+		}
+		// Read as ("s", "e", ""), the cut first line would still be in order and leave qa held
+		// by no run.
+		overwriteMembership(t, d, "answers", 584, `{"source_key":"s","remote_endpoint":"e"`, memberLine("qb"))
+	})
+}
+
+// appendPage stamps records and appends them to seg as one fetched page.
+func appendPage(t *testing.T, seg *store.Segment, recs [][]byte, at time.Time, run int) {
+	t.Helper()
+	lines, err := store.StampLines(recs, at, run)
+	if err == nil {
+		err = seg.AppendLines(lines)
+	}
+	if err != nil {
+		t.Fatal(err)
 	}
 }

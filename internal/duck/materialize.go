@@ -2,11 +2,13 @@ package duck
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -558,7 +560,10 @@ func incompleteRuns(m *dataset.Manifest, view string, files []string) []int {
 	return runs
 }
 
-func isStoreType(t string) bool { return t == store.TypeAnswers || t == store.TypeHistory }
+func isStoreType(t string) bool {
+	_, ok := store.KindOf(t)
+	return ok
+}
 
 func intersects(a, b []string) bool {
 	seen := map[string]bool{}
@@ -595,6 +600,58 @@ func staleMaterializedViews(d *dataset.Dataset, m *dataset.Manifest) ([]string, 
 	return stale, nil
 }
 
+// largeStoreBytes is the store size past which dataset show suggests materializing; at
+// about this size a scan of the raw JSONL takes seconds.
+var largeStoreBytes int64 = 4 << 30
+
+func gib(n int64) string { return fmt.Sprintf("%.1f", float64(n)/(1<<30)) }
+
+// largeUnmaterialized warns for each store file over largeStoreBytes whose view has no
+// fresh Parquet copy.
+func largeUnmaterialized(d *dataset.Dataset, m *dataset.Manifest, stale []string) []string {
+	var out []string
+	for _, k := range store.Kinds() {
+		st, ok := m.Stores[k.Name]
+		if !ok || st.File == "" {
+			continue
+		}
+		fi, err := os.Stat(d.Path(st.File))
+		if err != nil || fi.Size() <= largeStoreBytes {
+			continue
+		}
+		if mat, ok := m.Materialized[k.Name]; ok && !slices.Contains(stale, k.Name) && parquetIntact(d.Path(mat.File)) {
+			continue
+		}
+		out = append(out, fmt.Sprintf(
+			"LARGE_UNMATERIALIZED: view %s reads a %s GiB store; run cc-data dataset materialize %s to query a Parquet copy instead",
+			k.Name, gib(fi.Size()), d.Ref.String()))
+	}
+	return out
+}
+
+// parquetIntact reports whether a file starts and ends with Parquet's magic bytes and its
+// footer length fits, which is as far as dataset show can check without opening an engine.
+func parquetIntact(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil || fi.Size() < 12 {
+		return false
+	}
+	head, tail := make([]byte, 4), make([]byte, 8)
+	if _, err := f.ReadAt(head, 0); err != nil {
+		return false
+	}
+	if _, err := f.ReadAt(tail, fi.Size()-8); err != nil {
+		return false
+	}
+	footer := int64(binary.LittleEndian.Uint32(tail[:4]))
+	return string(head) == "PAR1" && string(tail[4:]) == "PAR1" && footer <= fi.Size()-12
+}
+
 // ShowJSON builds a dataset's summary from one manifest read, with the warnings
 // only the view set can decide appended and the whole list re-sorted. Both
 // surfaces call it, so the same documented ShowJSON contract cannot carry
@@ -615,6 +672,7 @@ func ShowJSON(d *dataset.Dataset, full bool) (*dataset.ShowJSON, error) {
 			"STALE_MATERIALIZED: view %s was materialized from inputs that have since changed; run cc-data dataset materialize %s to refresh it",
 			view, d.Ref.String()))
 	}
+	s.Warnings = append(s.Warnings, largeUnmaterialized(d, m, stale)...)
 	sort.Strings(s.Warnings)
 	return s, nil
 }

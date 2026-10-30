@@ -2,6 +2,7 @@ package fetch
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"time"
@@ -12,19 +13,20 @@ import (
 	"github.com/concord-consortium/cc-data-cli/internal/store"
 )
 
-// PagedOptions parameterizes an answers or history fetch (one code path).
+// PagedOptions parameterizes a fetch of one store type's paged route (one code path
+// for every registered store type).
 type PagedOptions struct {
 	DS       *dataset.Dataset
 	Client   *api.Client
 	RunID    int
-	Type     string // store.TypeAnswers | store.TypeHistory
+	Type     string // a registered store type
 	Refresh  bool
 	Progress io.Writer
 }
 
-// FetchPaged consumes the paged answers/history envelope: segment append per
-// page, cursor persistence, resume, EXPIRED_CURSOR restart, double-decode,
-// membership, merge, and coverage.
+// FetchPaged consumes a store type's paged bulk envelope: segment append per page,
+// cursor persistence, resume, EXPIRED_CURSOR restart, the type's decoding and
+// identity check, membership, merge, and coverage.
 func FetchPaged(ctx context.Context, opts PagedOptions) (any, error) {
 	release, err := acquireDownload(opts.DS, fmt.Sprintf("seg_%s_%d.lock", opts.Type, opts.RunID),
 		fmt.Sprintf("download busy: another cc-data command is fetching run %d %s", opts.RunID, opts.Type))
@@ -71,11 +73,15 @@ func FetchPaged(ctx context.Context, opts PagedOptions) (any, error) {
 	if err != nil {
 		return nil, output.Internalf("merge: %v", err)
 	}
-	coverage := opts.computeCoverage(totalEndpoints)
+	coverage, note := opts.computeCoverage(totalEndpoints)
 	if err := opts.completeEntry(counts, coverage); err != nil {
 		return nil, err
 	}
-	return opts.result(counts, coverage), nil
+	res := opts.result(counts, coverage)
+	if note != "" {
+		res["coverage_note"] = note
+	}
+	return res, nil
 }
 
 // resumeFinished signals a finished-but-unmerged segment (merge only, no fetch).
@@ -116,7 +122,8 @@ func (opts PagedOptions) resumeState(seg *store.Segment) (token string, alreadyM
 func (opts PagedOptions) fetchPages(ctx context.Context, seg *store.Segment, token string) *output.CLIError {
 	fetchedAt := time.Now().UTC()
 	restarted := false
-	path := fmt.Sprintf("/api/v1/reports/%d/%s", opts.RunID, opts.Type)
+	kind := store.MustKind(opts.Type)
+	path := fmt.Sprintf("/api/v1/reports/%d/%s", opts.RunID, kind.Route)
 
 	cur, _, _ := seg.ReadCursor()
 	if cur == nil {
@@ -141,9 +148,31 @@ func (opts PagedOptions) fetchPages(ctx context.Context, seg *store.Segment, tok
 
 		records := make([][]byte, 0, len(page.Items))
 		for _, item := range page.Items {
-			records = append(records, doubleDecode(item))
+			if kind.DoubleDecode {
+				item = doubleDecode(item)
+			}
+			records = append(records, item)
 		}
-		if err := seg.AppendPage(records, fetchedAt, opts.RunID); err != nil {
+		malformed := func(i int, err error) *output.CLIError {
+			return &output.CLIError{ExitCode: output.ExitContract, Code: "MALFORMED_ITEM",
+				Message: fmt.Sprintf("run %d %s: item %d of page %d: %v", opts.RunID, opts.Type, i+1, cur.Pages+1, err)}
+		}
+		lines, serr := store.StampLines(records, fetchedAt, opts.RunID)
+		var nerr *store.NotObjectError
+		if kind.Strict && errors.As(serr, &nerr) {
+			return malformed(nerr.Index, serr)
+		}
+		if serr != nil {
+			return output.Internalf("stamping page: %v", serr)
+		}
+		if kind.Strict {
+			for i, line := range lines {
+				if _, ierr := store.IdentityFromRecord(kind, line); ierr != nil {
+					return malformed(i, ierr)
+				}
+			}
+		}
+		if err := seg.AppendLines(lines); err != nil {
 			return output.Internalf("appending page: %v", err)
 		}
 
@@ -165,17 +194,32 @@ func (opts PagedOptions) fetchPages(ctx context.Context, seg *store.Segment, tok
 	}
 }
 
-func (opts PagedOptions) computeCoverage(totalEndpoints *int) *dataset.Coverage {
+// computeCoverage reports the run's coverage and, when CLUE history owners cannot be
+// counted, a note saying why.
+func (opts PagedOptions) computeCoverage(totalEndpoints *int) (*dataset.Coverage, string) {
+	if kind := store.MustKind(opts.Type); kind.OwnerStore != "" {
+		return opts.ownerCoverage(kind, totalEndpoints)
+	}
 	cov := &dataset.Coverage{}
 	// with_data: distinct remote_endpoint in the run's current membership.
 	m, err := opts.DS.ReadManifest()
 	if err == nil {
 		if ref, ok := m.Membership[dataset.MembershipKey(opts.Type, opts.RunID)]; ok {
-			if ids, rerr := store.ReadMembershipFile(opts.DS.Path(ref.File)); rerr == nil {
+			kind := store.MustKind(opts.Type)
+			if r, rerr := store.OpenMembership(opts.DS.Path(ref.File), kind); rerr == nil {
 				endpoints := map[string]bool{}
-				for _, id := range ids {
-					endpoints[id.RemoteEndpoint] = true
+				for {
+					key, ok, nerr := r.Next()
+					if nerr != nil {
+						endpoints = nil
+						break
+					}
+					if !ok {
+						break
+					}
+					endpoints[kind.Field(kind.Decode(key), "remote_endpoint")] = true
 				}
+				r.Close()
 				cov.WithData = len(endpoints)
 			}
 		}
@@ -187,7 +231,7 @@ func (opts PagedOptions) computeCoverage(totalEndpoints *int) *dataset.Coverage 
 		empty := q - cov.WithData
 		cov.Empty = &empty
 	}
-	return cov
+	return cov, ""
 }
 
 func (opts PagedOptions) startEntry() error {

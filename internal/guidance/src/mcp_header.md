@@ -5,7 +5,8 @@ datasets and query across them with SQL (embedded DuckDB). Find runs with
 `reports_list`; make a dataset to hold them with `dataset_create`, or pick an
 existing one with `dataset_list`, since a fetch into a dataset that does not
 exist fails; pull runs in with `get_report` / `get_answers` / `get_history` /
-`get_attachments`; orient with `dataset_show`; and analyze with `query`.
+`get_clue_documents` / `get_clue_history` / `get_clue_content` / `get_attachments`;
+orient with `dataset_show`; and analyze with `query`.
 
 ## Auth
 
